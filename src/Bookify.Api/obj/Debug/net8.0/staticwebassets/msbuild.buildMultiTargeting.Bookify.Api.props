@@ -1,3 +1,0 @@
-﻿<Project>
-  <Import Project="../build/Bookify.Api.props" />
-</Project>

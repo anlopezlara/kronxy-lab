@@ -1,0 +1,12 @@
+/home/andres/dev/myapp/src/src/Kronxy.Domain/bin/Debug/net8.0/Kronxy.Domain.deps.json
+/home/andres/dev/myapp/src/src/Kronxy.Domain/bin/Debug/net8.0/Kronxy.Domain.dll
+/home/andres/dev/myapp/src/src/Kronxy.Domain/bin/Debug/net8.0/Kronxy.Domain.pdb
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.csproj.AssemblyReference.cache
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.GeneratedMSBuildEditorConfig.editorconfig
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.AssemblyInfoInputs.cache
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.AssemblyInfo.cs
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.csproj.CoreCompileInputs.cache
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.dll
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/refint/Kronxy.Domain.dll
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/Kronxy.Domain.pdb
+/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/Debug/net8.0/ref/Kronxy.Domain.dll
