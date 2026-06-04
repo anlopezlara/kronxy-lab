@@ -1,0 +1,358 @@
+
+### FILE: src/Kronxy.Api/Controllers/Apartments/ApartmentsController.cs ###
+
+using Kronxy.Application.Apartments.SearchApartments;
+using MediatR;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Kronxy.Api.Controllers.Apartments;
+
+[ApiController]
+[Route("api/apartments")]
+public class ApartmentsController : ControllerBase
+{
+    private readonly ISender _sender;
+
+    public ApartmentsController(ISender sender)
+    {
+        _sender = sender;
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> SearchApartments(
+        DateOnly startDate,
+        DateOnly endDate,
+        CancellationToken cancellationToken)
+    {
+        var query = new SearchApartmentsQuery(startDate, endDate);
+
+        var result = await _sender.Send(query, cancellationToken);
+
+        return Ok(result.Value);
+    }
+}
+
+### END FILE ###
+
+
+### FILE: src/Kronxy.Api/Controllers/Bookings/BookingsController.cs ###
+
+using Kronxy.Application.Bookings.GetBooking;
+using Kronxy.Application.Bookings.ReserveBooking;
+using MediatR;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Kronxy.Api.Controllers.Bookings;
+
+[ApiController]
+[Route("api/bookings")]
+public class BookingsController : ControllerBase
+{
+    private readonly ISender _sender;
+
+    public BookingsController(ISender sender)
+    {
+        _sender = sender;
+    }
+
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetBooking(Guid id, CancellationToken cancellationToken)
+    {
+        var query = new GetBookingQuery(id);
+
+        var result = await _sender.Send(query, cancellationToken);
+
+        return result.IsSuccess ? Ok(result.Value) : NotFound();
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> ReserveBooking(
+        ReserveBookingRequest request,
+        CancellationToken cancellationToken)
+    {
+        var command = new ReserveBookingCommand(
+            request.ApartmentId,
+            request.UserId,
+            request.StartDate,
+            request.EndDate);
+
+        var result = await _sender.Send(command, cancellationToken);
+
+        if (result.IsFailure)
+        {
+            return BadRequest(result.Error);
+        }
+
+        return CreatedAtAction(nameof(GetBooking), new { id = result.Value }, result.Value);
+    }
+}
+
+### END FILE ###
+
+
+### FILE: src/Kronxy.Api/Controllers/Users/UsersController.cs ###
+
+using Kronxy.Application.Users.CreateUser;
+using MediatR;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Kronxy.Api.Controllers.Users;
+
+[ApiController]
+[Route("api/users")]
+public class UsersController : ControllerBase
+{
+    private readonly ISender _sender;
+
+    public UsersController(ISender sender)
+    {
+        _sender = sender;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> CreateUser(
+        CreateUserRequest request,
+        CancellationToken cancellationToken)
+    {
+        var command = new CreateUserCommand(
+            request.Username,
+            request.FirstName,
+            request.LastName,
+            request.Email,
+            request.PhoneNumber);
+
+        var result = await _sender.Send(command, cancellationToken);
+
+        if (result.IsFailure)
+        {
+            return BadRequest(result.Error);
+        }
+
+        return CreatedAtAction(nameof(CreateUser), new { id = result.Value }, result.Value);
+    }
+}
+
+### END FILE ###
+
+
+### FILE: src/Kronxy.Api/Program.cs ###
+
+using Kronxy.Api.Extensions;
+using Kronxy.Application;
+using Kronxy.Infrastructure;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Controllers
+builder.Services.AddControllers();
+
+// Swagger (opcional, no afecta endpoints)
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new()
+    {
+        Title = "Kronxy API",
+        Version = "v1"
+    });
+});
+
+// Clean Architecture layers
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
+
+var app = builder.Build();
+
+// Swagger (opcional)
+app.UseSwagger();
+app.UseSwaggerUI(c =>
+{
+    c.RoutePrefix = "swagger";
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Kronxy API v1");
+});
+
+// Solo DEV: migraciones/seed
+if (app.Environment.IsDevelopment())
+{
+    app.ApplyMigrations();
+    // app.SeedData();
+}
+
+// Middleware pipeline
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+
+app.UseCustomExceptionHandler();
+
+app.MapControllers();
+
+app.Run();
+
+### END FILE ###
+
+
+### FILE: src/Kronxy.Api/Extensions/ApplicationBuilderExtensions.cs ###
+
+using Kronxy.Api.Middleware;
+using Kronxy.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+
+namespace Kronxy.Api.Extensions;
+
+public static class ApplicationBuilderExtensions
+{
+    public static void ApplyMigrations(this IApplicationBuilder app)
+    {
+        using var scope = app.ApplicationServices.CreateScope();
+
+        using var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        dbContext.Database.Migrate();
+    }
+
+    public static void UseCustomExceptionHandler(this IApplicationBuilder app)
+    {
+        app.UseMiddleware<ExceptionHandlingMiddleware>();
+    }
+}
+
+### END FILE ###
+
+
+### FILE: src/Kronxy.Api/Extensions/SeedDataExtensions.cs ###
+
+using Bogus;
+using Kronxy.Application.Abstractions.Data;
+using Kronxy.Domain.Apartments;
+using Dapper;
+
+namespace Kronxy.Api.Extensions;
+
+public static class SeedDataExtensions
+{
+    public static void SeedData(this IApplicationBuilder app)
+    {
+        using var scope = app.ApplicationServices.CreateScope();
+
+        var sqlConnectionFactory = scope.ServiceProvider.GetRequiredService<ISqlConnectionFactory>();
+        using var connection = sqlConnectionFactory.CreateConnection();
+
+        var faker = new Faker();
+
+        List<object> apartments = new();
+        for (var i = 0; i < 100; i++)
+        {
+            apartments.Add(new
+            {
+                Id = Guid.NewGuid(),
+                Name = faker.Company.CompanyName(),
+                Description = "Amazing view",
+                Country = faker.Address.Country(),
+                State = faker.Address.State(),
+                ZipCode = faker.Address.ZipCode(),
+                City = faker.Address.City(),
+                Street = faker.Address.StreetAddress(),
+                PriceAmount = faker.Random.Decimal(50, 1000),
+                PriceCurrency = "USD",
+                CleaningFeeAmount = faker.Random.Decimal(25, 200),
+                CleaningFeeCurrency = "USD",
+                Amenities = new List<int> { (int)Amenity.Parking, (int)Amenity.MountainView },
+                LastBookedOn = DateTime.MinValue
+            });
+        }
+
+        const string sql = """
+            INSERT INTO public.apartments
+            (id, "name", description, address_country, address_state, address_zip_code, address_city, address_street, price_amount, price_currency, cleaning_fee_amount, cleaning_fee_currency, amenities, last_booked_on_utc)
+            VALUES(@Id, @Name, @Description, @Country, @State, @ZipCode, @City, @Street, @PriceAmount, @PriceCurrency, @CleaningFeeAmount, @CleaningFeeCurrency, @Amenities, @LastBookedOn);
+            """;
+
+        connection.Execute(sql, apartments);
+    }
+}
+
+### END FILE ###
+
+
+### FILE: src/Kronxy.Api/Middleware/ExceptionHandlingMiddleware.cs ###
+
+using Kronxy.Application.Exceptions;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Kronxy.Api.Middleware;
+
+public class ExceptionHandlingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        try
+        {
+            await _next(context);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "Exception occurred: {Message}", exception.Message);
+
+            var exceptionDetails = GetExceptionDetails(exception);
+
+            var problemDetails = new ProblemDetails
+            {
+                Status = exceptionDetails.Status,
+                Type = exceptionDetails.Type,
+                Title = exceptionDetails.Title,
+                Detail = exceptionDetails.Detail,
+            };
+
+            if (exceptionDetails.Errors is not null)
+            {
+                problemDetails.Extensions["errors"] = exceptionDetails.Errors;
+            }
+
+            context.Response.StatusCode = exceptionDetails.Status;
+
+            await context.Response.WriteAsJsonAsync(problemDetails);
+        }
+    }
+
+    private static ExceptionDetails GetExceptionDetails(Exception exception)
+    {
+        return exception switch
+        {
+            ValidationException validationException => new ExceptionDetails(
+                StatusCodes.Status400BadRequest,
+                "ValidationFailure",
+                "Validation error",
+                "One or more validation errors has occurred",
+                validationException.Errors),
+            _ => new ExceptionDetails(
+                StatusCodes.Status500InternalServerError,
+                "ServerError",
+                "Server error",
+                "An unexpected error has occurred",
+                null)
+        };
+    }
+
+    internal record ExceptionDetails(
+        int Status,
+        string Type,
+        string Title,
+        string Detail,
+        IEnumerable<object>? Errors);
+}
+
+### END FILE ###
+

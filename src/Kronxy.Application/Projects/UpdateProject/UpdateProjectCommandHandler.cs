@@ -62,6 +62,16 @@ internal sealed class UpdateProjectCommandHandler
             return Result.Failure(ProjectErrors.InvalidProjectType);
         }
 
+        var isValidProjectStatus = await _catalogRepository.IsActiveItemInCatalogAsync(
+            request.ProjectStatusId,
+            "PROJECT_STATUS",
+            cancellationToken);
+
+        if (!isValidProjectStatus)
+        {
+            return Result.Failure(ProjectErrors.InvalidProjectStatus);
+        }
+
         var existingProject = await _projectRepository.GetByCodeAsync(
             request.Code,
             cancellationToken);
@@ -78,6 +88,7 @@ internal sealed class UpdateProjectCommandHandler
             request.Description,
             request.OwnerId,
             request.ProjectTypeId,
+            request.ProjectStatusId,
             _dateTimeProvider.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);

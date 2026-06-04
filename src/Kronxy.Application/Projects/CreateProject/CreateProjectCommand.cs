@@ -7,4 +7,5 @@ public sealed record CreateProjectCommand(
     string Name,
     string? Description,
     Guid OwnerId,
-    Guid ProjectTypeId) : ICommand<Guid>;
+    Guid ProjectTypeId,
+    Guid ProjectStatusId) : ICommand<Guid>;

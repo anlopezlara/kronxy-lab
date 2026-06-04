@@ -361,6 +361,10 @@ namespace Kronxy.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("priority");
 
+                    b.Property<Guid>("ProjectStatusId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_status_id");
+
                     b.Property<Guid>("ProjectTypeId")
                         .HasColumnType("uuid")
                         .HasColumnName("project_type_id");
@@ -368,10 +372,6 @@ namespace Kronxy.Infrastructure.Migrations
                     b.Property<DateOnly?>("StartDate")
                         .HasColumnType("date")
                         .HasColumnName("start_date");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("integer")
-                        .HasColumnName("status");
 
                     b.Property<DateTime?>("UpdatedOnUtc")
                         .HasColumnType("timestamp with time zone")
@@ -386,6 +386,9 @@ namespace Kronxy.Infrastructure.Migrations
 
                     b.HasIndex("OwnerId")
                         .HasDatabaseName("ix_projects_owner_id");
+
+                    b.HasIndex("ProjectStatusId")
+                        .HasDatabaseName("ix_projects_project_status_id");
 
                     b.HasIndex("ProjectTypeId")
                         .HasDatabaseName("ix_projects_project_type_id");
@@ -800,6 +803,13 @@ namespace Kronxy.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_projects_users_owner_id");
+
+                    b.HasOne("Kronxy.Domain.Catalogs.CatalogItem", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectStatusId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_projects_catalog_items_project_status_id");
 
                     b.HasOne("Kronxy.Domain.Catalogs.CatalogItem", null)
                         .WithMany()

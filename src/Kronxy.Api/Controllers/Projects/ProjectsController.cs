@@ -25,7 +25,8 @@ public class ProjectsController : ControllerBase
             request.Name,
             request.Description,
             request.OwnerId,
-            request.ProjectTypeId);
+            request.ProjectTypeId,
+            request.ProjectStatusId);
         var result = await _sender.Send(command, cancellationToken);
         if (result.IsFailure)
         {
@@ -62,7 +63,8 @@ public class ProjectsController : ControllerBase
             request.Name,
             request.Description,
             request.OwnerId,
-            request.ProjectTypeId);
+            request.ProjectTypeId,
+            request.ProjectStatusId);
         var result = await _sender.Send(command, cancellationToken);
         if (result.IsFailure)
         {

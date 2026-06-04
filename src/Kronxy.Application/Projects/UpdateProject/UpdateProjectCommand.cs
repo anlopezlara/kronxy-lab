@@ -8,4 +8,5 @@ public sealed record UpdateProjectCommand(
     string Name,
     string? Description,
     Guid OwnerId,
-    Guid ProjectTypeId) : ICommand;
+    Guid ProjectTypeId,
+    Guid ProjectStatusId) : ICommand;

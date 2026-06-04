@@ -18,7 +18,7 @@ public sealed class Project : Entity
 
     public Guid OwnerId { get; private set; }
 
-    public ProjectStatus Status { get; private set; }
+    public Guid ProjectStatusId { get; private set; }
 
     public ProjectPriority Priority { get; private set; }
 
@@ -42,6 +42,7 @@ public sealed class Project : Entity
         string? description,
         Guid ownerId,
         Guid projectTypeId,
+        Guid projectStatusId,
         DateTime utcNow)
     {
         var project = new Project
@@ -52,7 +53,7 @@ public sealed class Project : Entity
             Description = description,
             OwnerId = ownerId,
             ProjectTypeId = projectTypeId,
-            Status = ProjectStatus.Draft,
+            ProjectStatusId = projectStatusId,
             Priority = ProjectPriority.Medium,
             IsActive = true,
             CreatedOnUtc = utcNow
@@ -67,6 +68,7 @@ public sealed class Project : Entity
         string? description,
         Guid ownerId,
         Guid projectTypeId,
+        Guid projectStatusId,
         DateTime utcNow)
     {
         Code = code;
@@ -74,6 +76,7 @@ public sealed class Project : Entity
         Description = description;
         OwnerId = ownerId;
         ProjectTypeId = projectTypeId;
+        ProjectStatusId = projectStatusId;
         UpdatedOnUtc = utcNow;
     }
 
@@ -92,10 +95,10 @@ public sealed class Project : Entity
     }
 
     public void ChangeStatus(
-        ProjectStatus status,
+        Guid projectStatusId,
         DateTime utcNow)
     {
-        Status = status;
+        ProjectStatusId = projectStatusId;
         UpdatedOnUtc = utcNow;
     }
 
