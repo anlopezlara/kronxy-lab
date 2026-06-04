@@ -8,3 +8,6 @@ git status
 .vs/
 bin/
 obj/
+.vs/
+bin/
+obj/
