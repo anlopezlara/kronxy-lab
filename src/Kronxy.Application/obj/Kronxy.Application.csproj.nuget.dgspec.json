@@ -1,20 +1,20 @@
 {
   "format": 1,
   "restore": {
-    "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj": {}
+    "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj": {}
   },
   "projects": {
-    "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj": {
+    "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj",
+        "projectUniqueName": "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj",
         "projectName": "Kronxy.Application",
-        "projectPath": "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj",
-        "packagesPath": "/home/andres/.nuget/packages/",
-        "outputPath": "/home/andres/dev/myapp/src/src/Kronxy.Application/obj/",
+        "projectPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj",
+        "packagesPath": "C:\\Users\\anlop\\.nuget\\packages\\",
+        "outputPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "/home/andres/.nuget/NuGet/NuGet.Config"
+          "C:\\Users\\anlop\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0"
@@ -26,8 +26,8 @@
           "net8.0": {
             "targetAlias": "net8.0",
             "projectReferences": {
-              "/home/andres/dev/myapp/src/src/Kronxy.Domain/Kronxy.Domain.csproj": {
-                "projectPath": "/home/andres/dev/myapp/src/src/Kronxy.Domain/Kronxy.Domain.csproj"
+              "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\Kronxy.Domain.csproj": {
+                "projectPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\Kronxy.Domain.csproj"
               }
             }
           }
@@ -36,6 +36,11 @@
           "warnAsError": [
             "NU1605"
           ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
         }
       },
       "frameworks": {
@@ -75,21 +80,21 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/8.0.123/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "D:\\Program Files\\dotnet\\sdk\\8.0.418/PortableRuntimeIdentifierGraph.json"
         }
       }
     },
-    "/home/andres/dev/myapp/src/src/Kronxy.Domain/Kronxy.Domain.csproj": {
+    "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\Kronxy.Domain.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/home/andres/dev/myapp/src/src/Kronxy.Domain/Kronxy.Domain.csproj",
+        "projectUniqueName": "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\Kronxy.Domain.csproj",
         "projectName": "Kronxy.Domain",
-        "projectPath": "/home/andres/dev/myapp/src/src/Kronxy.Domain/Kronxy.Domain.csproj",
-        "packagesPath": "/home/andres/.nuget/packages/",
-        "outputPath": "/home/andres/dev/myapp/src/src/Kronxy.Domain/obj/",
+        "projectPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\Kronxy.Domain.csproj",
+        "packagesPath": "C:\\Users\\anlop\\.nuget\\packages\\",
+        "outputPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "/home/andres/.nuget/NuGet/NuGet.Config"
+          "C:\\Users\\anlop\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0"
@@ -107,6 +112,11 @@
           "warnAsError": [
             "NU1605"
           ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
         }
       },
       "frameworks": {
@@ -134,7 +144,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/8.0.123/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "D:\\Program Files\\dotnet\\sdk\\8.0.418/PortableRuntimeIdentifierGraph.json"
         }
       }
     }

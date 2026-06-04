@@ -5,10 +5,13 @@ using Kronxy.Domain.Abstractions;
 using Kronxy.Domain.Apartments;
 using Kronxy.Domain.Bookings;
 using Kronxy.Domain.Users;
+using Kronxy.Domain.Catalogs;
 using Kronxy.Infrastructure.Clock;
 using Kronxy.Infrastructure.Data;
 using Kronxy.Infrastructure.Email;
 using Kronxy.Infrastructure.Repositories;
+using Kronxy.Domain.Projects;
+using Kronxy.Domain.ProjectTasks;
 using Dapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -35,11 +38,21 @@ public static class DependencyInjection
             options.UseNpgsql(connectionString).UseSnakeCaseNamingConvention();
         });
 
+        //------------ SERVICES------------------------------------------
+
         services.AddScoped<IUserRepository, UserRepository>();
 
         services.AddScoped<IApartmentRepository, ApartmentRepository>();
 
         services.AddScoped<IBookingRepository, BookingRepository>();
+
+        services.AddScoped<IProjectRepository, ProjectRepository>();
+
+        services.AddScoped<IProjectTaskRepository, ProjectTaskRepository>();
+
+        services.AddScoped<ICatalogRepository, CatalogRepository>();
+
+        //---------------------------------------------------------------
 
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<ApplicationDbContext>());
 

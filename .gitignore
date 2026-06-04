@@ -1,0 +1,10 @@
+git rm -r --cached .vs 2>$null
+git add .gitignore
+git add src
+git add *.sln
+git add *.props
+git add *.targets
+git status
+.vs/
+bin/
+obj/

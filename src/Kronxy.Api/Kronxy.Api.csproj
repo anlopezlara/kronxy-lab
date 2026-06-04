@@ -26,4 +26,8 @@
     <ProjectReference Include="..\Kronxy.Infrastructure\Kronxy.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Controllers\NewFolder\" />
+  </ItemGroup>
+
 </Project>

@@ -8,6 +8,6 @@ build_property.PlatformNeutralAssembly =
 build_property.EnforceExtendedAnalyzerRules = 
 build_property._SupportedPlatformList = Linux,macOS,Windows
 build_property.RootNamespace = Kronxy.Domain
-build_property.ProjectDir = /home/andres/dev/myapp/src/src/Kronxy.Domain/
+build_property.ProjectDir = E:\dev\kronxy-lab\src\Kronxy.Domain\
 build_property.EnableComHosting = 
 build_property.EnableGeneratedComInterfaceComImportInterop = 

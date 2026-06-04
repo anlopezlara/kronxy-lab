@@ -361,9 +361,9 @@
         "type": "project",
         "framework": ".NETCoreApp,Version=v8.0",
         "dependencies": {
-          "Kronxy.Domain": "1.0.0",
           "Dapper": "2.1.28",
           "FluentValidation.DependencyInjectionExtensions": "11.9.0",
+          "Kronxy.Domain": "1.0.0",
           "MediatR": "12.2.0",
           "Microsoft.Extensions.Logging.Abstractions": "8.0.0"
         },
@@ -939,26 +939,26 @@
   },
   "projectFileDependencyGroups": {
     "net8.0": [
-      "Kronxy.Application >= 1.0.0",
       "EFCore.NamingConventions >= 8.0.3",
+      "Kronxy.Application >= 1.0.0",
       "Microsoft.Extensions.Configuration.Abstractions >= 8.0.0",
       "Npgsql.EntityFrameworkCore.PostgreSQL >= 8.0.0"
     ]
   },
   "packageFolders": {
-    "/home/andres/.nuget/packages/": {}
+    "C:\\Users\\anlop\\.nuget\\packages\\": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/home/andres/dev/myapp/src/src/Kronxy.Infrastructure/Kronxy.Infrastructure.csproj",
+      "projectUniqueName": "E:\\dev\\kronxy-lab\\src\\Kronxy.Infrastructure\\Kronxy.Infrastructure.csproj",
       "projectName": "Kronxy.Infrastructure",
-      "projectPath": "/home/andres/dev/myapp/src/src/Kronxy.Infrastructure/Kronxy.Infrastructure.csproj",
-      "packagesPath": "/home/andres/.nuget/packages/",
-      "outputPath": "/home/andres/dev/myapp/src/src/Kronxy.Infrastructure/obj/",
+      "projectPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Infrastructure\\Kronxy.Infrastructure.csproj",
+      "packagesPath": "C:\\Users\\anlop\\.nuget\\packages\\",
+      "outputPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Infrastructure\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "/home/andres/.nuget/NuGet/NuGet.Config"
+        "C:\\Users\\anlop\\AppData\\Roaming\\NuGet\\NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net8.0"
@@ -970,8 +970,8 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "projectReferences": {
-            "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj": {
-              "projectPath": "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj"
+            "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj": {
+              "projectPath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj"
             }
           }
         }
@@ -980,6 +980,11 @@
         "warnAsError": [
           "NU1605"
         ]
+      },
+      "restoreAuditProperties": {
+        "enableAudit": "true",
+        "auditLevel": "low",
+        "auditMode": "direct"
       }
     },
     "frameworks": {
@@ -1015,7 +1020,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/8.0.123/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "D:\\Program Files\\dotnet\\sdk\\8.0.418/PortableRuntimeIdentifierGraph.json"
       }
     }
   }

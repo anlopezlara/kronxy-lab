@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "dgSpecHash": "LzxW/hsQhE7xV6Q/Ilj1PV8X07JcZ9N7a33ex+3L5yfGFVbUA9ePwdrFDfYHIe61R9RkgW9ZjBKt7RyPamzi/A==",
+  "dgSpecHash": "MWORGLYxNGk=",
   "success": true,
-  "projectFilePath": "/home/andres/dev/myapp/src/src/Kronxy.Domain/Kronxy.Domain.csproj",
+  "projectFilePath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Domain\\Kronxy.Domain.csproj",
   "expectedPackageFiles": [
-    "/home/andres/.nuget/packages/mediatr.contracts/2.0.1/mediatr.contracts.2.0.1.nupkg.sha512"
+    "C:\\Users\\anlop\\.nuget\\packages\\mediatr.contracts\\2.0.1\\mediatr.contracts.2.0.1.nupkg.sha512"
   ],
   "logs": []
 }

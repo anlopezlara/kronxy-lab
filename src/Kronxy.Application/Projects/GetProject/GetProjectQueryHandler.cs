@@ -1,0 +1,52 @@
+﻿using Dapper;
+using Kronxy.Application.Abstractions.Data;
+using Kronxy.Application.Abstractions.Messaging;
+using Kronxy.Domain.Abstractions;
+namespace Kronxy.Application.Projects.GetProject;
+internal sealed class GetProjectQueryHandler
+    : IQueryHandler<GetProjectQuery, ProjectResponse>
+{
+    private readonly ISqlConnectionFactory _sqlConnectionFactory;
+    public GetProjectQueryHandler(ISqlConnectionFactory sqlConnectionFactory)
+    {
+        _sqlConnectionFactory = sqlConnectionFactory;
+    }
+    public async Task<Result<ProjectResponse>> Handle(
+        GetProjectQuery request,
+        CancellationToken cancellationToken)
+    {
+        using var connection = _sqlConnectionFactory.CreateConnection();
+        const string sql = """
+            SELECT
+                p.id AS Id,
+                p.code AS Code,
+                p.name AS Name,
+                p.description AS Description,
+                p.owner_id AS OwnerId,
+                u.username AS OwnerUsername,
+                CONCAT(u.first_name, ' ', u.last_name) AS OwnerFullName,
+                p.project_type_id AS ProjectTypeId,
+                project_type.code AS ProjectTypeCode,
+                project_type.name AS ProjectTypeName,
+                p.status AS Status,
+                p.priority AS Priority,
+                p.start_date AS StartDate,
+                p.end_date AS EndDate,
+                p.is_active AS IsActive,
+                p.created_on_utc AS CreatedOnUtc,
+                p.updated_on_utc AS UpdatedOnUtc,
+                p.deleted_on_utc AS DeletedOnUtc
+            FROM projects p
+            INNER JOIN users u ON u.id = p.owner_id
+            LEFT JOIN catalog_items project_type ON project_type.id = p.project_type_id
+            WHERE p.id = @ProjectId
+            """;
+        var project = await connection.QueryFirstOrDefaultAsync<ProjectResponse>(
+            sql,
+            new
+            {
+                request.ProjectId
+            });
+        return project;
+    }
+}

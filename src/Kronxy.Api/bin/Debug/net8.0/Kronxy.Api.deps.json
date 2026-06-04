@@ -626,14 +626,17 @@
       "System.Threading.Channels/6.0.0": {},
       "Kronxy.Application/1.0.0": {
         "dependencies": {
-          "Kronxy.Domain": "1.0.0",
           "Dapper": "2.1.28",
           "FluentValidation.DependencyInjectionExtensions": "11.9.0",
+          "Kronxy.Domain": "1.0.0",
           "MediatR": "12.2.0",
           "Microsoft.Extensions.Logging.Abstractions": "8.0.0"
         },
         "runtime": {
-          "Kronxy.Application.dll": {}
+          "Kronxy.Application.dll": {
+            "assemblyVersion": "1.0.0",
+            "fileVersion": "1.0.0.0"
+          }
         }
       },
       "Kronxy.Domain/1.0.0": {
@@ -641,18 +644,24 @@
           "MediatR.Contracts": "2.0.1"
         },
         "runtime": {
-          "Kronxy.Domain.dll": {}
+          "Kronxy.Domain.dll": {
+            "assemblyVersion": "1.0.0",
+            "fileVersion": "1.0.0.0"
+          }
         }
       },
       "Kronxy.Infrastructure/1.0.0": {
         "dependencies": {
-          "Kronxy.Application": "1.0.0",
           "EFCore.NamingConventions": "8.0.3",
+          "Kronxy.Application": "1.0.0",
           "Microsoft.Extensions.Configuration.Abstractions": "8.0.0",
           "Npgsql.EntityFrameworkCore.PostgreSQL": "8.0.0"
         },
         "runtime": {
-          "Kronxy.Infrastructure.dll": {}
+          "Kronxy.Infrastructure.dll": {
+            "assemblyVersion": "1.0.0",
+            "fileVersion": "1.0.0.0"
+          }
         }
       }
     }

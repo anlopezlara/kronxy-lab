@@ -1,16 +1,16 @@
 {
   "version": 2,
-  "dgSpecHash": "QSlfAWqXOVG6lQmDNQs5V/i69fKn+tM9yV7EdwC5SDZxMx0QLz4mW6pS5d4sxAItNDkcey/2SaG+TJdMfWM5Bw==",
+  "dgSpecHash": "HN9uM3dTv3Y=",
   "success": true,
-  "projectFilePath": "/home/andres/dev/myapp/src/src/Kronxy.Application/Kronxy.Application.csproj",
+  "projectFilePath": "E:\\dev\\kronxy-lab\\src\\Kronxy.Application\\Kronxy.Application.csproj",
   "expectedPackageFiles": [
-    "/home/andres/.nuget/packages/dapper/2.1.28/dapper.2.1.28.nupkg.sha512",
-    "/home/andres/.nuget/packages/fluentvalidation/11.9.0/fluentvalidation.11.9.0.nupkg.sha512",
-    "/home/andres/.nuget/packages/fluentvalidation.dependencyinjectionextensions/11.9.0/fluentvalidation.dependencyinjectionextensions.11.9.0.nupkg.sha512",
-    "/home/andres/.nuget/packages/mediatr/12.2.0/mediatr.12.2.0.nupkg.sha512",
-    "/home/andres/.nuget/packages/mediatr.contracts/2.0.1/mediatr.contracts.2.0.1.nupkg.sha512",
-    "/home/andres/.nuget/packages/microsoft.extensions.dependencyinjection.abstractions/8.0.0/microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512",
-    "/home/andres/.nuget/packages/microsoft.extensions.logging.abstractions/8.0.0/microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512"
+    "C:\\Users\\anlop\\.nuget\\packages\\dapper\\2.1.28\\dapper.2.1.28.nupkg.sha512",
+    "C:\\Users\\anlop\\.nuget\\packages\\fluentvalidation\\11.9.0\\fluentvalidation.11.9.0.nupkg.sha512",
+    "C:\\Users\\anlop\\.nuget\\packages\\fluentvalidation.dependencyinjectionextensions\\11.9.0\\fluentvalidation.dependencyinjectionextensions.11.9.0.nupkg.sha512",
+    "C:\\Users\\anlop\\.nuget\\packages\\mediatr\\12.2.0\\mediatr.12.2.0.nupkg.sha512",
+    "C:\\Users\\anlop\\.nuget\\packages\\mediatr.contracts\\2.0.1\\mediatr.contracts.2.0.1.nupkg.sha512",
+    "C:\\Users\\anlop\\.nuget\\packages\\microsoft.extensions.dependencyinjection.abstractions\\8.0.0\\microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512",
+    "C:\\Users\\anlop\\.nuget\\packages\\microsoft.extensions.logging.abstractions\\8.0.0\\microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512"
   ],
   "logs": []
 }
