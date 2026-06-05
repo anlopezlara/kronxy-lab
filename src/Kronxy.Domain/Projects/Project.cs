@@ -20,7 +20,7 @@ public sealed class Project : Entity
 
     public Guid ProjectStatusId { get; private set; }
 
-    public ProjectPriority Priority { get; private set; }
+    public Guid ProjectPriorityId { get; private set; }
 
     public DateOnly? StartDate { get; private set; }
 
@@ -43,6 +43,7 @@ public sealed class Project : Entity
         Guid ownerId,
         Guid projectTypeId,
         Guid projectStatusId,
+        Guid projectPriorityId,
         DateTime utcNow)
     {
         var project = new Project
@@ -54,7 +55,7 @@ public sealed class Project : Entity
             OwnerId = ownerId,
             ProjectTypeId = projectTypeId,
             ProjectStatusId = projectStatusId,
-            Priority = ProjectPriority.Medium,
+            ProjectPriorityId = projectPriorityId,
             IsActive = true,
             CreatedOnUtc = utcNow
         };
@@ -69,6 +70,7 @@ public sealed class Project : Entity
         Guid ownerId,
         Guid projectTypeId,
         Guid projectStatusId,
+        Guid projectPriorityId,
         DateTime utcNow)
     {
         Code = code;
@@ -77,6 +79,7 @@ public sealed class Project : Entity
         OwnerId = ownerId;
         ProjectTypeId = projectTypeId;
         ProjectStatusId = projectStatusId;
+        ProjectPriorityId = projectPriorityId;
         UpdatedOnUtc = utcNow;
     }
 
@@ -103,10 +106,11 @@ public sealed class Project : Entity
     }
 
     public void ChangePriority(
-        ProjectPriority priority,
+        Guid projectPriorityId,
         DateTime utcNow)
     {
-        Priority = priority;
+        ProjectPriorityId = projectPriorityId;
         UpdatedOnUtc = utcNow;
     }
+
 }

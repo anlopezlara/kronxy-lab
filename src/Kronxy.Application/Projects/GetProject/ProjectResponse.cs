@@ -28,7 +28,9 @@ public sealed class ProjectResponse
 
     public string ProjectStatusName { get; init; } = string.Empty;
 
-    public int Priority { get; init; }
+    public Guid ProjectPriorityId { get; init; }
+    public string ProjectPriorityCode { get; init; } = string.Empty;
+    public string ProjectPriorityName { get; init; } = string.Empty;
 
     public DateOnly? StartDate { get; init; }
 

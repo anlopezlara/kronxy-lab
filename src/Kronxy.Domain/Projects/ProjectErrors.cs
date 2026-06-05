@@ -22,4 +22,8 @@ public static class ProjectErrors
             "Project.InvalidProjectStatus",
             "The selected project status is invalid.");
 
+    public static readonly Error InvalidProjectPriority = new(
+            "Project.InvalidProjectPriority",
+            "The selected project priority is invalid.");
+
 }

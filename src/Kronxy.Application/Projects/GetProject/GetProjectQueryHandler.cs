@@ -35,7 +35,9 @@ internal sealed class GetProjectQueryHandler
                 project_status.code AS ProjectStatusCode,
                 project_status.name AS ProjectStatusName,
 
-                p.priority AS Priority,
+                p.project_priority_id AS ProjectPriorityId,
+                project_priority.code AS ProjectPriorityCode,
+                project_priority.name AS ProjectPriorityName,
                 p.start_date AS StartDate,
                 p.end_date AS EndDate,
                 p.is_active AS IsActive,
@@ -53,6 +55,9 @@ internal sealed class GetProjectQueryHandler
 
             LEFT JOIN catalog_items project_status
                 ON project_status.id = p.project_status_id
+
+            LEFT JOIN catalog_items project_priority
+                ON project_priority.id = p.project_priority_id
 
             WHERE p.id = @ProjectId
             """;

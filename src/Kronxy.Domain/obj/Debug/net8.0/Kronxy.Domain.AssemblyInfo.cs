@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Kronxy.Domain")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+108ce843825c642ec36497a553c8683bf9fb6f0f")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c8965e4d1e362e132b2de78203ee6962bf28cdf")]
 [assembly: System.Reflection.AssemblyProductAttribute("Kronxy.Domain")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Kronxy.Domain")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

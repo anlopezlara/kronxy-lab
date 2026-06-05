@@ -27,9 +27,9 @@ internal sealed class ProjectConfiguration : IEntityTypeConfiguration<Project>
         builder.Property(project => project.ProjectStatusId)
             .IsRequired()
             .HasColumnName("project_status_id");
-        builder.Property(project => project.Priority)
-            .HasConversion<int>()
-            .HasColumnName("priority");
+        builder.Property(project => project.ProjectPriorityId)
+            .IsRequired()
+            .HasColumnName("project_priority_id");
         builder.Property(project => project.StartDate)
             .HasColumnName("start_date");
         builder.Property(project => project.EndDate)
@@ -47,6 +47,7 @@ internal sealed class ProjectConfiguration : IEntityTypeConfiguration<Project>
         builder.HasIndex(project => project.OwnerId);
         builder.HasIndex(project => project.ProjectTypeId);
         builder.HasIndex(project => project.ProjectStatusId);
+        builder.HasIndex(project => project.ProjectPriorityId);
         builder.HasOne<Kronxy.Domain.Users.User>()
             .WithMany()
             .HasForeignKey(project => project.OwnerId)
@@ -62,5 +63,10 @@ internal sealed class ProjectConfiguration : IEntityTypeConfiguration<Project>
             .HasForeignKey(project => project.ProjectStatusId)
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_projects_catalog_items_project_status_id");
+        builder.HasOne<Kronxy.Domain.Catalogs.CatalogItem>()
+            .WithMany()
+            .HasForeignKey(project => project.ProjectPriorityId)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_projects_catalog_items_project_priority_id");
     }
 }

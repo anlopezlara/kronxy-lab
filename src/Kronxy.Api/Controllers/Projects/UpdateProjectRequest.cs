@@ -6,4 +6,5 @@ public sealed record UpdateProjectRequest(
     string? Description,
     Guid OwnerId,
     Guid ProjectTypeId,
-    Guid ProjectStatusId);
+    Guid ProjectStatusId,
+    Guid ProjectPriorityId);

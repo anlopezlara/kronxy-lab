@@ -72,6 +72,16 @@ internal sealed class UpdateProjectCommandHandler
             return Result.Failure(ProjectErrors.InvalidProjectStatus);
         }
 
+        var isValidProjectPriority = await _catalogRepository.IsActiveItemInCatalogAsync(
+            request.ProjectPriorityId,
+            "PROJECT_PRIORITY",
+            cancellationToken);
+
+        if (!isValidProjectPriority)
+        {
+            return Result.Failure(ProjectErrors.InvalidProjectPriority);
+        }
+
         var existingProject = await _projectRepository.GetByCodeAsync(
             request.Code,
             cancellationToken);
@@ -89,6 +99,7 @@ internal sealed class UpdateProjectCommandHandler
             request.OwnerId,
             request.ProjectTypeId,
             request.ProjectStatusId,
+            request.ProjectPriorityId,
             _dateTimeProvider.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
