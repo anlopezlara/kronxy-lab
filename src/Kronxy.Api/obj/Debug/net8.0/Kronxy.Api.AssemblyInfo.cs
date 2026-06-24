@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Kronxy.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6c8965e4d1e362e132b2de78203ee6962bf28cdf")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a8b9fdc53891f7482b00837266266f0ac5a54a65")]
 [assembly: System.Reflection.AssemblyProductAttribute("Kronxy.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Kronxy.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

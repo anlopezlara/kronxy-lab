@@ -1,4 +1,4 @@
-﻿using Kronxy.Application.Abstractions.Clock;
+using Kronxy.Application.Abstractions.Clock;
 using Kronxy.Application.Abstractions.Data;
 using Kronxy.Application.Abstractions.Email;
 using Kronxy.Domain.Abstractions;
@@ -47,6 +47,9 @@ public static class DependencyInjection
         services.AddScoped<IBookingRepository, BookingRepository>();
 
         services.AddScoped<IProjectRepository, ProjectRepository>();
+        services.AddScoped<IProjectStatusRepository, ProjectStatusRepository>();
+        services.AddScoped<IProjectTypeRepository, ProjectTypeRepository>();
+        services.AddScoped<IProjectPriorityRepository, ProjectPriorityRepository>();
 
         services.AddScoped<IProjectTaskRepository, ProjectTaskRepository>();
 

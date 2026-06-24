@@ -1,4 +1,4 @@
-﻿using Dapper;
+using Dapper;
 using Kronxy.Application.Abstractions.Data;
 using Kronxy.Application.Abstractions.Messaging;
 using Kronxy.Domain.Abstractions;
@@ -22,19 +22,15 @@ internal sealed class GetProjectQueryHandler
                 p.code AS Code,
                 p.name AS Name,
                 p.description AS Description,
-
                 p.owner_id AS OwnerId,
                 u.username AS OwnerUsername,
                 CONCAT(u.first_name, ' ', u.last_name) AS OwnerFullName,
-
                 p.project_type_id AS ProjectTypeId,
                 project_type.code AS ProjectTypeCode,
                 project_type.name AS ProjectTypeName,
-
                 p.project_status_id AS ProjectStatusId,
                 project_status.code AS ProjectStatusCode,
                 project_status.name AS ProjectStatusName,
-
                 p.project_priority_id AS ProjectPriorityId,
                 project_priority.code AS ProjectPriorityCode,
                 project_priority.name AS ProjectPriorityName,
@@ -44,21 +40,15 @@ internal sealed class GetProjectQueryHandler
                 p.created_on_utc AS CreatedOnUtc,
                 p.updated_on_utc AS UpdatedOnUtc,
                 p.deleted_on_utc AS DeletedOnUtc
-
             FROM projects p
-
             INNER JOIN users u
                 ON u.id = p.owner_id
-
-            LEFT JOIN catalog_items project_type
+            LEFT JOIN project_types project_type
                 ON project_type.id = p.project_type_id
-
-            LEFT JOIN catalog_items project_status
+            LEFT JOIN project_statuses project_status
                 ON project_status.id = p.project_status_id
-
-            LEFT JOIN catalog_items project_priority
+            LEFT JOIN project_priorities project_priority
                 ON project_priority.id = p.project_priority_id
-
             WHERE p.id = @ProjectId
             """;
         var project = await connection.QueryFirstOrDefaultAsync<ProjectResponse>(

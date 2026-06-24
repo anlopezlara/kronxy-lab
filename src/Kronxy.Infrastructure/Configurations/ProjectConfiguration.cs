@@ -1,4 +1,4 @@
-﻿using Kronxy.Domain.Projects;
+using Kronxy.Domain.Projects;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace Kronxy.Infrastructure.Configurations;
@@ -53,20 +53,20 @@ internal sealed class ProjectConfiguration : IEntityTypeConfiguration<Project>
             .HasForeignKey(project => project.OwnerId)
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_projects_users_owner_id");
-        builder.HasOne<Kronxy.Domain.Catalogs.CatalogItem>()
+        builder.HasOne<ProjectType>()
             .WithMany()
             .HasForeignKey(project => project.ProjectTypeId)
             .OnDelete(DeleteBehavior.Restrict)
-            .HasConstraintName("fk_projects_catalog_items_project_type_id");
-        builder.HasOne<Kronxy.Domain.Catalogs.CatalogItem>()
+            .HasConstraintName("fk_projects_project_types_project_type_id");
+        builder.HasOne<ProjectStatus>()
             .WithMany()
             .HasForeignKey(project => project.ProjectStatusId)
             .OnDelete(DeleteBehavior.Restrict)
-            .HasConstraintName("fk_projects_catalog_items_project_status_id");
-        builder.HasOne<Kronxy.Domain.Catalogs.CatalogItem>()
+            .HasConstraintName("fk_projects_project_statuses_project_status_id");
+        builder.HasOne<ProjectPriority>()
             .WithMany()
             .HasForeignKey(project => project.ProjectPriorityId)
             .OnDelete(DeleteBehavior.Restrict)
-            .HasConstraintName("fk_projects_catalog_items_project_priority_id");
+            .HasConstraintName("fk_projects_project_priorities_project_priority_id");
     }
 }
