@@ -1,14 +1,9 @@
 using Kronxy.Domain.Abstractions;
-namespace Kronxy.Domain.Projects;
-public sealed class ProjectStatus : Entity
+namespace Kronxy.Domain.Users;
+public sealed class UserRole : Entity
 {
-    private ProjectStatus()
-    {
-    }
-    private ProjectStatus(Guid id)
-        : base(id)
-    {
-    }
+    private UserRole() { }
+    private UserRole(Guid id) : base(id) { }
     public string Code { get; private set; }
     public string Name { get; private set; }
     public string? Description { get; private set; }
@@ -17,14 +12,8 @@ public sealed class ProjectStatus : Entity
     public DateTime CreatedOnUtc { get; private set; }
     public DateTime? UpdatedOnUtc { get; private set; }
     public DateTime? DeletedOnUtc { get; private set; }
-    public static ProjectStatus Create(
-        string code,
-        string name,
-        string? description,
-        int displayOrder,
-        DateTime utcNow)
-    {
-        return new ProjectStatus(Guid.NewGuid())
+    public static UserRole Create(string code, string name, string? description, int displayOrder, DateTime utcNow)
+        => new(Guid.NewGuid())
         {
             Code = code.Trim().ToUpperInvariant(),
             Name = name.Trim(),
@@ -33,17 +22,11 @@ public sealed class ProjectStatus : Entity
             IsActive = true,
             CreatedOnUtc = utcNow
         };
-    }
-    public void Update(
-        string code,
-        string name,
-        string? description,
-        int displayOrder,
-        DateTime utcNow)
+    public void Update(string code, string name, string? description, int displayOrder, DateTime utcNow)
     {
         Code = code.Trim().ToUpperInvariant();
         Name = name.Trim();
-        Description = description;
+        Description = description?.Trim();
         DisplayOrder = displayOrder;
         UpdatedOnUtc = utcNow;
     }

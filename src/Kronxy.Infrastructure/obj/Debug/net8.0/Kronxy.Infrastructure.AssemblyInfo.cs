@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Kronxy.Infrastructure")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a8b9fdc53891f7482b00837266266f0ac5a54a65")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+571c991c752f9f92599b948454f27cd0797155b4")]
 [assembly: System.Reflection.AssemblyProductAttribute("Kronxy.Infrastructure")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Kronxy.Infrastructure")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
