@@ -37,7 +37,7 @@ internal sealed class GetUserQueryHandler : IQueryHandler<GetUserQuery, UserResp
                 u.updated_on_utc AS UpdatedOnUtc,
                 u.deleted_on_utc AS DeletedOnUtc
             FROM users u
-            LEFT JOIN catalog_items role
+            LEFT JOIN user_roles role
                 ON role.id = u.role_id
             WHERE u.id = @UserId
             """;
