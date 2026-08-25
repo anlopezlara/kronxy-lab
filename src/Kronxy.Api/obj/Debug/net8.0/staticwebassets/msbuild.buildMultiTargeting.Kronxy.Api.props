@@ -1,3 +1,0 @@
-﻿<Project>
-  <Import Project="..\build\Kronxy.Api.props" />
-</Project>

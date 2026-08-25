@@ -1,13 +1,55 @@
-git rm -r --cached .vs 2>$null
-git add .gitignore
-git add src
-git add *.sln
-git add *.props
-git add *.targets
-git status
+# Build
+**/bin/
+**/obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+# Visual Studio and IDEs
 .vs/
-bin/
-obj/
-.vs/
-bin/
-obj/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet
+packages/
+.nuget/
+*.nupkg
+*.snupkg
+
+# Test and coverage
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# Logs and temporary files
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+
+# Operating systems
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+
+# KRONXY context packages
+.kronxy-context/
+artifacts/context/
+PROJECT_CONTEXT*
+KRONXY-CONTEXT-*
