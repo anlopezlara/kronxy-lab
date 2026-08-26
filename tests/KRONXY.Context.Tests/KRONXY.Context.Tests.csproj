@@ -20,6 +20,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\tools\KRONXY.Context\KRONXY.Context.csproj" />
+    <ProjectReference Include="Processes\ProcessTestHost\ProcessTestHost.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Processes\ProcessTestHost\**\*.cs" />
   </ItemGroup>
 
 </Project>
