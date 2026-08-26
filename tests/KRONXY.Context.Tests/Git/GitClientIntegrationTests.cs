@@ -133,6 +133,23 @@ public sealed class GitClientIntegrationTests
         Assert.Equal(GitErrorKind.NoInitialCommit, exception.Kind);
     }
 
+    [Fact]
+    public async Task IndexAndUntrackedQueriesExcludeIgnoredFiles()
+    {
+        using var repository = InitializedRepository();
+        repository.Write(".gitignore", "ignored.txt\n");
+        repository.Write("ignored.txt", "ignored");
+        repository.Write("untracked with spaces.txt", "visible");
+        repository.Run("add", "--", ".gitignore");
+
+        var index = await client.GetIndexEntriesAsync(repository.RootPath);
+        var untracked = await client.GetUntrackedFilesAsync(repository.RootPath);
+
+        Assert.Contains(index, entry => entry.Path == ".gitignore" && entry.EntryType == GitIndexEntryType.RegularFile);
+        Assert.Contains("untracked with spaces.txt", untracked);
+        Assert.DoesNotContain("ignored.txt", untracked);
+    }
+
     private static TemporaryGitRepository InitializedRepository()
     {
         var repository = new TemporaryGitRepository();

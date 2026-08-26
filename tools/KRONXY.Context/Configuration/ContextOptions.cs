@@ -9,6 +9,8 @@ public sealed record ContextOptions
     public int MaxHandoffPackageBytes { get; init; } = 3_145_728;
     public int MaxBaselinePackageBytes { get; init; } = 5_242_880;
     public int MaxFilesPerPackage { get; init; } = 100;
+    public int MaxRepositoryCandidates { get; init; } = 10_000;
+    public int MaxLogicalPathLength { get; init; } = 1_024;
     public int RelationshipDepth { get; init; } = 1;
     public string DefaultOutputDirectory { get; init; } = ".kronxy-context/packages";
     public string RedactedValue { get; init; } = "***REDACTED***";
@@ -23,6 +25,8 @@ public sealed record ContextOptions
         AddPositiveError(errors, MaxHandoffPackageBytes, nameof(MaxHandoffPackageBytes));
         AddPositiveError(errors, MaxBaselinePackageBytes, nameof(MaxBaselinePackageBytes));
         AddPositiveError(errors, MaxFilesPerPackage, nameof(MaxFilesPerPackage));
+        AddPositiveError(errors, MaxRepositoryCandidates, nameof(MaxRepositoryCandidates));
+        AddPositiveError(errors, MaxLogicalPathLength, nameof(MaxLogicalPathLength));
 
         if (TargetHandoffPackageBytes > MaxHandoffPackageBytes)
         {

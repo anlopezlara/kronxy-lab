@@ -6,6 +6,12 @@ public interface IGitClient
     Task<RepositoryInfo> GetRepositoryInfoAsync(string path, CancellationToken cancellationToken = default);
     Task<string> ResolveCommitAsync(string path, string reference, CancellationToken cancellationToken = default);
     Task<WorkingTreeStatus> GetWorkingTreeStatusAsync(string path, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<GitIndexEntry>> GetIndexEntriesAsync(
+        string path,
+        CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<string>> GetUntrackedFilesAsync(
+        string path,
+        CancellationToken cancellationToken = default);
     Task<IReadOnlyList<GitChange>> GetChangesAsync(
         string path,
         string fromReference,

@@ -104,6 +104,30 @@ public sealed partial class GitClient : IGitClient
         return GitStatusParser.Parse(result.StandardOutput);
     }
 
+    public async Task<IReadOnlyList<GitIndexEntry>> GetIndexEntriesAsync(
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        var root = await DiscoverRootAsync(path, cancellationToken).ConfigureAwait(false);
+        var result = await RunGitAsync(root, ["ls-files", "--stage", "-z"], cancellationToken)
+            .ConfigureAwait(false);
+        EnsureSuccess(result, GitErrorKind.CommandFailed, "Git no pudo consultar el índice.");
+        return GitIndexParser.Parse(result.StandardOutput);
+    }
+
+    public async Task<IReadOnlyList<string>> GetUntrackedFilesAsync(
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        var root = await DiscoverRootAsync(path, cancellationToken).ConfigureAwait(false);
+        var result = await RunGitAsync(
+            root,
+            ["ls-files", "--others", "--exclude-standard", "-z"],
+            cancellationToken).ConfigureAwait(false);
+        EnsureSuccess(result, GitErrorKind.CommandFailed, "Git no pudo consultar archivos no rastreados.");
+        return GitPathListParser.Parse(result.StandardOutput);
+    }
+
     public async Task<IReadOnlyList<GitChange>> GetChangesAsync(
         string path,
         string fromReference,

@@ -76,6 +76,31 @@ public sealed class GitClientTests
     }
 
     [Fact]
+    public async Task GetIndexEntries_UsesReadOnlyStageNulCommand()
+    {
+        var fake = new FakeProcessRunner();
+        EnqueueRoot(fake);
+        fake.Enqueue(FakeProcessRunner.Success($"100644 {ObjectId} 0\tfile.txt\0"));
+
+        Assert.Single(await new GitClient(fake).GetIndexEntriesAsync(existingPath));
+        var request = fake.Requests[^1];
+        Assert.Equal(["ls-files", "--stage", "-z"], request.Arguments.TakeLast(3));
+        Assert.Equal("0", request.EnvironmentVariables["GIT_OPTIONAL_LOCKS"]);
+        Assert.DoesNotContain("--recurse-submodules", request.Arguments);
+    }
+
+    [Fact]
+    public async Task GetUntrackedFiles_UsesExcludeStandardAndNul()
+    {
+        var fake = new FakeProcessRunner();
+        EnqueueRoot(fake);
+        fake.Enqueue(FakeProcessRunner.Success("new file.txt\0"));
+
+        Assert.Equal(["new file.txt"], await new GitClient(fake).GetUntrackedFilesAsync(existingPath));
+        Assert.Equal(["ls-files", "--others", "--exclude-standard", "-z"], fake.Requests[^1].Arguments.TakeLast(4));
+    }
+
+    [Fact]
     public async Task GetRepositoryInfo_RepresentsDetachedHead()
     {
         var fake = new FakeProcessRunner();
