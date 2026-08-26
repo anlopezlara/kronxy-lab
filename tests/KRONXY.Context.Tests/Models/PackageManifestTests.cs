@@ -57,6 +57,7 @@ public sealed class PackageManifestTests
     public void RedactionRecord_CannotStoreSensitiveContent()
     {
         var names = typeof(RedactionRecord).GetProperties().Select(property => property.Name).ToArray();
-        Assert.Equal([nameof(RedactionRecord.RelativePath), nameof(RedactionRecord.RuleId), nameof(RedactionRecord.MatchCount)], names);
+        Assert.Equal([nameof(RedactionRecord.RelativePath), nameof(RedactionRecord.RuleId), nameof(RedactionRecord.Category),
+            nameof(RedactionRecord.LineNumber), nameof(RedactionRecord.MatchCount)], names);
     }
 }

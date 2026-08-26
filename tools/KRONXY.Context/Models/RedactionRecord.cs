@@ -8,6 +8,10 @@ public sealed record RedactionRecord
     public string RelativePath { get; init; } = string.Empty;
     [JsonPropertyName("ruleId")]
     public string RuleId { get; init; } = string.Empty;
+    [JsonPropertyName("category")]
+    public string Category { get; init; } = string.Empty;
+    [JsonPropertyName("lineNumber")]
+    public int LineNumber { get; init; }
     [JsonPropertyName("matchCount")]
     public int MatchCount { get; init; }
 }
