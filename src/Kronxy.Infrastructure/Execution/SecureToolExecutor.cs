@@ -12,6 +12,8 @@ public sealed record SecureToolExecutorOptions
 
     public required string GitExecutable { get; init; }
 
+    public string? TestDatabaseConnectionString { get; init; }
+
     public TimeSpan MaximumTimeout { get; init; } =
         TimeSpan.FromMinutes(30);
 
@@ -20,19 +22,19 @@ public sealed record SecureToolExecutorOptions
 
     public static SecureToolExecutorOptions Create(
         string dotnetExecutable,
-        string gitExecutable) =>
+        string gitExecutable,
+        string? testDatabaseConnectionString = null) =>
         new()
         {
             DotnetExecutable = dotnetExecutable,
-            GitExecutable = gitExecutable
+            GitExecutable = gitExecutable,
+            TestDatabaseConnectionString =
+                testDatabaseConnectionString
         };
 }
 
 public sealed class SecureToolExecutor : ISecureToolExecutor
 {
-    internal const string TestResultsFileName =
-        "kronxy-tests.trx";
-
     private readonly SecureToolExecutorOptions options;
 
     public SecureToolExecutor(
@@ -107,6 +109,29 @@ public sealed class SecureToolExecutor : ISecureToolExecutor
                 string.Empty,
                 string.Empty,
                 validation);
+        }
+
+        if (request.Operation ==
+                SecureToolOperation.DotnetTest)
+        {
+            string? preparationFailure =
+                PrepareTestResultsDirectory(
+                    request);
+
+            if (preparationFailure is not null)
+            {
+                stopwatch.Stop();
+
+                return CreateResult(
+                    request,
+                    started,
+                    stopwatch.Elapsed,
+                    ToolExecutionOutcome.Rejected,
+                    null,
+                    string.Empty,
+                    string.Empty,
+                    preparationFailure);
+            }
         }
 
         var invocation =
@@ -405,6 +430,16 @@ public sealed class SecureToolExecutor : ISecureToolExecutor
             "DOTNET_CLI_HOME"] =
             request.Repository.WorkspacePath;
 
+        if (request.Operation ==
+                SecureToolOperation.DotnetTest &&
+            !string.IsNullOrWhiteSpace(
+                options.TestDatabaseConnectionString))
+        {
+            startInfo.Environment[
+                "ConnectionStrings__Database"] =
+                options.TestDatabaseConnectionString;
+        }
+
         foreach (var argument
                  in invocation.Arguments)
         {
@@ -437,8 +472,7 @@ public sealed class SecureToolExecutor : ISecureToolExecutor
                     request.Target!,
                     "--no-build",
                     "--logger",
-                    "trx;LogFileName=" +
-                    TestResultsFileName,
+                    "trx",
                     "--results-directory",
                     GetTestResultsDirectory(
                         request)),
@@ -855,6 +889,121 @@ public sealed class SecureToolExecutor : ISecureToolExecutor
             return null;
         }
         catch
+        {
+            return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+        }
+    }
+
+    private static string? PrepareTestResultsDirectory(
+        SecureToolRequest request)
+    {
+        try
+        {
+            string workspace =
+                Path.TrimEndingDirectorySeparator(
+                    Path.GetFullPath(
+                        request.Repository.WorkspacePath));
+
+            string kronxyDirectory =
+                Path.GetFullPath(
+                    Path.Combine(
+                        workspace,
+                        ".kronxy"));
+
+            string resultsDirectory =
+                Path.GetFullPath(
+                    GetTestResultsDirectory(
+                        request));
+
+            if (!IsUnderRoot(
+                    workspace,
+                    kronxyDirectory) ||
+                !IsUnderRoot(
+                    workspace,
+                    resultsDirectory))
+            {
+                return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+            }
+
+            if (File.Exists(kronxyDirectory) ||
+                File.Exists(resultsDirectory))
+            {
+                return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+            }
+
+            if (Directory.Exists(kronxyDirectory) &&
+                IsLink(
+                    new DirectoryInfo(
+                        kronxyDirectory)))
+            {
+                return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+            }
+
+            if (Directory.Exists(resultsDirectory) &&
+                IsLink(
+                    new DirectoryInfo(
+                        resultsDirectory)))
+            {
+                return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+            }
+
+            Directory.CreateDirectory(
+                resultsDirectory);
+
+            DirectoryInfo resultsInfo =
+                new(resultsDirectory);
+
+            resultsInfo.Refresh();
+
+            if (!resultsInfo.Exists ||
+                IsLink(resultsInfo))
+            {
+                return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+            }
+
+            foreach (FileSystemInfo entry
+                     in resultsInfo
+                         .EnumerateFileSystemInfos())
+            {
+                entry.Refresh();
+
+                if (IsLink(entry) ||
+                    entry is DirectoryInfo)
+                {
+                    return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+                }
+
+                if (entry is not FileInfo file ||
+                    !file.Extension.Equals(
+                        ".trx",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+                }
+            }
+
+            foreach (FileInfo trx
+                     in resultsInfo
+                         .EnumerateFiles("*.trx"))
+            {
+                trx.Refresh();
+
+                if (IsLink(trx))
+                {
+                    return "TOOL_TEST_RESULTS_PATH_UNSAFE";
+                }
+
+                trx.Delete();
+            }
+
+            return null;
+        }
+        catch (Exception exception)
+            when (exception is
+                    IOException or
+                    UnauthorizedAccessException or
+                    ArgumentException or
+                    NotSupportedException)
         {
             return "TOOL_TEST_RESULTS_PATH_UNSAFE";
         }

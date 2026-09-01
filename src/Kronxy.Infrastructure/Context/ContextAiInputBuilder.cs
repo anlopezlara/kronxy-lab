@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Kronxy.Application.Context;
+using Kronxy.Context.Configuration;
 
 namespace Kronxy.Infrastructure.Context;
 
@@ -12,9 +13,6 @@ public sealed class ContextAiInputBuilder :
 {
     private const string ManifestName =
         "manifest.json";
-
-    private const int MaxEntries =
-        100;
 
     private const int MaxEntryBytes =
         1_048_576;
@@ -26,6 +24,26 @@ public sealed class ContextAiInputBuilder :
         new(
             encoderShouldEmitUTF8Identifier: false,
             throwOnInvalidBytes: true);
+
+    private readonly int maxEntries;
+
+    public ContextAiInputBuilder(
+        ContextOptions? contextOptions = null)
+    {
+        ContextOptions options =
+            contextOptions ??
+            new ContextOptions();
+
+        if (options.MaxFilesPerPackage <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(contextOptions),
+                "MaxFilesPerPackage must be positive.");
+        }
+
+        maxEntries =
+            options.MaxFilesPerPackage;
+    }
 
     public async Task<ContextAiInputResult> BuildAsync(
         ContextAiInputRequest request,
@@ -58,7 +76,7 @@ public sealed class ContextAiInputBuilder :
 
             if (archive.Entries.Count <= 1 ||
                 archive.Entries.Count >
-                    MaxEntries + 1)
+                    maxEntries + 1)
             {
                 return Failure(
                     ContextAiInputFailureKind.InvalidPackage,
@@ -113,7 +131,7 @@ public sealed class ContextAiInputBuilder :
             if (manifest is null ||
                 manifest.Entries is null ||
                 manifest.Entries.Count == 0 ||
-                manifest.Entries.Count > MaxEntries ||
+                manifest.Entries.Count > maxEntries ||
                 manifest.FileCount !=
                     manifest.Entries.Count)
             {
@@ -255,9 +273,7 @@ public sealed class ContextAiInputBuilder :
                 if (projected >
                     request.MaxCharacters)
                 {
-                    return Failure(
-                        ContextAiInputFailureKind.ContentTooLarge,
-                        "CONTEXT_AI_CONTENT_TOO_LARGE");
+                    continue;
                 }
 
                 builder.Append(header);
@@ -270,6 +286,13 @@ public sealed class ContextAiInputBuilder :
                 }
 
                 builder.Append('\n');
+            }
+
+            if (builder.Length == 0)
+            {
+                return Failure(
+                    ContextAiInputFailureKind.ContentTooLarge,
+                    "CONTEXT_AI_CONTENT_TOO_LARGE");
             }
 
             return ContextAiInputResult.Success(

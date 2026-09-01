@@ -1836,7 +1836,7 @@ public sealed class JobApplicationTests
                                    Artifact(
                                            request,
                                            ArtifactType.TestResults,
-                                           "tests/kronxy-tests.trx"),
+                                           "tests/results.zip"),
                                    Artifact(
                                            request,
                                            ArtifactType.TestStandardOutput,

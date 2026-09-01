@@ -648,7 +648,7 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                 new("tests", "report.json"),
 
             ArtifactType.TestResults =>
-                new("tests", "results.trx"),
+                new("tests", "results.zip"),
 
             ArtifactType.TestStandardOutput =>
                 new("tests", "stdout.txt"),

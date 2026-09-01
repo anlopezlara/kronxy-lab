@@ -324,8 +324,14 @@ public sealed class TestExecutionServiceTests
             File.WriteAllText(
                 Path.Combine(
                     resultsDirectory,
-                    "kronxy-tests.trx"),
-                "<TestRun id=\"KRONXY\" />");
+                    "a.trx"),
+                "<TestRun id=\"KRONXY-A\" />");
+
+            File.WriteAllText(
+                Path.Combine(
+                    resultsDirectory,
+                    "b.trx"),
+                "<TestRun id=\"KRONXY-B\" />");
         }
 
         DateTime started =

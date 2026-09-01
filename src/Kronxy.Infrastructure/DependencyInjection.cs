@@ -47,8 +47,14 @@ public static class DependencyInjection
         services.AddTransient<IEmailService, EmailService>();
 
         var connectionString =
-            configuration.GetConnectionString("Database") ??
-            throw new ArgumentNullException(nameof(configuration));
+            configuration.GetConnectionString("Database");
+
+        if (string.IsNullOrWhiteSpace(
+                connectionString))
+        {
+            throw new InvalidOperationException(
+                "ConnectionStrings:Database is required.");
+        }
 
         services.AddDbContext<ApplicationDbContext>(options =>
         {
@@ -421,7 +427,8 @@ public static class DependencyInjection
                 new SecureToolExecutor(
                     SecureToolExecutorOptions.Create(
                         executionOptions.DotnetExecutable,
-                        executionOptions.GitExecutable)));
+                        executionOptions.GitExecutable,
+                        connectionString)));
 
         SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
 

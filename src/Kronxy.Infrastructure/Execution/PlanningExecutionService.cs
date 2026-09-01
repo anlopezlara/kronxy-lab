@@ -6,6 +6,7 @@ using Kronxy.Application.Context;
 using Kronxy.Application.Execution;
 using Kronxy.Infrastructure.AI;
 using Kronxy.Infrastructure.Artifacts;
+using Microsoft.Extensions.Logging;
 
 namespace Kronxy.Infrastructure.Execution;
 
@@ -24,6 +25,7 @@ public sealed class PlanningExecutionService :
     private readonly IArtifactStore artifactStore;
     private readonly ArtifactStoreOptions artifactOptions;
     private readonly AiGatewayOptions aiOptions;
+    private readonly ILogger<PlanningExecutionService>? logger;
 
     public PlanningExecutionService(
         IArtifactReader artifactReader,
@@ -31,7 +33,8 @@ public sealed class PlanningExecutionService :
         IAiGateway aiGateway,
         IArtifactStore artifactStore,
         ArtifactStoreOptions artifactOptions,
-        AiGatewayOptions aiOptions)
+        AiGatewayOptions aiOptions,
+        ILogger<PlanningExecutionService>? logger = null)
     {
         this.artifactReader =
             artifactReader ??
@@ -62,6 +65,8 @@ public sealed class PlanningExecutionService :
             aiOptions ??
             throw new ArgumentNullException(
                 nameof(aiOptions));
+
+        this.logger = logger;
 
         this.artifactOptions.Validate();
         this.aiOptions.Validate();
@@ -113,6 +118,7 @@ public sealed class PlanningExecutionService :
 
             int remainingCharacters =
                 aiOptions.MaxInputCharacters -
+                SystemInstructions.Length -
                 prefix.Length;
 
             if (remainingCharacters <= 0)
@@ -146,7 +152,8 @@ public sealed class PlanningExecutionService :
                 prefix +
                 context.Content;
 
-            if (userContent.Length >
+            if ((long)SystemInstructions.Length +
+                    userContent.Length >
                 aiOptions.MaxInputCharacters)
             {
                 return Failure(
@@ -349,10 +356,17 @@ public sealed class PlanningExecutionService :
                 PlanningExecutionFailureKind.InternalFailure
         };
 
-    private static PlanningExecutionResult Failure(
+    private PlanningExecutionResult Failure(
         PlanningExecutionFailureKind kind,
-        string errorCode) =>
-        PlanningExecutionResult.Failure(
+        string errorCode)
+    {
+        logger?.LogWarning(
+            "Planning execution failed. FailureKind={FailureKind} ErrorCode={ErrorCode}",
             kind,
             errorCode);
+
+        return PlanningExecutionResult.Failure(
+            kind,
+            errorCode);
+    }
 }

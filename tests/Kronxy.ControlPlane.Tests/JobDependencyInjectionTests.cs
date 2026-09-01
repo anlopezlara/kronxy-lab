@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using Kronxy.Application;
 using Kronxy.Application.Jobs;
 using Kronxy.Domain.Jobs;
+using Kronxy.Infrastructure;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -10,6 +12,29 @@ namespace Kronxy.ControlPlane.Tests;
 
 public sealed class JobDependencyInjectionTests
 {
+    [Fact]
+    public void AddInfrastructure_requires_database_connection_string()
+    {
+        var configuration =
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?>())
+                .Build();
+
+        var services =
+            new ServiceCollection();
+
+        InvalidOperationException exception =
+            Assert.Throws<InvalidOperationException>(
+                () =>
+                    services.AddInfrastructure(
+                        configuration));
+
+        Assert.Equal(
+            "ConnectionStrings:Database is required.",
+            exception.Message);
+    }
+
 	[Fact]
 	public void AddApplication_RegistersControlPlaneServices()
 	{

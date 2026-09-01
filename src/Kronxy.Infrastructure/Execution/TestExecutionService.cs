@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using Kronxy.Application.Artifacts;
@@ -280,22 +281,12 @@ public sealed class TestExecutionService :
                         kronxyDirectory,
                         "test-results"));
 
-            string trxPath =
-                Path.GetFullPath(
-                    Path.Combine(
-                        resultsDirectory,
-                        SecureToolExecutor
-                            .TestResultsFileName));
-
             if (!IsUnderRoot(
                     workspace,
                     kronxyDirectory) ||
                 !IsUnderRoot(
                     workspace,
-                    resultsDirectory) ||
-                !IsUnderRoot(
-                    workspace,
-                    trxPath))
+                    resultsDirectory))
             {
                 return TestResultsReadResult.Failure(
                     TestExecutionFailureKind
@@ -311,13 +302,8 @@ public sealed class TestExecutionService :
                 new(
                     resultsDirectory);
 
-            FileInfo trxInfo =
-                new(
-                    trxPath);
-
             if (!kronxyInfo.Exists ||
-                !resultsInfo.Exists ||
-                !trxInfo.Exists)
+                !resultsInfo.Exists)
             {
                 return TestResultsReadResult.Failure(
                     TestExecutionFailureKind
@@ -326,8 +312,7 @@ public sealed class TestExecutionService :
             }
 
             if (IsLink(kronxyInfo) ||
-                IsLink(resultsInfo) ||
-                IsLink(trxInfo))
+                IsLink(resultsInfo))
             {
                 return TestResultsReadResult.Failure(
                     TestExecutionFailureKind
@@ -335,13 +320,205 @@ public sealed class TestExecutionService :
                     "TEST_RESULTS_PATH_UNSAFE");
             }
 
-            trxInfo.Refresh();
+            FileSystemInfo[] entries =
+                resultsInfo
+                    .EnumerateFileSystemInfos()
+                    .OrderBy(
+                        value => value.Name,
+                        StringComparer.Ordinal)
+                    .ToArray();
 
-            if (trxInfo.Length < 0 ||
-                trxInfo.Length >
+            if (entries.Length == 0)
+            {
+                return TestResultsReadResult.Failure(
+                    TestExecutionFailureKind
+                        .TestResultsMissing,
+                    "TEST_RESULTS_MISSING");
+            }
+
+            var trxFiles =
+                new List<FileInfo>();
+
+            long totalInputBytes = 0;
+
+            foreach (FileSystemInfo entry
+                     in entries)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
+                entry.Refresh();
+
+                if (IsLink(entry) ||
+                    entry is not FileInfo file ||
+                    !file.Extension.Equals(
+                        ".trx",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return TestResultsReadResult.Failure(
+                        TestExecutionFailureKind
+                            .TestResultsUnsafe,
+                        "TEST_RESULTS_PATH_UNSAFE");
+                }
+
+                file.Refresh();
+
+                if (!file.Exists ||
+                    file.Length < 0 ||
+                    file.Length >
+                        artifactStoreOptions
+                            .MaxArtifactBytes ||
+                    file.Length >
+                        int.MaxValue)
+                {
+                    return TestResultsReadResult.Failure(
+                        TestExecutionFailureKind
+                            .TestResultsUnsafe,
+                        "TEST_RESULTS_TOO_LARGE");
+                }
+
+                try
+                {
+                    totalInputBytes =
+                        checked(
+                            totalInputBytes +
+                            file.Length);
+                }
+                catch (OverflowException)
+                {
+                    return TestResultsReadResult.Failure(
+                        TestExecutionFailureKind
+                            .TestResultsUnsafe,
+                        "TEST_RESULTS_TOO_LARGE");
+                }
+
+                if (totalInputBytes >
+                    artifactStoreOptions
+                        .MaxArtifactBytes)
+                {
+                    return TestResultsReadResult.Failure(
+                        TestExecutionFailureKind
+                            .TestResultsUnsafe,
+                        "TEST_RESULTS_TOO_LARGE");
+                }
+
+                trxFiles.Add(file);
+            }
+
+            if (trxFiles.Count == 0)
+            {
+                return TestResultsReadResult.Failure(
+                    TestExecutionFailureKind
+                        .TestResultsMissing,
+                    "TEST_RESULTS_MISSING");
+            }
+
+            var trxContents =
+                new List<byte[]>(
+                    trxFiles.Count);
+
+            foreach (FileInfo trx
+                     in trxFiles)
+            {
+                cancellationToken
+                    .ThrowIfCancellationRequested();
+
+                trx.Refresh();
+
+                long beforeLength =
+                    trx.Length;
+
+                byte[] content =
+                    await File.ReadAllBytesAsync(
+                            trx.FullName,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                if (content.LongLength !=
+                    beforeLength)
+                {
+                    return TestResultsReadResult.Failure(
+                        TestExecutionFailureKind
+                            .TestResultsUnsafe,
+                        "TEST_RESULTS_CHANGED_DURING_READ");
+                }
+
+                FileInfo afterRead =
+                    new(
+                        trx.FullName);
+
+                afterRead.Refresh();
+
+                if (!afterRead.Exists ||
+                    IsLink(afterRead) ||
+                    afterRead.Length !=
+                        content.LongLength)
+                {
+                    return TestResultsReadResult.Failure(
+                        TestExecutionFailureKind
+                            .TestResultsUnsafe,
+                        "TEST_RESULTS_CHANGED_DURING_READ");
+                }
+
+                trxContents.Add(content);
+            }
+
+            using var output =
+                new MemoryStream();
+
+            using (
+                var archive =
+                    new ZipArchive(
+                        output,
+                        ZipArchiveMode.Create,
+                        leaveOpen: true))
+            {
+                DateTimeOffset fixedTimestamp =
+                    new(
+                        1980,
+                        1,
+                        1,
+                        0,
+                        0,
+                        0,
+                        TimeSpan.Zero);
+
+                for (int index = 0;
+                     index < trxContents.Count;
+                     index++)
+                {
+                    cancellationToken
+                        .ThrowIfCancellationRequested();
+
+                    ZipArchiveEntry zipEntry =
+                        archive.CreateEntry(
+                            $"{index + 1:D4}.trx",
+                            CompressionLevel.NoCompression);
+
+                    zipEntry.LastWriteTime =
+                        fixedTimestamp;
+
+                    await using Stream entryStream =
+                        zipEntry.Open();
+
+                    byte[] content =
+                        trxContents[index];
+
+                    await entryStream
+                        .WriteAsync(
+                            content,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            byte[] zipContent =
+                output.ToArray();
+
+            if (zipContent.LongLength >
                     artifactStoreOptions
                         .MaxArtifactBytes ||
-                trxInfo.Length >
+                zipContent.LongLength >
                     int.MaxValue)
             {
                 return TestResultsReadResult.Failure(
@@ -350,40 +527,8 @@ public sealed class TestExecutionService :
                     "TEST_RESULTS_TOO_LARGE");
             }
 
-            byte[] content =
-                await File.ReadAllBytesAsync(
-                        trxPath,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-            if (content.LongLength !=
-                trxInfo.Length)
-            {
-                return TestResultsReadResult.Failure(
-                    TestExecutionFailureKind
-                        .TestResultsUnsafe,
-                    "TEST_RESULTS_CHANGED_DURING_READ");
-            }
-
-            FileInfo afterRead =
-                new(
-                    trxPath);
-
-            afterRead.Refresh();
-
-            if (!afterRead.Exists ||
-                IsLink(afterRead) ||
-                afterRead.Length !=
-                    content.LongLength)
-            {
-                return TestResultsReadResult.Failure(
-                    TestExecutionFailureKind
-                        .TestResultsUnsafe,
-                    "TEST_RESULTS_CHANGED_DURING_READ");
-            }
-
             return TestResultsReadResult.Success(
-                content);
+                zipContent);
         }
         catch (OperationCanceledException)
             when (cancellationToken
@@ -391,14 +536,14 @@ public sealed class TestExecutionService :
         {
             throw;
         }
-        catch (
-            Exception exception)
+        catch (Exception exception)
             when (
                 exception is
                     IOException or
                     UnauthorizedAccessException or
                     ArgumentException or
-                    NotSupportedException)
+                    NotSupportedException or
+                    InvalidDataException)
         {
             return TestResultsReadResult.Failure(
                 TestExecutionFailureKind

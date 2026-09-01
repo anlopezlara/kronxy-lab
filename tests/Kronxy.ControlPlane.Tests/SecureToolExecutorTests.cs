@@ -456,6 +456,115 @@ public sealed class SecureToolExecutorTests
     }
 
     [Fact]
+    public async Task Dotnet_test_removes_only_stale_regular_trx_before_execution()
+    {
+        using var fixture = new Fixture();
+
+        string results =
+            Path.Combine(
+                fixture.Repository.WorkspacePath,
+                ".kronxy",
+                "test-results");
+
+        Directory.CreateDirectory(
+            results);
+
+        string stale =
+            Path.Combine(
+                results,
+                "stale.trx");
+
+        File.WriteAllText(
+            stale,
+            "<TestRun />");
+
+        SecureToolResult result =
+            await fixture.Executor.ExecuteAsync(
+                fixture.Request(
+                    SecureToolOperation.DotnetTest,
+                    "Sample.csproj"));
+
+        Assert.False(
+            File.Exists(stale));
+
+        Assert.NotEqual(
+            ToolExecutionOutcome.Rejected,
+            result.Outcome);
+    }
+
+    [Fact]
+    public async Task Dotnet_test_rejects_unexpected_file_in_results_directory()
+    {
+        using var fixture = new Fixture();
+
+        string results =
+            Path.Combine(
+                fixture.Repository.WorkspacePath,
+                ".kronxy",
+                "test-results");
+
+        Directory.CreateDirectory(
+            results);
+
+        File.WriteAllText(
+            Path.Combine(
+                results,
+                "unexpected.txt"),
+            "do-not-delete");
+
+        SecureToolResult result =
+            await fixture.Executor.ExecuteAsync(
+                fixture.Request(
+                    SecureToolOperation.DotnetTest,
+                    "Sample.csproj"));
+
+        Assert.Equal(
+            ToolExecutionOutcome.Rejected,
+            result.Outcome);
+
+        Assert.Equal(
+            "TOOL_TEST_RESULTS_PATH_UNSAFE",
+            result.ErrorCode);
+    }
+
+    [Fact]
+    public void Dotnet_test_uses_native_trx_naming()
+    {
+        using var fixture = new Fixture();
+
+        var request =
+            fixture.Request(
+                SecureToolOperation.DotnetTest,
+                "Sample.csproj");
+
+        var invocation =
+            fixture.Executor
+                .BuildInvocation(request)!;
+
+        string[] arguments =
+            invocation.Arguments.ToArray();
+
+        int loggerIndex =
+            Array.IndexOf(
+                arguments,
+                "--logger");
+
+        Assert.True(
+            loggerIndex >= 0);
+
+        Assert.Equal(
+            "trx",
+            arguments[loggerIndex + 1]);
+
+        Assert.DoesNotContain(
+            arguments,
+            argument =>
+                argument.Contains(
+                    "LogFileName=",
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Environment_is_rebuilt_from_controlled_allowlist()
     {
         using var fixture = new Fixture();
@@ -507,6 +616,71 @@ public sealed class SecureToolExecutorTests
         Assert.Equal(
             expected,
             keys);
+    }
+
+    [Fact]
+    public void Database_connection_is_exposed_only_to_dotnet_test()
+    {
+        using var fixture = new Fixture();
+
+        const string connectionString =
+            "Host=127.0.0.1;Database=kronxy_test;Username=test;Password=test-secret";
+
+        var executor =
+            new SecureToolExecutor(
+                SecureToolExecutorOptions.Create(
+                    TestToolResolver.Dotnet(),
+                    TestToolResolver.Git(),
+                    connectionString));
+
+        var testRequest =
+            fixture.Request(
+                SecureToolOperation.DotnetTest,
+                "Sample.csproj");
+
+        var testInvocation =
+            executor.BuildInvocation(
+                testRequest)!;
+
+        ProcessStartInfo testStartInfo =
+            executor.CreateStartInfo(
+                testRequest,
+                testInvocation);
+
+        Assert.Equal(
+            connectionString,
+            testStartInfo.Environment[
+                "ConnectionStrings__Database"]);
+
+        foreach (SecureToolOperation operation in new[]
+                 {
+                     SecureToolOperation.DotnetRestore,
+                     SecureToolOperation.DotnetBuild,
+                     SecureToolOperation.GitStatus
+                 })
+        {
+            var request =
+                fixture.Request(
+                    operation,
+                    operation is
+                        SecureToolOperation.DotnetRestore or
+                        SecureToolOperation.DotnetBuild
+                            ? "Sample.csproj"
+                            : null);
+
+            var invocation =
+                executor.BuildInvocation(
+                    request)!;
+
+            ProcessStartInfo startInfo =
+                executor.CreateStartInfo(
+                    request,
+                    invocation);
+
+            Assert.False(
+                startInfo.Environment.ContainsKey(
+                    "ConnectionStrings__Database"));
+        }
     }
 
     [Fact]
