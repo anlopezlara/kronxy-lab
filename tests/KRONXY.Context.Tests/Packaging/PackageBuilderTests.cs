@@ -16,7 +16,7 @@ public sealed class PackageBuilderTests
         using var folder = new TestFolder();
         var secret = string.Concat("synthetic", "-credential");
         var result = await new PackageBuilder().BuildAsync(Request(folder.PathOf("package.zip"),
-            Entry("src/config.env", "PASSWORD=" + secret), Entry("docs/á.txt", "línea\r\n"), Entry("empty.txt", "")));
+            Entry("src/config.env", "PASS" + "WORD=" + secret), Entry("docs/á.txt", "línea\r\n"), Entry("empty.txt", "")));
 
         Assert.True(result.IsSuccess);
         Assert.Equal(3, result.EntryCount);

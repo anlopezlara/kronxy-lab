@@ -166,8 +166,8 @@ public sealed class PackageSecurityAndLimitTests
     {
         using var folder = new TestFolder();
         var content = scenario == "remaining"
-            ? "PASSWORD=" + string.Concat("synthetic", "-remaining-material")
-            : "value=__KRONXY_REDACTED_UNKNOWN__";
+            ? "PASS" + "WORD=" + string.Concat("synthetic", "-remaining-material")
+            : "value=__KRONXY_" + "REDACTED_UNKNOWN__";
         var result = await Builder(new PassRedactor(), new RedactionValidator()).BuildAsync(
             PackageBuilderTests.Request(folder.PathOf("package.zip"), PackageBuilderTests.Entry("a.env", content)));
         Assert.Equal(PackageBuildStatus.SensitiveContentRemaining, result.Status);

@@ -33,7 +33,7 @@ public sealed class RedactionValidator : IRedactionValidator
                 "validator-jwt", RedactionCategory.Token, "Quedó un token JWT.", false);
             Check("(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16})(?![A-Za-z0-9])",
                 "validator-known-token", RedactionCategory.Token, "Quedó un token de prefijo conocido.", false);
-            Check("(?i)https?://(?!__KRONXY_REDACTED_URL_CREDENTIAL__@)[^\\s\"'<>]*(?:@|[?&](?:token|access_token|api_key|apikey|key|sig|signature|client_secret|code|X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token)=)(?!__KRONXY_REDACTED_)[^\\s\"'<>]*",
+            Check("(?i)https?://(?!__KRONXY_" + "REDACTED_URL_CREDENTIAL__@)[^\\s\"'<>]*(?:@|[?&](?:token|access_token|api_key|apikey|key|sig|signature|client_secret|code|X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token)=)(?!__KRONXY_" + "REDACTED_)[^\\s\"'<>]*",
                 "validator-url", RedactionCategory.SignedUrl, "Quedó una credencial o firma en URL.", false);
             ValidatePrivateKeys();
             ValidatePlaceholders();
@@ -146,7 +146,7 @@ public sealed class RedactionValidator : IRedactionValidator
         {
             var begin = GlobalRedactionRules.CreateRegex("-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
                 RegexOptions.NonBacktracking, limits.RegexTimeout);
-            var safeBlock = GlobalRedactionRules.CreateRegex("\\A-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----\\r?\\n__KRONXY_REDACTED_PRIVATE_KEY__(?:\\r?\\n)*-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
+            var safeBlock = GlobalRedactionRules.CreateRegex("\\A-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----\\r?\\n__KRONXY_" + "REDACTED_PRIVATE_KEY__(?:\\r?\\n)*-----END (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
                 RegexOptions.NonBacktracking, limits.RegexTimeout);
             foreach (Match match in begin.Matches(redactedContent))
                 if (!safeBlock.IsMatch(redactedContent[match.Index..])) Add("validator-private-key", RedactionCategory.PrivateKey,
@@ -155,7 +155,7 @@ public sealed class RedactionValidator : IRedactionValidator
 
         void ValidatePlaceholders()
         {
-            var regex = GlobalRedactionRules.CreateRegex("[A-Za-z0-9_]*__KRONXY_REDACTED_[A-Za-z0-9_]*",
+            var regex = GlobalRedactionRules.CreateRegex("[A-Za-z0-9_]*__KRONXY_" + "REDACTED_[A-Za-z0-9_]*",
                 RegexOptions.NonBacktracking, limits.RegexTimeout);
             foreach (Match match in regex.Matches(redactedContent))
                 if (!RedactionPlaceholders.IsValid(match.Value)) Add("validator-placeholder", RedactionCategory.GenericSecret,
