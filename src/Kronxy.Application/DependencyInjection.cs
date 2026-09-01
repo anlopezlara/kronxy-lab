@@ -1,3 +1,4 @@
+using Kronxy.Application.Jobs;
 ﻿using Kronxy.Application.Abstractions.Behaviors;
 using Kronxy.Domain.Bookings;
 using FluentValidation;
@@ -21,6 +22,14 @@ public static class DependencyInjection
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
 
         services.AddTransient<PricingService>();
+
+        services.AddSingleton<IJobStateMachine, JobStateMachine>();
+        services.AddSingleton<IJobIdGenerator, DefaultJobIdGenerator>();
+        services.AddSingleton<IJobRunIdProvider, DeterministicJobRunIdProvider>();
+        services.AddSingleton(JobControlOptions.SafeDefaults);
+
+        services.AddScoped<IJobService, JobService>();
+        services.AddScoped<IJobOrchestrator, JobOrchestrator>();
 
         return services;
     }

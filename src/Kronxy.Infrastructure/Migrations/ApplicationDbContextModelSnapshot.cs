@@ -22,6 +22,8 @@ namespace Kronxy.Infrastructure.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.HasSequence("job_external_id_seq");
+
             modelBuilder.Entity("Kronxy.Domain.Apartments.Apartment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -235,6 +237,77 @@ namespace Kronxy.Infrastructure.Migrations
                         .HasDatabaseName("ix_catalog_items_catalog_id_code");
 
                     b.ToTable("catalog_items", (string)null);
+                });
+
+            modelBuilder.Entity("Kronxy.Domain.Jobs.Job", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<string>("BaseRepositoryHead")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("base_repository_head");
+
+                    b.Property<DateTime?>("CompletedOnUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_on_utc");
+
+                    b.Property<DateTime>("CreatedOnUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_on_utc");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("external_id");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("last_error_code");
+
+                    b.Property<string>("LastErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("last_error_message");
+
+                    b.Property<string>("Request")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("request");
+
+                    b.Property<int?>("ResumeState")
+                        .HasColumnType("integer")
+                        .HasColumnName("resume_state");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer")
+                        .HasColumnName("state");
+
+                    b.Property<DateTime>("UpdatedOnUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_on_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_jobs");
+
+                    b.HasIndex("ExternalId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_jobs_external_id");
+
+                    b.ToTable("jobs", (string)null);
                 });
 
             modelBuilder.Entity("Kronxy.Domain.ProjectTasks.ProjectTask", b =>
@@ -748,6 +821,70 @@ namespace Kronxy.Infrastructure.Migrations
                     b.ToTable("user_roles", (string)null);
                 });
 
+            modelBuilder.Entity("Kronxy.Infrastructure.Artifacts.Persistence.ArtifactMetadataEntity", b =>
+                {
+                    b.Property<Guid>("ArtifactId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("artifact_id");
+
+                    b.Property<int>("ArtifactType")
+                        .HasColumnType("integer")
+                        .HasColumnName("artifact_type");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("job_id");
+
+                    b.Property<string>("RelativePath")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("relative_path");
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("sha256");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.HasKey("ArtifactId")
+                        .HasName("pk_job_artifacts");
+
+                    b.HasIndex("JobId")
+                        .HasDatabaseName("ix_job_artifacts_job_id");
+
+                    b.HasIndex("RelativePath")
+                        .IsUnique()
+                        .HasDatabaseName("ux_job_artifacts_relative_path");
+
+                    b.HasIndex("JobId", "RunId")
+                        .HasDatabaseName("ix_job_artifacts_job_id_run_id");
+
+                    b.HasIndex("JobId", "RunId", "ArtifactType")
+                        .HasDatabaseName("ix_job_artifacts_job_run_type");
+
+                    b.ToTable("job_artifacts", (string)null);
+                });
+
             modelBuilder.Entity("Kronxy.Domain.Apartments.Apartment", b =>
                 {
                     b.OwnsOne("Kronxy.Domain.Apartments.Address", "Address", b1 =>
@@ -1007,6 +1144,100 @@ namespace Kronxy.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_catalog_items_catalogs_catalog_id");
+                });
+
+            modelBuilder.Entity("Kronxy.Domain.Jobs.Job", b =>
+                {
+                    b.OwnsOne("Kronxy.Domain.Jobs.JobLimits", "Limits", b1 =>
+                        {
+                            b1.Property<Guid>("JobId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("id");
+
+                            b1.Property<int>("MaxAgentIterations")
+                                .HasColumnType("integer")
+                                .HasColumnName("max_agent_iterations");
+
+                            b1.Property<int>("MaxAiCalls")
+                                .HasColumnType("integer")
+                                .HasColumnName("max_ai_calls");
+
+                            b1.Property<int>("MaxAttempts")
+                                .HasColumnType("integer")
+                                .HasColumnName("max_attempts");
+
+                            b1.Property<TimeSpan>("MaxJobDuration")
+                                .HasColumnType("interval")
+                                .HasColumnName("max_job_duration");
+
+                            b1.HasKey("JobId");
+
+                            b1.ToTable("jobs");
+
+                            b1.WithOwner()
+                                .HasForeignKey("JobId")
+                                .HasConstraintName("fk_jobs_jobs_id");
+                        });
+
+                    b.OwnsMany("Kronxy.Domain.Jobs.JobTransition", "_transitions", b1 =>
+                        {
+                            b1.Property<long>("id")
+                                .ValueGeneratedOnAdd()
+                                .HasColumnType("bigint")
+                                .HasColumnName("id");
+
+                            NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b1.Property<long>("id"));
+
+                            b1.Property<string>("Actor")
+                                .IsRequired()
+                                .HasMaxLength(200)
+                                .HasColumnType("character varying(200)")
+                                .HasColumnName("actor");
+
+                            b1.Property<string>("CorrelationId")
+                                .IsRequired()
+                                .HasMaxLength(200)
+                                .HasColumnType("character varying(200)")
+                                .HasColumnName("correlation_id");
+
+                            b1.Property<int>("FromState")
+                                .HasColumnType("integer")
+                                .HasColumnName("from_state");
+
+                            b1.Property<DateTime>("OccurredOnUtc")
+                                .HasColumnType("timestamp with time zone")
+                                .HasColumnName("occurred_on_utc");
+
+                            b1.Property<string>("Reason")
+                                .IsRequired()
+                                .HasColumnType("text")
+                                .HasColumnName("reason");
+
+                            b1.Property<int>("ToState")
+                                .HasColumnType("integer")
+                                .HasColumnName("to_state");
+
+                            b1.Property<Guid>("job_id")
+                                .HasColumnType("uuid")
+                                .HasColumnName("job_id");
+
+                            b1.HasKey("id")
+                                .HasName("pk_job_transitions");
+
+                            b1.HasIndex("job_id")
+                                .HasDatabaseName("ix_job_transitions_job_id");
+
+                            b1.ToTable("job_transitions", (string)null);
+
+                            b1.WithOwner()
+                                .HasForeignKey("job_id")
+                                .HasConstraintName("fk_job_transitions_jobs_job_id");
+                        });
+
+                    b.Navigation("Limits")
+                        .IsRequired();
+
+                    b.Navigation("_transitions");
                 });
 
             modelBuilder.Entity("Kronxy.Domain.ProjectTasks.ProjectTask", b =>

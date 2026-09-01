@@ -1,14 +1,11 @@
-version: '3.4'
+version: '3.8'
 
 services:
-  bookify.api:
+
+  kronxy.api:
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ASPNETCORE_HTTP_PORTS=5000
-      - ASPNETCORE_HTTPS_PORTS=5001
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_HTTP_PORTS: 5000
+      ConnectionStrings__Database: Host=kronxy-db;Port=5432;Database=${KRONXY_DB_NAME:-kronxy};Username=${KRONXY_DB_USER:-kronxy_app};Password=${KRONXY_DB_PASSWORD}
     ports:
-      - 5000:5000
-      - 5001:5001
-    volumes:
-      - ${APPDATA}/Microsoft/UserSecrets:/root/.microsoft/usersecrets:ro
-      - ${APPDATA}/ASP.NET/Https:/root/.aspnet/https:ro
+      - "127.0.0.1:5000:5000"

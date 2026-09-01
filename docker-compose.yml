@@ -1,23 +1,27 @@
-version: '3.4'
+version: '3.8'
 
 services:
-  bookify.api:
-    image: ${DOCKER_REGISTRY-}bookifyapi
-    container_name: Bookify.Api
+
+  kronxy.api:
+    image: ${DOCKER_REGISTRY-}kronxyapi
+    container_name: Kronxy.Api
     build:
       context: .
-      dockerfile: src/Bookify.Api/Dockerfile
+      dockerfile: src/Kronxy.Api/Dockerfile
     depends_on:
-      - bookify-db
+      - kronxy-db
 
-  bookify-db:
-    image: postgres:latest
-    container_name: Bookify.Db
+  kronxy-db:
+    image: postgres:16
+    container_name: Kronxy.Db
     environment:
-      - POSTGRES_DB=bookify
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      POSTGRES_DB: ${KRONXY_DB_NAME:-kronxy}
+      POSTGRES_USER: ${KRONXY_DB_USER:-kronxy_app}
+      POSTGRES_PASSWORD: ${KRONXY_DB_PASSWORD:?KRONXY_DB_PASSWORD must be defined}
     volumes:
-      - ./.containers/database:/var/lib/postgresql/data
+      - kronxy-postgres-data:/var/lib/postgresql/data
     ports:
-      - 5432:5432
+      - "127.0.0.1:${KRONXY_DB_PORT:-5432}:5432"
+
+volumes:
+  kronxy-postgres-data:

@@ -1,5 +1,6 @@
 ﻿using Kronxy.Application.Exceptions;
 using Kronxy.Domain.Abstractions;
+using Kronxy.Domain.Jobs;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,6 +18,11 @@ public sealed class ApplicationDbContext : DbContext, IUnitOfWork
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder
+            .HasSequence<long>("job_external_id_seq")
+            .StartsAt(1)
+            .IncrementsBy(1);
+
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
 
         base.OnModelCreating(modelBuilder);
@@ -26,6 +32,8 @@ public sealed class ApplicationDbContext : DbContext, IUnitOfWork
     {
         try
         {
+            IncrementJobVersions();
+
             var result = await base.SaveChangesAsync(cancellationToken);
 
             await PublishDomainEventsAsync();
@@ -35,6 +43,22 @@ public sealed class ApplicationDbContext : DbContext, IUnitOfWork
         catch (DbUpdateConcurrencyException ex)
         {
             throw new ConcurrencyException("Concurrency exception occurred.", ex);
+        }
+    }
+
+    private void IncrementJobVersions()
+    {
+        foreach (var entry in ChangeTracker.Entries<Job>())
+        {
+            if (entry.State == EntityState.Added && entry.Entity.Version <= 0)
+            {
+                entry.Property(job => job.Version).CurrentValue = 1;
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property(job => job.Version).CurrentValue =
+                    entry.Property(job => job.Version).OriginalValue + 1;
+            }
         }
     }
 

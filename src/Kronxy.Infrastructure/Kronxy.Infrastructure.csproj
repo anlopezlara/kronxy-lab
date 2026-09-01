@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Kronxy.Application\Kronxy.Application.csproj" />
+    <ProjectReference Include="..\..\tools\KRONXY.Context\KRONXY.Context.csproj" />
   </ItemGroup>
 
 </Project>
