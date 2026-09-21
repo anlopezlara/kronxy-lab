@@ -176,17 +176,109 @@ public sealed class ContextAiInputBuilder :
                     "CONTEXT_AI_PACKAGE_DUPLICATE_ENTRY");
             }
 
+            if (request.PriorityPaths is null)
+            {
+                return Failure(
+                    ContextAiInputFailureKind.InvalidRequest,
+                    "CONTEXT_AI_PRIORITY_PATH_INVALID");
+            }
+
+            var manifestPaths =
+                manifest.Entries
+                    .Select(entry => entry.Path)
+                    .ToHashSet(StringComparer.Ordinal);
+
+            if (request.AllowedPathPrefixes is null)
+            {
+                return Failure(
+                    ContextAiInputFailureKind.InvalidRequest,
+                    "CONTEXT_AI_ALLOWED_PATH_PREFIX_INVALID");
+            }
+
+            string[] allowedPathPrefixes =
+                request.AllowedPathPrefixes
+                    .Distinct(
+                        StringComparer.Ordinal)
+                    .ToArray();
+
+            foreach (
+                string prefix
+                in allowedPathPrefixes)
+            {
+                if (!IsSafeLogicalPrefix(
+                        prefix))
+                {
+                    return Failure(
+                        ContextAiInputFailureKind.InvalidRequest,
+                        "CONTEXT_AI_ALLOWED_PATH_PREFIX_INVALID");
+                }
+            }
+
+            var priorityOrder =
+                new Dictionary<string, int>(
+                    StringComparer.Ordinal);
+
+            foreach (
+                string path
+                in request.PriorityPaths)
+            {
+                if (!IsSafeLogicalPath(path) ||
+                    !manifestPaths.Contains(path))
+                {
+                    return Failure(
+                        ContextAiInputFailureKind.InvalidPackage,
+                        "CONTEXT_AI_PRIORITY_PATH_INVALID");
+                }
+
+                if (!priorityOrder.ContainsKey(path))
+                {
+                    priorityOrder.Add(
+                        path,
+                        priorityOrder.Count);
+                }
+            }
+
             var builder =
                 new StringBuilder(
                     Math.Min(
                         request.MaxCharacters,
                         64_000));
 
+            IEnumerable<ManifestEntry> selectedEntries =
+                manifest.Entries;
+
+            if (allowedPathPrefixes.Length > 0)
+            {
+                selectedEntries =
+                    selectedEntries.Where(
+                        entry =>
+                            allowedPathPrefixes.Any(
+                                prefix =>
+                                    entry.Path.StartsWith(
+                                        prefix,
+                                        StringComparison.Ordinal)));
+            }
+
             foreach (
                 ManifestEntry item in
-                manifest.Entries.OrderBy(
-                    entry => entry.Path,
-                    StringComparer.Ordinal))
+                selectedEntries
+                    .OrderBy(
+                        entry =>
+                            priorityOrder.TryGetValue(
+                                entry.Path,
+                                out int index)
+                                ? index
+                                : int.MaxValue)
+                    .ThenBy(
+                        entry =>
+                            priorityOrder.ContainsKey(
+                                entry.Path)
+                                ? 0
+                                : SelectionPriority(
+                                    entry.Path))
+                    .ThenBy(
+                        entry => entry.Path,
+                        StringComparer.Ordinal))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -329,6 +421,30 @@ public sealed class ContextAiInputBuilder :
         }
     }
 
+    private static int SelectionPriority(string path)
+    {
+        string normalized = path.Replace((char)92, '/');
+        string name = Path.GetFileName(normalized);
+        string extension = Path.GetExtension(name);
+
+        if (name.Equals("AGENTS.md", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("README.md", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("global.json", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".sln", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".props", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".targets", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        string first = normalized.Split('/')[0];
+        if (first.Equals("src", StringComparison.OrdinalIgnoreCase)) return 1;
+        if (first.Equals("tests", StringComparison.OrdinalIgnoreCase)) return 2;
+        if (first.Equals("tools", StringComparison.OrdinalIgnoreCase)) return 3;
+        return 4;
+    }
+
     private static async Task<byte[]?> ReadExactlyAsync(
         ZipArchiveEntry entry,
         int maximumBytes,
@@ -379,6 +495,35 @@ public sealed class ContextAiInputBuilder :
         return extra == 0
             ? content
             : null;
+    }
+
+    private static bool IsSafeLogicalPrefix(
+        string prefix)
+    {
+        if (string.IsNullOrWhiteSpace(
+                prefix) ||
+            prefix.StartsWith(
+                "/",
+                StringComparison.Ordinal) ||
+            prefix.Contains('\\') ||
+            prefix.Contains(
+                '\0') ||
+            !prefix.EndsWith(
+                "/",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string withoutTrailingSlash =
+            prefix[..^1];
+
+        return withoutTrailingSlash
+            .Split('/')
+            .All(
+                segment =>
+                    segment.Length > 0 &&
+                    segment is not "." and not "..");
     }
 
     private static bool IsSafeLogicalPath(

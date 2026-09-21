@@ -795,6 +795,12 @@ public sealed class JobPostgresPersistenceTests
                         ["AI:InferenceTimeout"] =
                             "00:00:05",
 
+                        ["AI:PlanningInferenceTimeout"] =
+                            "00:00:05",
+
+                        ["AI:DeveloperInferenceTimeout"] =
+                            "00:00:05",
+
                         ["AI:QueueWaitTimeout"] =
                             "00:00:01",
 

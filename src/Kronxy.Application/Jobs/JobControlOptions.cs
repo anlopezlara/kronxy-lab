@@ -18,6 +18,8 @@ public sealed class JobControlOptions
 
 	public int MaxAttempts { get; init; }
 
+	public int MaxDevelopmentAttempts => MaxAttempts;
+
 	public int MaxAgentIterations { get; init; }
 
 	public int MaxAiCalls { get; init; }

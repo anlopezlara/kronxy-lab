@@ -33,6 +33,9 @@ public sealed record BuildExecutionRequest
 
     public string CorrelationId { get; init; } =
         string.Empty;
+
+    public bool IsBuildCorrection { get; init; }
+    public bool IsHumanReviewCorrection { get; init; }
 }
 
 public sealed record BuildExecutionReport(

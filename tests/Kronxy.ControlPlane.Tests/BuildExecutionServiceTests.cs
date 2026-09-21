@@ -180,6 +180,29 @@ public sealed class BuildExecutionServiceTests
             fixture.ArtifactStore.Writes);
     }
 
+    [Fact]
+    public async Task Correction_build_writes_only_separate_artifacts()
+    {
+        Fixture fixture = CreateFixture(
+            ToolExecutionOutcome.Completed,
+            0);
+
+        BuildExecutionResult result = await fixture.Service.ExecuteAsync(
+            fixture.Request() with { IsBuildCorrection = true });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            [
+                ArtifactType.BuildCorrectionStandardOutput,
+                ArtifactType.BuildCorrectionStandardError,
+                ArtifactType.BuildCorrectionReport
+            ],
+            fixture.ArtifactStore.Writes.Select(item => item.ArtifactType));
+        Assert.DoesNotContain(
+            fixture.ArtifactStore.Writes,
+            item => item.ArtifactType == ArtifactType.BuildReport);
+    }
+
     private static Fixture CreateFixture(
         ToolExecutionOutcome outcome,
         int? exitCode,

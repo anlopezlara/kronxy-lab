@@ -78,6 +78,9 @@ public sealed class OllamaProvider : IAiProvider
                 Options =
                     new OllamaRequestOptions
                     {
+                        NumContext =
+                            options.ContextWindowTokens,
+
                         NumPredict =
                             request.Generation
                                 .MaxOutputTokens,
@@ -216,11 +219,21 @@ public sealed class OllamaProvider : IAiProvider
 
             if (!body.Done)
             {
-                return Failure(
-                    AiOperationStatus.InvalidResponse,
-                    physicalModel,
-                    "OLLAMA_INCOMPLETE_RESPONSE",
-                    stopwatch.Elapsed);
+                return new AiResponse
+                {
+                    Status = AiOperationStatus.InvalidResponse,
+                    Content = body.Message.Content,
+                    Provider = ProviderName,
+                    PhysicalModel = body.Model ?? physicalModel,
+                    Duration = stopwatch.Elapsed,
+                    TerminationReason =
+                        MapTerminationReason(body.DoneReason),
+                    Usage = new AiUsage(
+                        body.PromptEvalCount,
+                        body.EvalCount),
+                    ProviderMetadata = Metadata(body),
+                    ErrorCode = "OLLAMA_INCOMPLETE_RESPONSE"
+                };
             }
 
             if (string.IsNullOrWhiteSpace(
@@ -258,7 +271,9 @@ public sealed class OllamaProvider : IAiProvider
                 Usage =
                     new AiUsage(
                         body.PromptEvalCount,
-                        body.EvalCount)
+                        body.EvalCount),
+
+                ProviderMetadata = Metadata(body)
             };
         }
     }
@@ -560,6 +575,19 @@ public sealed class OllamaProvider : IAiProvider
         };
     }
 
+    private static AiProviderResponseMetadata Metadata(
+        OllamaChatResponse body) =>
+        new()
+        {
+            Done = body.Done,
+            DoneReason = body.DoneReason,
+            PromptEvalCount = body.PromptEvalCount,
+            EvalCount = body.EvalCount,
+            TotalDurationNanoseconds = body.TotalDuration,
+            PromptEvalDurationNanoseconds = body.PromptEvalDuration,
+            EvalDurationNanoseconds = body.EvalDuration
+        };
+
     private sealed record OllamaChatRequest
     {
         public required string Model
@@ -603,6 +631,13 @@ public sealed class OllamaProvider : IAiProvider
 
     private sealed record OllamaRequestOptions
     {
+        [JsonPropertyName("num_ctx")]
+        public int NumContext
+        {
+            get;
+            init;
+        }
+
         [JsonPropertyName("num_predict")]
         public int? NumPredict
         {
@@ -672,6 +707,15 @@ public sealed class OllamaProvider : IAiProvider
             get;
             init;
         }
+
+        [JsonPropertyName("total_duration")]
+        public long? TotalDuration { get; init; }
+
+        [JsonPropertyName("prompt_eval_duration")]
+        public long? PromptEvalDuration { get; init; }
+
+        [JsonPropertyName("eval_duration")]
+        public long? EvalDuration { get; init; }
     }
 
     private sealed record OllamaTagsResponse

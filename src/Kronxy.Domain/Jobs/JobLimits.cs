@@ -9,6 +9,8 @@ public sealed record JobLimits
 
 	public int MaxAttempts { get; }
 
+	public int MaxDevelopmentAttempts => MaxAttempts;
+
 	public int MaxAgentIterations { get; }
 
 	public int MaxAiCalls { get; }

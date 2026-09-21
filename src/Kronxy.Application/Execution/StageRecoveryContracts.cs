@@ -4,15 +4,40 @@ public enum RecoveryStage
 {
     Context = 10,
     Planning = 20,
-    Restore = 30,
+    Developer = 25,
+    DeveloperOriginal = 26,
+    DeveloperBuildCorrection = 27,
+    HumanReviewCorrection = 28,
+    DeveloperHumanReviewCorrection = 29,
+    ObservedChanges = 30,
+    ObservedBuildCorrection = 31,
+    ObservedHumanReviewCorrection = 32,
+    EffectiveDeveloperProposal = 33,
+    Restore = 35,
     Build = 40,
-    Test = 50
+    BuildHumanReviewCorrection = 41,
+    Test = 50,
+    TestHumanReviewCorrection = 51,
+    ReviewerOriginal = 59,
+    Reviewer = 60,
+    ReviewerHumanReviewCorrection = 61,
+    ReviewerHumanReviewCorrectionSuperseding = 62,
+    ReviewerHumanReviewCorrectionSourceAwareSuperseding = 63,
+    HumanReviewApproval = 64
+}
+
+public enum DeveloperProposalLineage
+{
+    Original = 10,
+    BuildCorrection = 20,
+    HumanReviewCorrection = 30
 }
 
 public enum StageRecoveryStatus
 {
     NotCompleted = 0,
     Completed = 10,
+    FailedExecution = 15,
     InvalidEvidence = 20,
     Cancelled = 30,
     Failure = 40
@@ -26,21 +51,62 @@ public sealed record StageRecoveryRequest
 
     public required RecoveryStage Stage { get; init; }
 
+    public string JobRequest { get; init; } =
+        string.Empty;
+
     public string CorrelationId { get; init; } =
         string.Empty;
+
+    public int AttemptCount { get; init; }
 }
 
 public sealed record StageRecoveryResult(
     StageRecoveryStatus Status,
-    string ErrorCode)
+    string ErrorCode,
+    ValidatedDeveloperProposal? DeveloperProposal = null,
+    BuildExecutionReport? BuildReport = null,
+    TestExecutionReport? TestReport = null,
+    ObservedChangeManifest? ObservedChangeManifest = null,
+    PlannerPlan? PlannerPlan = null,
+    ReviewerReview? ReviewerReview = null,
+    string? BuildStandardOutput = null,
+    HumanReviewCorrectionEvidence? HumanReviewCorrection = null,
+    DeveloperProposalLineage? DeveloperProposalLineage = null)
 {
     public bool IsCompleted =>
         Status == StageRecoveryStatus.Completed;
 
-    public static StageRecoveryResult Completed() =>
+    public static StageRecoveryResult Completed(
+        ValidatedDeveloperProposal? developerProposal = null,
+        BuildExecutionReport? buildReport = null,
+        TestExecutionReport? testReport = null,
+        ObservedChangeManifest? observedChangeManifest = null,
+        PlannerPlan? plannerPlan = null,
+        ReviewerReview? reviewerReview = null,
+        string? buildStandardOutput = null,
+        HumanReviewCorrectionEvidence? humanReviewCorrection = null,
+        DeveloperProposalLineage? developerProposalLineage = null) =>
         new(
             StageRecoveryStatus.Completed,
-            string.Empty);
+            string.Empty,
+            developerProposal,
+            buildReport,
+            testReport,
+            observedChangeManifest,
+            plannerPlan,
+            reviewerReview,
+            buildStandardOutput,
+            humanReviewCorrection,
+            developerProposalLineage);
+
+    public static StageRecoveryResult FailedBuild(
+        BuildExecutionReport report,
+        string standardOutput) =>
+        new(
+            StageRecoveryStatus.FailedExecution,
+            string.Empty,
+            BuildReport: report,
+            BuildStandardOutput: standardOutput);
 
     public static StageRecoveryResult NotCompleted() =>
         new(

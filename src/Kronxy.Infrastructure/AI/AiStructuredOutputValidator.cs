@@ -10,10 +10,14 @@ public sealed class AiStructuredOutputValidator
             [
                 "type",
                 "properties",
+                "items",
                 "required",
                 "additionalProperties",
                 "const",
-                "enum"
+                "enum",
+                "maxLength",
+                "maxItems",
+                "minItems"
             ],
             StringComparer.Ordinal);
 
@@ -135,6 +139,15 @@ public sealed class AiStructuredOutputValidator
         }
 
         if (schema.TryGetProperty(
+                "items",
+                out JsonElement items) &&
+            !ValidateSchemaDefinition(
+                items))
+        {
+            return false;
+        }
+
+        if (schema.TryGetProperty(
                 "required",
                 out JsonElement required))
         {
@@ -173,6 +186,24 @@ public sealed class AiStructuredOutputValidator
                 out JsonElement enumElement) &&
             enumElement.ValueKind !=
                 JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (string keyword in new[] { "maxLength", "maxItems", "minItems" })
+        {
+            if (schema.TryGetProperty(keyword, out JsonElement limit) &&
+                (limit.ValueKind != JsonValueKind.Number ||
+                 !limit.TryGetInt32(out int value) ||
+                 value < 0))
+            {
+                return false;
+            }
+        }
+
+        if (schema.TryGetProperty("minItems", out JsonElement minimum) &&
+            schema.TryGetProperty("maxItems", out JsonElement maximum) &&
+            minimum.GetInt32() > maximum.GetInt32())
         {
             return false;
         }
@@ -227,12 +258,72 @@ public sealed class AiStructuredOutputValidator
             }
         }
 
+        if (value.ValueKind == JsonValueKind.String &&
+            schema.TryGetProperty("maxLength", out JsonElement maxLength) &&
+            (value.GetString()?.Length ?? 0) > maxLength.GetInt32())
+        {
+            return false;
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            int count = value.GetArrayLength();
+            if (schema.TryGetProperty("maxItems", out JsonElement maxItems) &&
+                count > maxItems.GetInt32())
+            {
+                return false;
+            }
+
+            if (schema.TryGetProperty("minItems", out JsonElement minItems) &&
+                count < minItems.GetInt32())
+            {
+                return false;
+            }
+        }
+
         if (value.ValueKind ==
             JsonValueKind.Object)
         {
             if (!ValidateObject(
                     schema,
                     value))
+            {
+                return false;
+            }
+        }
+
+        if (value.ValueKind ==
+            JsonValueKind.Array)
+        {
+            if (!ValidateArray(
+                    schema,
+                    value))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ValidateArray(
+        JsonElement schema,
+        JsonElement value)
+    {
+        if (!schema.TryGetProperty(
+                "items",
+                out JsonElement itemSchema))
+        {
+            return true;
+        }
+
+        foreach (
+            JsonElement item
+            in value.EnumerateArray())
+        {
+            if (!ValidateElement(
+                    itemSchema,
+                    item))
             {
                 return false;
             }

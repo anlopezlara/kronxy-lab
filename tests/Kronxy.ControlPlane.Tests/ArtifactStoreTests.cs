@@ -74,6 +74,75 @@ public sealed class ArtifactStoreTests
                 physical));
     }
 
+    [Theory]
+    [InlineData(ArtifactType.DeveloperProposal, "developer/proposal.json")]
+    [InlineData(ArtifactType.DeveloperResponse, "developer/response.json")]
+    [InlineData(ArtifactType.DeveloperRejectedResponse, "developer/rejected-response.json")]
+    [InlineData(ArtifactType.DeveloperRejectedStructuredResponse, "developer/rejected-structured-response.json")]
+    [InlineData(ArtifactType.ObservedChangeManifest, "changes/manifest.json")]
+    [InlineData(ArtifactType.ReviewerReview, "review/review.json")]
+    [InlineData(ArtifactType.ReviewerResponse, "review/response.json")]
+    [InlineData(ArtifactType.HumanReviewCorrectionEvidence, "human-review/changes-required.json")]
+    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionResponse, "developer/human-review-correction-response.json")]
+    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionProposal, "developer/human-review-correction-proposal.json")]
+    [InlineData(ArtifactType.ObservedHumanReviewCorrectionManifest, "changes/human-review-correction-manifest.json")]
+    [InlineData(ArtifactType.BuildHumanReviewCorrectionReport, "build/human-review-correction-report.json")]
+    [InlineData(ArtifactType.TestHumanReviewCorrectionReport, "tests/human-review-correction-report.json")]
+    [InlineData(ArtifactType.ReviewerHumanReviewCorrectionReview, "review/human-review-correction-review.json")]
+    [InlineData(ArtifactType.ReviewerHumanReviewCorrectionSupersedingResponse, "review/human-review-correction-superseding-response.json")]
+    [InlineData(ArtifactType.ReviewerHumanReviewCorrectionSupersedingReview, "review/human-review-correction-superseding-review.json")]
+    [InlineData(ArtifactType.ReviewerHumanReviewCorrectionSupersessionEvidence, "review/human-review-correction-supersession.json")]
+    public async Task Developer_artifacts_use_canonical_layout(ArtifactType artifactType, string relativeName)
+    {
+        using var fixture = new ArtifactStoreFixture();
+        var store = fixture.CreateStore();
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+
+        ArtifactWriteResult result = await store.WriteAsync(
+            Request(jobId, runId, artifactType, "developer"u8.ToArray()));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            string.Concat(jobId.ToString("N"), "/", runId.ToString("N"), "/", relativeName),
+            result.Artifact!.RelativePath);
+    }
+
+    [Fact]
+    public async Task Planning_rejected_response_uses_canonical_layout()
+    {
+        using var fixture =
+            new ArtifactStoreFixture();
+
+        var store =
+            fixture.CreateStore();
+
+        Guid jobId =
+            Guid.NewGuid();
+
+        Guid runId =
+            Guid.NewGuid();
+
+        ArtifactWriteResult result =
+            await store.WriteAsync(
+                Request(
+                    jobId,
+                    runId,
+                    ArtifactType.PlanningRejectedResponse,
+                    "rejected"u8.ToArray()));
+
+        Assert.True(
+            result.IsSuccess);
+
+        Assert.Equal(
+            string.Concat(
+                jobId.ToString("N"),
+                "/",
+                runId.ToString("N"),
+                "/planner/rejected-response.json"),
+            result.Artifact!.RelativePath);
+    }
+
     [Fact]
     public async Task Existing_destination_is_never_overwritten()
     {
@@ -120,6 +189,29 @@ public sealed class ArtifactStoreTests
             "first",
             await File.ReadAllTextAsync(
                 physical));
+    }
+
+    [Fact]
+    public async Task Human_review_correction_artifacts_preserve_original_artifacts()
+    {
+        using var fixture = new ArtifactStoreFixture();
+        var store = fixture.CreateStore();
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+
+        ArtifactWriteResult original = await store.WriteAsync(Request(
+            jobId, runId, ArtifactType.DeveloperProposal,
+            "original"u8.ToArray()));
+        ArtifactWriteResult correction = await store.WriteAsync(Request(
+            jobId, runId, ArtifactType.DeveloperHumanReviewCorrectionProposal,
+            "correction"u8.ToArray()));
+
+        Assert.True(original.IsSuccess);
+        Assert.True(correction.IsSuccess);
+        Assert.NotEqual(original.Artifact!.RelativePath, correction.Artifact!.RelativePath);
+        Assert.EndsWith("developer/proposal.json", original.Artifact.RelativePath);
+        Assert.EndsWith("developer/human-review-correction-proposal.json",
+            correction.Artifact.RelativePath);
     }
 
     [Theory]

@@ -18,6 +18,10 @@ public sealed record ContextAiInputRequest
     public required ReadOnlyMemory<byte> PackageContent { get; init; }
 
     public required int MaxCharacters { get; init; }
+
+    public IReadOnlyList<string> PriorityPaths { get; init; } = [];
+
+    public IReadOnlyList<string> AllowedPathPrefixes { get; init; } = [];
 }
 
 public sealed record ContextAiInputResult(

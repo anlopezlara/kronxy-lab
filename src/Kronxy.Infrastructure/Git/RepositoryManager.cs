@@ -328,6 +328,28 @@ public sealed class RepositoryManager : IRepositoryManager
                     result.StandardOutput));
     }
 
+    public async Task<RepositoryOperationResult<IReadOnlyList<ObservedRepositoryChange>>>
+        GetObservedChangesAsync(
+            WorkspaceHandle workspace,
+            CancellationToken cancellationToken = default)
+    {
+        var validation = await ValidateReadableWorktreeAsync(
+            workspace, cancellationToken).ConfigureAwait(false);
+        if (!validation.IsSuccess)
+            return RepositoryOperationResult<IReadOnlyList<ObservedRepositoryChange>>.Failure(
+                validation.FailureKind, validation.ErrorCode);
+
+        var result = await RunGitAsync(
+            validation.Value!, SecureGitOperation.StatusNull,
+            cancellationToken).ConfigureAwait(false);
+        if (!result.IsSuccess)
+            return RepositoryOperationResult<IReadOnlyList<ObservedRepositoryChange>>.Failure(
+                result.OutputLimitExceeded ? RepositoryFailureKind.OutputLimitExceeded : RepositoryFailureKind.GitFailure,
+                "REPOSITORY_OBSERVED_CHANGES_FAILED");
+
+        return ObservedGitStatusParser.Parse(result.StandardOutput);
+    }
+
     public async Task<RepositoryOperationResult<string>>
         GetDiffAsync(
             WorkspaceHandle workspace,

@@ -455,6 +455,12 @@ public sealed class ExecutionPlaneEndToEndTests
                         ["AI:InferenceTimeout"] =
                             "00:00:05",
 
+                        ["AI:PlanningInferenceTimeout"] =
+                            "00:00:05",
+
+                        ["AI:DeveloperInferenceTimeout"] =
+                            "00:00:05",
+
                         ["AI:QueueWaitTimeout"] =
                             "00:00:01",
 
@@ -535,7 +541,7 @@ public sealed class ExecutionPlaneEndToEndTests
         File.WriteAllText(
             Path.Combine(
                 repository,
-                "tracked.txt"),
+                "revision.txt"),
             "commit A");
 
         Git(
@@ -642,7 +648,28 @@ public sealed class ExecutionPlaneEndToEndTests
                         AiOperationStatus.Success,
 
                     Content =
-                        "Deterministic E2E planning response.",
+                        """
+                        {
+                          "objective": "Execution Plane E2E pinned revision test",
+                          "filesToInspect": ["revision.txt"],
+                          "candidateFilesToModify": [],
+                          "strategy": "Preserve the pinned source revision through restart.",
+                          "acceptanceCriteria": [
+                            "The pinned commit remains unchanged.",
+                            "The execution pipeline advances successfully."
+                          ],
+                          "risks": [
+                            "The authoritative repository may advance during recovery."
+                          ],
+                          "expectedTests": [
+                            "Run the deterministic execution-plane end-to-end test."
+                          ],
+                          "assumptions": [
+                            "The temporary Git repositories remain available."
+                          ],
+                          "uncertainties": []
+                        }
+                        """,
 
                     Provider =
                         "E2E",

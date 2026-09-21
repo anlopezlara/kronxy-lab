@@ -55,6 +55,8 @@ public sealed record PlanningExecutionReport
 public sealed record PlanningExecutionResult(
     PlanningExecutionReport? Report,
     ArtifactRecord? AiResponseArtifact,
+    ArtifactRecord? PlanningPlanArtifact,
+    PlannerPlan? Plan,
     PlanningExecutionFailureKind FailureKind,
     string ErrorCode)
 {
@@ -62,14 +64,20 @@ public sealed record PlanningExecutionResult(
         FailureKind ==
             PlanningExecutionFailureKind.None &&
         Report is not null &&
-        AiResponseArtifact is not null;
+        AiResponseArtifact is not null &&
+        PlanningPlanArtifact is not null &&
+        Plan is not null;
 
     public static PlanningExecutionResult Success(
         PlanningExecutionReport report,
-        ArtifactRecord artifact) =>
+        ArtifactRecord aiResponseArtifact,
+        ArtifactRecord planningPlanArtifact,
+        PlannerPlan plan) =>
         new(
             report,
-            artifact,
+            aiResponseArtifact,
+            planningPlanArtifact,
+            plan,
             PlanningExecutionFailureKind.None,
             string.Empty);
 
@@ -77,6 +85,8 @@ public sealed record PlanningExecutionResult(
         PlanningExecutionFailureKind kind,
         string errorCode) =>
         new(
+            null,
+            null,
             null,
             null,
             kind,

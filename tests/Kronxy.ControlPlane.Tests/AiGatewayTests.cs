@@ -275,6 +275,164 @@ public sealed class AiGatewayTests
     }
 
     [Fact]
+    public async Task GenerateAsync_uses_request_inference_timeout_override()
+    {
+        TimeSpan? observedRemaining = null;
+
+        var provider =
+            new FakeAiProvider
+            {
+                GenerateHandler =
+                    async (_, _, cancellationToken) =>
+                    {
+                        var started = DateTime.UtcNow;
+
+                        try
+                        {
+                            await Task.Delay(
+                                TimeSpan.FromMilliseconds(120),
+                                cancellationToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            observedRemaining =
+                                DateTime.UtcNow - started;
+
+                            throw;
+                        }
+
+                        return new AiResponse
+                        {
+                            Status =
+                                AiOperationStatus.Success,
+
+                            Provider =
+                                "Ollama",
+
+                            PhysicalModel =
+                                "model-fast",
+
+                            Content =
+                                "ok",
+
+                            TerminationReason =
+                                AiTerminationReason.Stop
+                        };
+                    }
+            };
+
+        using var gateway =
+            CreateGateway(
+                provider,
+                inferenceTimeout:
+                    TimeSpan.FromMilliseconds(50),
+                developerInferenceTimeout:
+                    TimeSpan.FromMilliseconds(200));
+
+        AiRequest request =
+            CreateRequest() with
+            {
+                InferenceTimeout =
+                    TimeSpan.FromMilliseconds(150)
+            };
+
+        AiResponse result =
+            await gateway.GenerateAsync(request);
+
+        Assert.Equal(
+            AiOperationStatus.Success,
+            result.Status);
+
+        Assert.Null(observedRemaining);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_rejects_request_timeout_above_configured_ceiling()
+    {
+        var provider =
+            new FakeAiProvider();
+
+        using var gateway =
+            CreateGateway(
+                provider,
+                inferenceTimeout:
+                    TimeSpan.FromMilliseconds(50),
+                developerInferenceTimeout:
+                    TimeSpan.FromMilliseconds(150));
+
+        AiRequest request =
+            CreateRequest() with
+            {
+                InferenceTimeout =
+                    TimeSpan.FromMilliseconds(151)
+            };
+
+        AiResponse result =
+            await gateway.GenerateAsync(request);
+
+        Assert.Equal(
+            AiOperationStatus.Rejected,
+            result.Status);
+
+        Assert.Equal(
+            "AI_INFERENCE_TIMEOUT_INVALID",
+            result.ErrorCode);
+    }
+
+    [Fact]
+    public void Constructor_rejects_invalid_planning_timeout()
+    {
+        var provider =
+            new FakeAiProvider();
+
+        Assert.Throws<InvalidOperationException>(
+            () =>
+                CreateGateway(
+                    provider,
+                    planningInferenceTimeout:
+                        Timeout.InfiniteTimeSpan));
+    }
+
+    [Fact]
+    public async Task GenerateAsync_uses_global_timeout_when_request_has_no_override()
+    {
+        var provider =
+            new FakeAiProvider
+            {
+                GenerateHandler =
+                    async (_, _, cancellationToken) =>
+                    {
+                        await Task.Delay(
+                            Timeout.InfiniteTimeSpan,
+                            cancellationToken);
+
+                        throw new InvalidOperationException();
+                    }
+            };
+
+        using var gateway =
+            CreateGateway(
+                provider,
+                inferenceTimeout:
+                    TimeSpan.FromMilliseconds(50),
+                developerInferenceTimeout:
+                    TimeSpan.FromMilliseconds(150));
+
+        AiResponse result =
+            await gateway.GenerateAsync(
+                CreateRequest());
+
+        Assert.Equal(
+            AiOperationStatus.TimedOut,
+            result.Status);
+
+        Assert.Equal(
+            "AI_INFERENCE_TIMEOUT",
+            result.ErrorCode);
+    }
+
+
+    [Fact]
     public async Task GenerateAsync_returns_timeout_when_provider_exceeds_inference_timeout()
     {
         var provider =
@@ -1099,6 +1257,8 @@ public sealed class AiGatewayTests
         int maxInputCharacters = 65536,
         int maxResponseBytes = 1048576,
         TimeSpan? inferenceTimeout = null,
+        TimeSpan? planningInferenceTimeout = null,
+        TimeSpan? developerInferenceTimeout = null,
         TimeSpan? queueWaitTimeout = null,
         ILogger<AiGateway>? logger = null)
     {
@@ -1133,6 +1293,15 @@ public sealed class AiGatewayTests
                 InferenceTimeout =
                     inferenceTimeout ??
                     TimeSpan.FromSeconds(10),
+
+                PlanningInferenceTimeout =
+                    planningInferenceTimeout ??
+                    developerInferenceTimeout ??
+                    TimeSpan.FromSeconds(30),
+
+                DeveloperInferenceTimeout =
+                    developerInferenceTimeout ??
+                    TimeSpan.FromSeconds(30),
 
                 QueueWaitTimeout =
                     queueWaitTimeout ??

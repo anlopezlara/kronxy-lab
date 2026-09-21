@@ -166,6 +166,12 @@ public sealed class OllamaProviderTests
             root.GetProperty("options");
 
         Assert.Equal(
+            16_384,
+            options
+                .GetProperty("num_ctx")
+                .GetInt32());
+
+        Assert.Equal(
             32,
             options
                 .GetProperty("num_predict")
@@ -736,7 +742,13 @@ public sealed class OllamaProviderTests
                             "role": "assistant",
                             "content": "partial"
                           },
-                          "done": false
+                          "done": false,
+                          "done_reason": "length",
+                          "prompt_eval_count": 321,
+                          "eval_count": 2048,
+                          "total_duration": 90000000000,
+                          "prompt_eval_duration": 12000000000,
+                          "eval_duration": 78000000000
                         }
                         """));
 
@@ -759,6 +771,14 @@ public sealed class OllamaProviderTests
         Assert.Equal(
             "OLLAMA_INCOMPLETE_RESPONSE",
             result.ErrorCode);
+        Assert.Equal("partial", result.Content);
+        Assert.Equal(321, result.Usage.PromptTokens);
+        Assert.Equal(2048, result.Usage.CompletionTokens);
+        Assert.False(result.ProviderMetadata!.Done);
+        Assert.Equal("length", result.ProviderMetadata.DoneReason);
+        Assert.Equal(
+            90_000_000_000,
+            result.ProviderMetadata.TotalDurationNanoseconds);
     }
 
     [Theory]

@@ -92,7 +92,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult stdoutWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType.TestStandardOutput,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.TestHumanReviewCorrectionStandardOutput
+                            : ArtifactType.TestStandardOutput,
                         Encoding.UTF8.GetBytes(
                             toolResult.StandardOutput),
                         cancellationToken)
@@ -101,7 +103,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult stderrWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType.TestStandardError,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.TestHumanReviewCorrectionStandardError
+                            : ArtifactType.TestStandardError,
                         Encoding.UTF8.GetBytes(
                             toolResult.StandardError),
                         cancellationToken)
@@ -115,7 +119,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult reportWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType.TestReport,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.TestHumanReviewCorrectionReport
+                            : ArtifactType.TestReport,
                         reportBytes,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -192,7 +198,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult resultsWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType.TestResults,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.TestHumanReviewCorrectionResults
+                            : ArtifactType.TestResults,
                         trx.Content!,
                         cancellationToken)
                     .ConfigureAwait(false);

@@ -1,9 +1,13 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
+using System.Security.Cryptography;
 using Kronxy.Application.Abstractions.Clock;
+using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
 using Kronxy.Application.Context;
+using Kronxy.Application.Repositories;
 using Kronxy.Domain.Abstractions;
 using Kronxy.Domain.Jobs;
 
@@ -37,7 +41,21 @@ public sealed class JobOrchestrator : IJobOrchestrator
 
         private readonly IPlanningExecutionService _planningExecutionService;
 
+        private readonly IDeveloperExecutionService _developerExecutionService;
+
+        private readonly ISafeChangeApplier _safeChangeApplier;
+
+        private readonly IObservedChangeEvidenceService _observedChangeEvidenceService;
+
         private readonly IStageRecoveryEvidenceService _stageRecoveryEvidenceService;
+
+        private readonly IReviewerEffectiveSourceSnapshotService _reviewerEffectiveSourceSnapshotService;
+
+        private readonly IReviewerExecutionService _reviewerExecutionService;
+
+        private readonly IReviewDecisionPolicy _reviewDecisionPolicy;
+
+        private readonly IArtifactStore? _artifactStore;
 
         public JobOrchestrator(
                 IJobRepository jobRepository,
@@ -53,7 +71,14 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 IBuildExecutionService buildExecutionService,
                 ITestExecutionService testExecutionService,
                 IPlanningExecutionService planningExecutionService,
-                IStageRecoveryEvidenceService stageRecoveryEvidenceService)
+                IDeveloperExecutionService developerExecutionService,
+                ISafeChangeApplier safeChangeApplier,
+                IObservedChangeEvidenceService observedChangeEvidenceService,
+                IStageRecoveryEvidenceService stageRecoveryEvidenceService,
+                IReviewerEffectiveSourceSnapshotService reviewerEffectiveSourceSnapshotService,
+                IReviewerExecutionService reviewerExecutionService,
+                IReviewDecisionPolicy reviewDecisionPolicy,
+                IArtifactStore? artifactStore = null)
         {
                 _jobRepository =
                         jobRepository ??
@@ -120,10 +145,415 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         throw new ArgumentNullException(
                                 nameof(planningExecutionService));
 
+                _developerExecutionService =
+                        developerExecutionService ??
+                        throw new ArgumentNullException(
+                                nameof(developerExecutionService));
+
+                _safeChangeApplier =
+                        safeChangeApplier ??
+                        throw new ArgumentNullException(
+                                nameof(safeChangeApplier));
+
+                _observedChangeEvidenceService = observedChangeEvidenceService ??
+                        throw new ArgumentNullException(nameof(observedChangeEvidenceService));
+
                 _stageRecoveryEvidenceService =
                         stageRecoveryEvidenceService ??
                         throw new ArgumentNullException(
                                 nameof(stageRecoveryEvidenceService));
+
+                _reviewerEffectiveSourceSnapshotService =
+                        reviewerEffectiveSourceSnapshotService ??
+                        throw new ArgumentNullException(
+                                nameof(reviewerEffectiveSourceSnapshotService));
+
+                _reviewerExecutionService = reviewerExecutionService ??
+                        throw new ArgumentNullException(nameof(reviewerExecutionService));
+                _reviewDecisionPolicy = reviewDecisionPolicy ??
+                        throw new ArgumentNullException(nameof(reviewDecisionPolicy));
+                _artifactStore = artifactStore;
+        }
+
+        public async Task<JobOperationResult> RequestHumanReviewCorrectionAsync(
+                Guid jobId,
+                HumanReviewCorrectionRequest request,
+                CancellationToken cancellationToken = default)
+        {
+                Job? job = await _jobRepository.GetByIdAsync(jobId, cancellationToken);
+                if (job is null)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.NotFound);
+                if (job.State != JobState.WaitingHuman)
+                        return JobOperationResult.Failure(JobOperationKind.InvalidTransition, JobApplicationErrors.StageRecoveryFailed);
+                if (_artifactStore is null || !ValidHumanReviewRequest(request))
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.StageRecoveryFailed);
+
+                Guid runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount);
+                StageRecoveryResult existing = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.HumanReviewCorrection,
+                        request.CorrelationId, cancellationToken);
+                if (existing.Status != StageRecoveryStatus.NotCompleted)
+                        return JobOperationResult.Failure(JobOperationKind.InvalidTransition, JobApplicationErrors.StageRecoveryFailed);
+
+                StageRecoveryResult reviewer = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.ReviewerOriginal,
+                        request.CorrelationId, cancellationToken);
+                StageRecoveryResult plan = await CheckRecoveryEvidenceAsync(
+                        job, _jobRunIdProvider.Create(job.Id, 1), RecoveryStage.Planning,
+                        request.CorrelationId, cancellationToken);
+                StageRecoveryResult developer = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.Developer,
+                        request.CorrelationId, cancellationToken);
+                JobOperationResult? evidenceFailure = RecoveryFailure(reviewer) ??
+                        RecoveryFailure(plan) ?? RecoveryFailure(developer);
+                if (evidenceFailure is not null) return evidenceFailure;
+                if (!reviewer.IsCompleted || reviewer.ReviewerReview?.Decision != ReviewerDecision.Approved ||
+                    !plan.IsCompleted || plan.PlannerPlan is null ||
+                    !developer.IsCompleted || developer.DeveloperProposal is null)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.ReviewerEvidenceInvalid);
+
+                HashSet<string> allowlist = plan.PlannerPlan.CandidateFilesToModify
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (request.RequiredCorrections.Any(correction => !allowlist.Contains(correction.RelativePath)))
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.StageRecoveryFailed);
+                HashSet<string> proposedFiles = developer.DeveloperProposal.Changes
+                        .Select(change => change.RelativePath)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (request.RequiredCorrections.Any(correction => !proposedFiles.Contains(correction.RelativePath)))
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.StageRecoveryFailed);
+
+                var evidence = new HumanReviewCorrectionEvidence
+                {
+                        JobId = job.Id,
+                        RunId = runId,
+                        Decision = HumanReviewDecision.ChangesRequired,
+                        RequiredCorrections = request.RequiredCorrections,
+                        RecordedAtUtc = _clock.UtcNow
+                };
+                ArtifactWriteResult write = await _artifactStore.WriteAsync(
+                        new ArtifactWriteRequest
+                        {
+                                JobId = job.Id,
+                                RunId = runId,
+                                ArtifactType = ArtifactType.HumanReviewCorrectionEvidence,
+                                Content = JsonSerializer.SerializeToUtf8Bytes(evidence),
+                                CorrelationId = request.CorrelationId
+                        }, cancellationToken);
+                if (!write.IsSuccess)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.StageRecoveryFailed);
+
+                Result transition = job.BeginHumanReviewCorrection(
+                        _clock.UtcNow,
+                        "Human review requested governed corrections.",
+                        request.Actor,
+                        request.CorrelationId);
+                if (transition.IsFailure)
+                        return JobOperationResult.Failure(JobOperationKind.InvalidTransition, transition.Error);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                return JobOperationResult.Success();
+        }
+
+        public async Task<JobOperationResult> ApproveHumanReviewAsync(
+                Guid jobId,
+                string actor,
+                string correlationId,
+                CancellationToken cancellationToken = default)
+        {
+                if (jobId == Guid.Empty || string.IsNullOrWhiteSpace(actor) ||
+                    string.IsNullOrWhiteSpace(correlationId) ||
+                    actor.Length > 200 || correlationId.Length > 200 ||
+                    actor.IndexOfAny(['\0', '\r', '\n']) >= 0 ||
+                    correlationId.IndexOfAny(['\0', '\r', '\n']) >= 0)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
+                Job? job = await _jobRepository.GetByIdAsync(jobId, cancellationToken);
+                if (job is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.NotFound);
+                if (_artifactStore is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
+                Guid runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount);
+                StageRecoveryResult existing = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.HumanReviewApproval,
+                        correlationId, cancellationToken);
+                JobOperationResult? existingFailure = RecoveryFailure(existing);
+                if (existingFailure is not null) return existingFailure;
+
+                if (job.State == JobState.Completed)
+                        return existing.IsCompleted
+                                ? JobOperationResult.Success()
+                                : JobOperationResult.Failure(
+                                        JobOperationKind.InvalidTransition,
+                                        JobApplicationErrors.StageRecoveryFailed);
+                if (job.State != JobState.WaitingHuman)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.InvalidTransition,
+                                JobApplicationErrors.StageRecoveryFailed);
+
+                if (!existing.IsCompleted)
+                {
+                        StageRecoveryResult reviewer = await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding,
+                                correlationId, cancellationToken);
+                        StageRecoveryResult observed = await CheckRecoveryEvidenceAsync(
+                                job, runId, RecoveryStage.ObservedHumanReviewCorrection,
+                                correlationId, cancellationToken);
+                        StageRecoveryResult build = await CheckRecoveryEvidenceAsync(
+                                job, runId, RecoveryStage.BuildHumanReviewCorrection,
+                                correlationId, cancellationToken);
+                        StageRecoveryResult test = await CheckRecoveryEvidenceAsync(
+                                job, runId, RecoveryStage.TestHumanReviewCorrection,
+                                correlationId, cancellationToken);
+                        JobOperationResult? evidenceFailure = RecoveryFailure(reviewer) ??
+                                RecoveryFailure(observed) ?? RecoveryFailure(build) ??
+                                RecoveryFailure(test);
+                        if (evidenceFailure is not null) return evidenceFailure;
+
+                        ReviewerReview? review = reviewer.ReviewerReview;
+                        if (!reviewer.IsCompleted || review is null ||
+                            review.Decision != ReviewerDecision.Approved ||
+                            review.RequiredCorrections.Count != 0 ||
+                            review.DeterministicAcceptanceGate is null ||
+                            !review.DeterministicAcceptanceGate.IsSuccess ||
+                            !observed.IsCompleted || observed.ObservedChangeManifest is null ||
+                            !build.IsCompleted || build.BuildReport is null ||
+                            !build.BuildReport.IsSuccess ||
+                            !test.IsCompleted || test.TestReport is null ||
+                            !test.TestReport.IsSuccess)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.ReviewerEvidenceInvalid);
+
+                        var evidence = new HumanReviewApprovalEvidence
+                        {
+                                JobId = job.Id,
+                                RunId = runId,
+                                AttemptCount = job.AttemptCount,
+                                Decision = HumanReviewDecision.Approved,
+                                Actor = actor,
+                                CorrelationId = correlationId,
+                                ReviewerReviewSha256 = Hash(review),
+                                DeterministicAcceptanceGateSha256 =
+                                        Hash(review.DeterministicAcceptanceGate),
+                                RecordedAtUtc = _clock.UtcNow
+                        };
+                        ArtifactWriteResult write = await _artifactStore.WriteAsync(
+                                new ArtifactWriteRequest
+                                {
+                                        JobId = job.Id,
+                                        RunId = runId,
+                                        ArtifactType = ArtifactType.HumanReviewApprovalEvidence,
+                                        Content = JsonSerializer.SerializeToUtf8Bytes(evidence),
+                                        CorrelationId = correlationId
+                                }, cancellationToken);
+                        if (!write.IsSuccess)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.StageRecoveryFailed);
+                }
+
+                Result transition = job.TransitionTo(
+                        JobState.Completed,
+                        _clock.UtcNow,
+                        "Human review approved governed evidence.",
+                        actor,
+                        correlationId);
+                if (transition.IsFailure)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.InvalidTransition,
+                                transition.Error);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                return JobOperationResult.Success();
+        }
+
+        public async Task<JobOperationResult>
+                SupersedeHumanReviewCorrectionReviewAsync(
+                        Guid jobId,
+                        string actor,
+                        string correlationId,
+                        CancellationToken cancellationToken = default)
+        {
+                if (jobId == Guid.Empty ||
+                    string.IsNullOrWhiteSpace(actor) ||
+                    string.IsNullOrWhiteSpace(correlationId))
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
+                Job? job = await _jobRepository.GetByIdAsync(
+                        jobId, cancellationToken);
+                if (job is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.NotFound);
+                if (job.State != JobState.WaitingHuman)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.InvalidTransition,
+                                JobApplicationErrors.StageRecoveryFailed);
+
+                Guid runId = _jobRunIdProvider.Create(
+                        job.Id, job.AttemptCount);
+                StageRecoveryResult superseding =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding,
+                                correlationId, cancellationToken);
+                JobOperationResult? supersedingFailure =
+                        RecoveryFailure(superseding);
+                if (supersedingFailure is not null)
+                        return supersedingFailure;
+                if (superseding.IsCompleted)
+                        return JobOperationResult.Success();
+
+                StageRecoveryResult priorReview =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.ReviewerHumanReviewCorrection,
+                                correlationId, cancellationToken);
+                StageRecoveryResult humanCorrection =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.HumanReviewCorrection,
+                                correlationId, cancellationToken);
+                StageRecoveryResult plan =
+                        await CheckRecoveryEvidenceAsync(
+                                job, _jobRunIdProvider.Create(job.Id, 1),
+                                RecoveryStage.Planning,
+                                correlationId, cancellationToken);
+                StageRecoveryResult developer =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.EffectiveDeveloperProposal,
+                                correlationId, cancellationToken);
+                StageRecoveryResult observed =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.ObservedHumanReviewCorrection,
+                                correlationId, cancellationToken);
+                StageRecoveryResult build =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.BuildHumanReviewCorrection,
+                                correlationId, cancellationToken);
+                StageRecoveryResult test =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.TestHumanReviewCorrection,
+                                correlationId, cancellationToken);
+
+                foreach (StageRecoveryResult evidence in new[]
+                {
+                        priorReview, humanCorrection, plan,
+                        developer, observed, build, test
+                })
+                {
+                        JobOperationResult? failure = RecoveryFailure(evidence);
+                        if (failure is not null) return failure;
+                        if (!evidence.IsCompleted)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.ReviewerEvidenceInvalid);
+                }
+
+                if (priorReview.ReviewerReview?.Decision ==
+                        ReviewerDecision.Approved ||
+                    humanCorrection.HumanReviewCorrection is null ||
+                    plan.PlannerPlan is null ||
+                    developer.DeveloperProposal is null ||
+                    developer.DeveloperProposalLineage !=
+                        DeveloperProposalLineage.HumanReviewCorrection ||
+                    observed.ObservedChangeManifest is null ||
+                    build.BuildReport is null ||
+                    test.TestReport is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ReviewerEvidenceInvalid);
+
+                ReviewerEffectiveSourceSnapshot? effectiveSource =
+                        await CaptureReviewerEffectiveSourceAsync(
+                                job,
+                                runId,
+                                plan.PlannerPlan,
+                                developer.DeveloperProposal,
+                                observed.ObservedChangeManifest,
+                                developer.DeveloperProposalLineage.Value,
+                                cancellationToken);
+                if (effectiveSource is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ReviewerEvidenceInvalid);
+
+                ReviewerExecutionResult executed =
+                        await _reviewerExecutionService.ExecuteAsync(
+                                new ReviewerExecutionRequest
+                                {
+                                        JobId = job.Id,
+                                        RunId = runId,
+                                        JobRequest = job.Request,
+                                        Plan = plan.PlannerPlan,
+                                        DeveloperProposal =
+                                                developer.DeveloperProposal,
+                                        EffectiveProposalLineage =
+                                                developer.DeveloperProposalLineage.Value,
+                                        EffectiveSourceSnapshot = effectiveSource,
+                                        ObservedChanges =
+                                                observed.ObservedChangeManifest,
+                                        BuildReport = build.BuildReport,
+                                        TestReport = test.TestReport,
+                                        HumanReviewCorrection =
+                                                humanCorrection.HumanReviewCorrection,
+                                        IsSupersedingHumanReviewCorrection = true,
+                                        SupersedingReviewVersion = 3,
+                                        CorrelationId = correlationId
+                                },
+                                cancellationToken);
+                if (!executed.IsSuccess || executed.Review is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ReviewerExecutionFailed);
+
+                ReviewDecisionResult decision = _reviewDecisionPolicy.Evaluate(
+                        new ReviewDecisionInput(
+                                job.Id,
+                                runId,
+                                executed.Review,
+                                build.BuildReport,
+                                test.TestReport,
+                                observed.ObservedChangeManifest));
+                return decision.IsSuccess && decision.Decision.HasValue
+                        ? JobOperationResult.Success()
+                        : JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ReviewDecisionFailed);
+        }
+
+        private static bool ValidHumanReviewRequest(HumanReviewCorrectionRequest? request)
+        {
+                if (request is null || string.IsNullOrWhiteSpace(request.Actor) ||
+                    string.IsNullOrWhiteSpace(request.CorrelationId) ||
+                    request.RequiredCorrections is not { Count: > 0 and <= 20 })
+                        return false;
+
+                return request.RequiredCorrections.All(correction =>
+                        IsSafeRelativePath(correction.RelativePath) &&
+                        !string.IsNullOrWhiteSpace(correction.Instruction) &&
+                        correction.Instruction.Length <= 4000);
+        }
+
+        private static bool IsSafeRelativePath(string? path)
+        {
+                if (string.IsNullOrWhiteSpace(path) || path.Length > 512) return false;
+                string normalized = path.Replace('\\', '/');
+                return !normalized.StartsWith('/') && !normalized.Contains(':') &&
+                    !normalized.Contains('\0') && normalized.Split('/').All(segment =>
+                        segment.Length > 0 && segment is not "." and not "..");
         }
 
         public JobState? DetermineNextState(
@@ -240,6 +670,11 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 actor,
                                 correlationId,
                                 cancellationToken);
+                }
+
+                if (job.State == JobState.Reviewing)
+                {
+                        return await AdvanceReviewingAsync(job, actor, correlationId, cancellationToken);
                 }
 
                 return await AdvanceStateOnlyAsync(
@@ -740,6 +1175,165 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 job.Id,
                                 job.AttemptCount);
 
+                StageRecoveryResult humanReviewCorrection =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId, RecoveryStage.HumanReviewCorrection,
+                                correlationId, cancellationToken);
+                JobOperationResult? humanRecoveryFailure =
+                        RecoveryFailure(humanReviewCorrection);
+                if (humanRecoveryFailure is not null)
+                        return humanRecoveryFailure;
+                bool expectsHumanReviewCorrection =
+                        HasActiveHumanReviewCorrection(
+                                job.State,
+                                job.Transitions);
+                if (expectsHumanReviewCorrection != humanReviewCorrection.IsCompleted)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+                if (expectsHumanReviewCorrection &&
+                    humanReviewCorrection.HumanReviewCorrection is not null)
+                        return await AdvanceHumanReviewDevelopingAsync(
+                                job,
+                                recovery.Session.Repository,
+                                runId,
+                                humanReviewCorrection.HumanReviewCorrection,
+                                actor,
+                                correlationId,
+                                cancellationToken);
+
+                ReviewerReview? correctionFeedback = null;
+                Guid evidenceRunId = runId;
+                if (job.AttemptCount > 1)
+                {
+                        evidenceRunId = _jobRunIdProvider.Create(job.Id, 1);
+                        Guid previousRunId = _jobRunIdProvider.Create(job.Id, job.AttemptCount - 1);
+                        StageRecoveryResult previousReview = await CheckRecoveryEvidenceAsync(
+                                job, previousRunId, RecoveryStage.Reviewer, correlationId, cancellationToken);
+                        JobOperationResult? previousFailure = RecoveryFailure(previousReview);
+                        if (previousFailure is not null) return previousFailure;
+                        if (!previousReview.IsCompleted || previousReview.ReviewerReview is null ||
+                            previousReview.ReviewerReview.Decision != ReviewerDecision.ChangesRequired)
+                                return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.ReviewerEvidenceInvalid);
+                        correctionFeedback = previousReview.ReviewerReview;
+                }
+
+                StageRecoveryResult recoveredDeveloper =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId, RecoveryStage.Developer,
+                                correlationId, cancellationToken);
+
+                ValidatedDeveloperProposal proposal;
+
+                if (recoveredDeveloper.IsCompleted &&
+                    recoveredDeveloper.DeveloperProposal is not null)
+                {
+                        proposal = recoveredDeveloper.DeveloperProposal;
+                }
+                else
+                {
+                        JobOperationResult? developerRecoveryFailure =
+                                RecoveryFailure(recoveredDeveloper);
+                        if (developerRecoveryFailure is not null)
+                                return developerRecoveryFailure;
+
+                DeveloperExecutionResult developer;
+
+                try
+                {
+                        developer =
+                                await _developerExecutionService
+                                        .ExecuteAsync(
+                                                new DeveloperExecutionRequest
+                                                {
+                                                        JobId = job.Id,
+                                                        RunId = runId,
+                                                        JobRequest = job.Request,
+                                                        CorrelationId = correlationId,
+                                                        Repository = recovery.Session.Repository,
+                                                        AuthorizedEvidenceRunId = evidenceRunId,
+                                                        ReviewerFeedback = correctionFeedback
+                                                },
+                                                cancellationToken);
+                }
+                catch (OperationCanceledException)
+                        when (cancellationToken.IsCancellationRequested)
+                {
+                        throw;
+                }
+                catch
+                {
+                        return JobOperationResult.Failure(
+                                JobOperationKind.RetryableFailure,
+                                JobApplicationErrors.DeveloperExecutionFailed);
+                }
+
+                if (!developer.IsSuccess ||
+                    developer.Proposal is null)
+                {
+                        return JobOperationResult.Failure(
+                                MapDeveloperFailureKind(
+                                        developer.FailureKind),
+                                JobApplicationErrors.DeveloperExecutionFailed);
+                }
+
+                        proposal = developer.Proposal;
+                }
+
+                SafeChangeApplicationResult safeChange;
+
+                try
+                {
+                        safeChange =
+                                await _safeChangeApplier.ApplyAsync(
+                                        new SafeChangeApplicationRequest
+                                        {
+                                                JobId = job.Id,
+                                                RunId = runId,
+                                                Repository = recovery.Session.Repository,
+                                                Proposal = proposal,
+                                                CorrelationId = correlationId
+                                        },
+                                        cancellationToken);
+                }
+                catch (OperationCanceledException)
+                        when (cancellationToken.IsCancellationRequested)
+                {
+                        throw;
+                }
+                catch
+                {
+                        return JobOperationResult.Failure(
+                                JobOperationKind.RetryableFailure,
+                                JobApplicationErrors.SafeChangeApplicationFailed);
+                }
+
+                if (!safeChange.IsSuccess)
+                {
+                        return JobOperationResult.Failure(
+                                MapSafeChangeFailureKind(
+                                        safeChange.FailureKind),
+                                JobApplicationErrors.SafeChangeApplicationFailed);
+                }
+
+                StageRecoveryResult recoveredObserved = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.ObservedChanges, correlationId, cancellationToken);
+                JobOperationResult? observedRecoveryFailure = RecoveryFailure(recoveredObserved);
+                if (observedRecoveryFailure is not null) return observedRecoveryFailure;
+                if (!recoveredObserved.IsCompleted)
+                {
+                        ObservedChangeEvidenceResult observedResult = await _observedChangeEvidenceService.CaptureAsync(
+                                new ObservedChangeEvidenceRequest
+                                {
+                                        JobId=job.Id, RunId=runId, Repository=recovery.Session.Repository,
+                                        Proposal=proposal, CorrelationId=correlationId
+                                }, cancellationToken);
+                        if (!observedResult.IsSuccess)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.ObservedChangeEvidenceInvalid);
+                }
+
                 StageRecoveryResult recoveredRestore =
                         await CheckRecoveryEvidenceAsync(
                                 job,
@@ -829,6 +1423,127 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         cancellationToken);
         }
 
+        private async Task<JobOperationResult> AdvanceHumanReviewDevelopingAsync(
+                Job job,
+                RepositoryWorktreeHandle repository,
+                Guid runId,
+                HumanReviewCorrectionEvidence humanEvidence,
+                string actor,
+                string correlationId,
+                CancellationToken cancellationToken)
+        {
+                StageRecoveryResult currentDeveloper = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.Developer,
+                        correlationId, cancellationToken);
+                StageRecoveryResult build = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.Build,
+                        correlationId, cancellationToken);
+                StageRecoveryResult test = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.Test,
+                        correlationId, cancellationToken);
+                StageRecoveryResult reviewer = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.ReviewerOriginal,
+                        correlationId, cancellationToken);
+
+                foreach (StageRecoveryResult evidence in new[] { currentDeveloper, build, test, reviewer })
+                {
+                        JobOperationResult? failure = RecoveryFailure(evidence);
+                        if (failure is not null) return failure;
+                        if (!evidence.IsCompleted)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.StageRecoveryFailed);
+                }
+
+                StageRecoveryResult recoveredCorrection = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.DeveloperHumanReviewCorrection,
+                        correlationId, cancellationToken);
+                JobOperationResult? correctionFailure = RecoveryFailure(recoveredCorrection);
+                if (correctionFailure is not null) return correctionFailure;
+
+                ValidatedDeveloperProposal correctionProposal;
+                if (recoveredCorrection.IsCompleted && recoveredCorrection.DeveloperProposal is not null)
+                {
+                        correctionProposal = recoveredCorrection.DeveloperProposal;
+                }
+                else
+                {
+                        DeveloperExecutionResult executed = await _developerExecutionService.ExecuteAsync(
+                                new DeveloperExecutionRequest
+                                {
+                                        JobId = job.Id,
+                                        RunId = runId,
+                                        JobRequest = job.Request,
+                                        CorrelationId = correlationId,
+                                        Repository = repository,
+                                        AuthorizedEvidenceRunId = runId,
+                                        HumanReviewCorrection = new DeveloperHumanReviewCorrectionContext
+                                        {
+                                                CurrentProposal = currentDeveloper.DeveloperProposal!,
+                                                BuildReport = build.BuildReport!,
+                                                TestReport = test.TestReport!,
+                                                ReviewerReview = reviewer.ReviewerReview!,
+                                                HumanReviewEvidence = humanEvidence
+                                        }
+                                }, cancellationToken);
+                        if (!executed.IsSuccess || executed.Proposal is null)
+                                return JobOperationResult.Failure(
+                                        MapDeveloperFailureKind(executed.FailureKind),
+                                        JobApplicationErrors.DeveloperExecutionFailed);
+                        correctionProposal = executed.Proposal;
+                }
+
+                SafeChangeApplicationResult safeChange = await _safeChangeApplier.ApplyAsync(
+                        new SafeChangeApplicationRequest
+                        {
+                                JobId = job.Id,
+                                RunId = runId,
+                                Repository = repository,
+                                Proposal = correctionProposal,
+                                CorrelationId = correlationId,
+                                IsHumanReviewCorrection = true
+                        }, cancellationToken);
+                if (!safeChange.IsSuccess)
+                        return JobOperationResult.Failure(
+                                MapSafeChangeFailureKind(safeChange.FailureKind),
+                                JobApplicationErrors.SafeChangeApplicationFailed);
+
+                StageRecoveryResult observed = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.ObservedHumanReviewCorrection,
+                        correlationId, cancellationToken);
+                JobOperationResult? observedFailure = RecoveryFailure(observed);
+                if (observedFailure is not null) return observedFailure;
+                if (!observed.IsCompleted)
+                {
+                        StageRecoveryResult effective = await CheckRecoveryEvidenceAsync(
+                                job, runId, RecoveryStage.Developer,
+                                correlationId, cancellationToken);
+                        if (!effective.IsCompleted || effective.DeveloperProposal is null)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.StageRecoveryFailed);
+                        ObservedChangeEvidenceResult captured = await _observedChangeEvidenceService.CaptureAsync(
+                                new ObservedChangeEvidenceRequest
+                                {
+                                        JobId = job.Id,
+                                        RunId = runId,
+                                        Repository = repository,
+                                        Proposal = effective.DeveloperProposal,
+                                        CorrelationId = correlationId,
+                                        IsHumanReviewCorrection = true
+                                }, cancellationToken);
+                        if (!captured.IsSuccess)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.ObservedChangeEvidenceInvalid);
+                }
+
+                return await TransitionAndSaveAsync(
+                        job, JobState.Building,
+                        "Human review correction applied with governed evidence.",
+                        actor, correlationId, cancellationToken);
+        }
+
         private async Task<JobOperationResult>
                 AdvanceBuildingAsync(
                         Job job,
@@ -900,11 +1615,26 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 job.Id,
                                 job.AttemptCount);
 
+                StageRecoveryResult humanCorrection = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.HumanReviewCorrection,
+                        correlationId, cancellationToken);
+                JobOperationResult? humanCorrectionFailure = RecoveryFailure(humanCorrection);
+                if (humanCorrectionFailure is not null) return humanCorrectionFailure;
+                bool isHumanReviewCorrection = HasActiveHumanReviewCorrection(
+                        job.State,
+                        job.Transitions);
+                if (isHumanReviewCorrection != humanCorrection.IsCompleted)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
                 StageRecoveryResult recoveredBuild =
                         await CheckRecoveryEvidenceAsync(
                                 job,
                                 runId,
-                                RecoveryStage.Build,
+                                isHumanReviewCorrection
+                                        ? RecoveryStage.BuildHumanReviewCorrection
+                                        : RecoveryStage.Build,
                                 correlationId,
                                 cancellationToken);
 
@@ -914,6 +1644,266 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 job,
                                 JobState.Testing,
                                 "Build evidence recovered; build was not repeated.",
+                                actor,
+                                correlationId,
+                                cancellationToken);
+                }
+
+                if (recoveredBuild.Status ==
+                        StageRecoveryStatus.FailedExecution &&
+                    recoveredBuild.BuildReport is not null &&
+                    !string.IsNullOrWhiteSpace(
+                        recoveredBuild.BuildStandardOutput))
+                {
+                        StageRecoveryResult originalDeveloper =
+                                await CheckRecoveryEvidenceAsync(
+                                        job,
+                                        runId,
+                                        RecoveryStage.DeveloperOriginal,
+                                        correlationId,
+                                        cancellationToken);
+
+                        JobOperationResult? originalDeveloperFailure =
+                                RecoveryFailure(originalDeveloper);
+                        if (originalDeveloperFailure is not null)
+                        {
+                                return originalDeveloperFailure;
+                        }
+
+                        if (!originalDeveloper.IsCompleted ||
+                            originalDeveloper.DeveloperProposal is null)
+                        {
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors
+                                                .StageRecoveryFailed);
+                        }
+
+                        StageRecoveryResult recoveredCorrection =
+                                await CheckRecoveryEvidenceAsync(
+                                        job,
+                                        runId,
+                                        RecoveryStage
+                                                .DeveloperBuildCorrection,
+                                        correlationId,
+                                        cancellationToken);
+
+                        ValidatedDeveloperProposal correctionProposal;
+
+                        if (recoveredCorrection.IsCompleted &&
+                            recoveredCorrection.DeveloperProposal is not null)
+                        {
+                                correctionProposal =
+                                        recoveredCorrection
+                                                .DeveloperProposal;
+                        }
+                        else
+                        {
+                                JobOperationResult? correctionRecoveryFailure =
+                                        RecoveryFailure(recoveredCorrection);
+                                if (correctionRecoveryFailure is not null)
+                                {
+                                        return correctionRecoveryFailure;
+                                }
+
+                                DeveloperExecutionResult correction;
+
+                                try
+                                {
+                                        correction =
+                                                await _developerExecutionService
+                                                        .ExecuteAsync(
+                                                                new DeveloperExecutionRequest
+                                                                {
+                                                                        JobId = job.Id,
+                                                                        RunId = runId,
+                                                                        JobRequest = job.Request,
+                                                                        CorrelationId = correlationId,
+                                                                        Repository = recovery.Session.Repository,
+                                                                        AuthorizedEvidenceRunId = runId,
+                                                                        BuildCorrection = new DeveloperBuildCorrectionContext
+                                                                        {
+                                                                                OriginalProposal = originalDeveloper.DeveloperProposal,
+                                                                                FailedBuildReport = recoveredBuild.BuildReport,
+                                                                                BuildStandardOutput = recoveredBuild.BuildStandardOutput
+                                                                        }
+                                                                },
+                                                                cancellationToken);
+                                }
+                                catch (OperationCanceledException)
+                                        when (cancellationToken
+                                                .IsCancellationRequested)
+                                {
+                                        throw;
+                                }
+                                catch
+                                {
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.RetryableFailure,
+                                                JobApplicationErrors
+                                                        .DeveloperExecutionFailed);
+                                }
+
+                                if (!correction.IsSuccess ||
+                                    correction.Proposal is null)
+                                {
+                                        return JobOperationResult.Failure(
+                                                MapDeveloperFailureKind(
+                                                        correction.FailureKind),
+                                                JobApplicationErrors
+                                                        .DeveloperExecutionFailed);
+                                }
+
+                                correctionProposal = correction.Proposal;
+                        }
+
+                        SafeChangeApplicationResult correctedSafeChange;
+
+                        try
+                        {
+                                correctedSafeChange =
+                                        await _safeChangeApplier.ApplyAsync(
+                                                new SafeChangeApplicationRequest
+                                                {
+                                                        JobId = job.Id,
+                                                        RunId = runId,
+                                                        Repository = recovery.Session.Repository,
+                                                        Proposal = correctionProposal,
+                                                        CorrelationId = correlationId,
+                                                        IsBuildCorrection = true
+                                                },
+                                                cancellationToken);
+                        }
+                        catch (OperationCanceledException)
+                                when (cancellationToken.IsCancellationRequested)
+                        {
+                                throw;
+                        }
+                        catch
+                        {
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.RetryableFailure,
+                                        JobApplicationErrors
+                                                .SafeChangeApplicationFailed);
+                        }
+
+                        if (!correctedSafeChange.IsSuccess)
+                        {
+                                return JobOperationResult.Failure(
+                                        MapSafeChangeFailureKind(
+                                                correctedSafeChange.FailureKind),
+                                        JobApplicationErrors
+                                                .SafeChangeApplicationFailed);
+                        }
+
+                        StageRecoveryResult recoveredCorrectedObserved =
+                                await CheckRecoveryEvidenceAsync(
+                                        job,
+                                        runId,
+                                        RecoveryStage
+                                                .ObservedBuildCorrection,
+                                        correlationId,
+                                        cancellationToken);
+
+                        JobOperationResult? correctedObservedFailure =
+                                RecoveryFailure(recoveredCorrectedObserved);
+                        if (correctedObservedFailure is not null)
+                        {
+                                return correctedObservedFailure;
+                        }
+
+                        if (!recoveredCorrectedObserved.IsCompleted)
+                        {
+                                StageRecoveryResult effectiveDeveloper =
+                                        await CheckRecoveryEvidenceAsync(
+                                                job,
+                                                runId,
+                                                RecoveryStage.Developer,
+                                                correlationId,
+                                                cancellationToken);
+
+                                JobOperationResult? effectiveDeveloperFailure =
+                                        RecoveryFailure(effectiveDeveloper);
+                                if (effectiveDeveloperFailure is not null)
+                                {
+                                        return effectiveDeveloperFailure;
+                                }
+
+                                if (!effectiveDeveloper.IsCompleted ||
+                                    effectiveDeveloper.DeveloperProposal is null)
+                                {
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.PermanentFailure,
+                                                JobApplicationErrors
+                                                        .StageRecoveryFailed);
+                                }
+
+                                ObservedChangeEvidenceResult correctedObserved =
+                                        await _observedChangeEvidenceService
+                                                .CaptureAsync(
+                                                        new ObservedChangeEvidenceRequest
+                                                        {
+                                                                JobId = job.Id,
+                                                                RunId = runId,
+                                                                Repository = recovery.Session.Repository,
+                                                                Proposal = effectiveDeveloper.DeveloperProposal,
+                                                                CorrelationId = correlationId,
+                                                                IsBuildCorrection = true
+                                                        },
+                                                        cancellationToken);
+
+                                if (!correctedObserved.IsSuccess)
+                                {
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.PermanentFailure,
+                                                JobApplicationErrors
+                                                        .ObservedChangeEvidenceInvalid);
+                                }
+                        }
+
+                        BuildExecutionResult correctedBuild;
+
+                        try
+                        {
+                                correctedBuild =
+                                        await _buildExecutionService.ExecuteAsync(
+                                                new BuildExecutionRequest
+                                                {
+                                                        JobId = job.Id,
+                                                        RunId = runId,
+                                                        Repository = recovery.Session.Repository,
+                                                        Target = _executionTargetProvider.DotnetTarget,
+                                                        CorrelationId = correlationId,
+                                                        IsBuildCorrection = true
+                                                },
+                                                cancellationToken);
+                        }
+                        catch (OperationCanceledException)
+                                when (cancellationToken.IsCancellationRequested)
+                        {
+                                throw;
+                        }
+                        catch
+                        {
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.RetryableFailure,
+                                        JobApplicationErrors
+                                                .BuildExecutionFailed);
+                        }
+
+                        if (!correctedBuild.IsSuccess)
+                        {
+                                return JobOperationResult.Failure(
+                                        MapBuildFailureKind(
+                                                correctedBuild.FailureKind),
+                                        JobApplicationErrors
+                                                .BuildExecutionFailed);
+                        }
+
+                        return await TransitionAndSaveAsync(
+                                job,
+                                JobState.Testing,
+                                "Build correction completed successfully and evidence persisted.",
                                 actor,
                                 correlationId,
                                 cancellationToken);
@@ -953,7 +1943,10 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                                                         .DotnetTarget,
 
                                                         CorrelationId =
-                                                                correlationId
+                                                                correlationId,
+
+                                                        IsHumanReviewCorrection =
+                                                                isHumanReviewCorrection
                                                 },
                                                 cancellationToken);
                 }
@@ -1060,11 +2053,26 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 job.Id,
                                 job.AttemptCount);
 
+                StageRecoveryResult humanCorrection = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.HumanReviewCorrection,
+                        correlationId, cancellationToken);
+                JobOperationResult? humanCorrectionFailure = RecoveryFailure(humanCorrection);
+                if (humanCorrectionFailure is not null) return humanCorrectionFailure;
+                bool isHumanReviewCorrection = HasActiveHumanReviewCorrection(
+                        job.State,
+                        job.Transitions);
+                if (isHumanReviewCorrection != humanCorrection.IsCompleted)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
                 StageRecoveryResult recoveredTest =
                         await CheckRecoveryEvidenceAsync(
                                 job,
                                 runId,
-                                RecoveryStage.Test,
+                                isHumanReviewCorrection
+                                        ? RecoveryStage.TestHumanReviewCorrection
+                                        : RecoveryStage.Test,
                                 correlationId,
                                 cancellationToken);
 
@@ -1113,7 +2121,10 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                                                         .DotnetTarget,
 
                                                         CorrelationId =
-                                                                correlationId
+                                                                correlationId,
+
+                                                        IsHumanReviewCorrection =
+                                                                isHumanReviewCorrection
                                                 },
                                                 cancellationToken);
                 }
@@ -1149,6 +2160,219 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         cancellationToken);
         }
 
+        private async Task<JobOperationResult> AdvanceReviewingAsync(
+                Job job, string actor, string correlationId, CancellationToken cancellationToken)
+        {
+                Guid runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount);
+                StageRecoveryResult humanCorrection = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.HumanReviewCorrection,
+                        correlationId, cancellationToken);
+                JobOperationResult? humanCorrectionFailure = RecoveryFailure(humanCorrection);
+                if (humanCorrectionFailure is not null) return humanCorrectionFailure;
+                bool isHumanReviewCorrection = HasActiveHumanReviewCorrection(
+                        job.State,
+                        job.Transitions);
+                if (isHumanReviewCorrection != humanCorrection.IsCompleted)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+                Guid planningRunId = _jobRunIdProvider.Create(job.Id, 1);
+                StageRecoveryResult plan = await CheckRecoveryEvidenceAsync(job, planningRunId, RecoveryStage.Planning, correlationId, cancellationToken);
+                StageRecoveryResult developer = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.EffectiveDeveloperProposal,
+                        correlationId, cancellationToken);
+                StageRecoveryResult observed = await CheckRecoveryEvidenceAsync(
+                        job, runId,
+                        isHumanReviewCorrection
+                                ? RecoveryStage.ObservedHumanReviewCorrection
+                                : RecoveryStage.ObservedChanges,
+                        correlationId, cancellationToken);
+                StageRecoveryResult build = await CheckRecoveryEvidenceAsync(
+                        job, runId,
+                        isHumanReviewCorrection
+                                ? RecoveryStage.BuildHumanReviewCorrection
+                                : RecoveryStage.Build,
+                        correlationId, cancellationToken);
+                StageRecoveryResult test = await CheckRecoveryEvidenceAsync(
+                        job, runId,
+                        isHumanReviewCorrection
+                                ? RecoveryStage.TestHumanReviewCorrection
+                                : RecoveryStage.Test,
+                        correlationId, cancellationToken);
+                foreach (StageRecoveryResult evidence in new[] { plan, developer, observed, build, test })
+                {
+                        JobOperationResult? failure = RecoveryFailure(evidence);
+                        if (failure is not null) return failure;
+                        if (!evidence.IsCompleted)
+                                return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.ReviewerEvidenceInvalid);
+                }
+
+                DeveloperProposalLineage expectedLineage =
+                        isHumanReviewCorrection
+                                ? DeveloperProposalLineage.HumanReviewCorrection
+                                : developer.DeveloperProposalLineage ??
+                                  DeveloperProposalLineage.Original;
+                if (developer.DeveloperProposalLineage != expectedLineage ||
+                    (isHumanReviewCorrection &&
+                     expectedLineage != DeveloperProposalLineage.HumanReviewCorrection))
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ReviewerEvidenceInvalid);
+
+                StageRecoveryResult recoveredReview = await CheckRecoveryEvidenceAsync(
+                        job, runId,
+                        isHumanReviewCorrection
+                                ? RecoveryStage.ReviewerHumanReviewCorrection
+                                : RecoveryStage.Reviewer,
+                        correlationId, cancellationToken);
+                JobOperationResult? reviewRecoveryFailure = RecoveryFailure(recoveredReview);
+                if (reviewRecoveryFailure is not null) return reviewRecoveryFailure;
+                ReviewerReview? review = recoveredReview.ReviewerReview;
+                if (!recoveredReview.IsCompleted)
+                {
+                        ReviewerEffectiveSourceSnapshot? effectiveSource =
+                                await CaptureReviewerEffectiveSourceAsync(
+                                        job,
+                                        runId,
+                                        plan.PlannerPlan!,
+                                        developer.DeveloperProposal!,
+                                        observed.ObservedChangeManifest!,
+                                        expectedLineage,
+                                        cancellationToken);
+                        if (effectiveSource is null)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.ReviewerEvidenceInvalid);
+
+                        ReviewerExecutionResult executed = await _reviewerExecutionService.ExecuteAsync(new ReviewerExecutionRequest
+                        {
+                                JobId=job.Id, RunId=runId, JobRequest=job.Request, Plan=plan.PlannerPlan!,
+                                DeveloperProposal=developer.DeveloperProposal!, ObservedChanges=observed.ObservedChangeManifest!,
+                                BuildReport=build.BuildReport!, TestReport=test.TestReport!, CorrelationId=correlationId,
+                                HumanReviewCorrection = isHumanReviewCorrection
+                                        ? humanCorrection.HumanReviewCorrection
+                                        : null,
+                                EffectiveProposalLineage = expectedLineage,
+                                EffectiveSourceSnapshot = effectiveSource
+                        }, cancellationToken);
+                        if (!executed.IsSuccess || executed.Review is null)
+                                return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.ReviewerExecutionFailed);
+                        review = executed.Review;
+                }
+
+                ReviewDecisionResult decision = _reviewDecisionPolicy.Evaluate(new ReviewDecisionInput(
+                        job.Id, runId, review!, build.BuildReport!, test.TestReport!, observed.ObservedChangeManifest!));
+                if (!decision.IsSuccess || !decision.Decision.HasValue)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.ReviewDecisionFailed);
+
+                if (!isHumanReviewCorrection &&
+                    decision.Decision.Value == ReviewerDecision.ChangesRequired &&
+                    job.AttemptCount < job.Limits.MaxDevelopmentAttempts)
+                {
+                        Result correction = job.BeginDevelopmentCorrection(
+                                _clock.UtcNow, "Reviewer requested governed corrections.", actor, correlationId);
+                        if (correction.IsFailure)
+                                return JobOperationResult.Failure(JobOperationKind.InvalidTransition, correction.Error);
+                        await _unitOfWork.SaveChangesAsync(cancellationToken);
+                        return JobOperationResult.Success();
+                }
+
+                return await TransitionAndSaveAsync(job, JobState.WaitingHuman,
+                        $"KRONXY review decision: {decision.Decision.Value}.", actor, correlationId, cancellationToken);
+        }
+
+        private async Task<ReviewerEffectiveSourceSnapshot?>
+                CaptureReviewerEffectiveSourceAsync(
+                        Job job,
+                        Guid runId,
+                        PlannerPlan plan,
+                        ValidatedDeveloperProposal proposal,
+                        ObservedChangeManifest observedChanges,
+                        DeveloperProposalLineage lineage,
+                        CancellationToken cancellationToken)
+        {
+                try
+                {
+                        ExecutionPlaneLifecycleResult recovery =
+                                await _executionPlaneLifecycle.RecoverAsync(
+                                        job.Id,
+                                        job.ExternalId,
+                                        cancellationToken);
+                        if (!recovery.IsSuccess || recovery.Session is null ||
+                            recovery.Session.Repository.JobId != job.Id ||
+                            !string.Equals(
+                                    recovery.Session.Repository.JobExternalId,
+                                    job.ExternalId,
+                                    StringComparison.Ordinal) ||
+                            !string.Equals(
+                                    recovery.Session.Repository.Head,
+                                    job.BaseRepositoryHead,
+                                    StringComparison.OrdinalIgnoreCase))
+                                return null;
+
+                        ReviewerEffectiveSourceSnapshotResult captured =
+                                await _reviewerEffectiveSourceSnapshotService.CaptureAsync(
+                                        new ReviewerEffectiveSourceSnapshotRequest
+                                        {
+                                                JobId = job.Id,
+                                                RunId = runId,
+                                                Repository = recovery.Session.Repository,
+                                                Plan = plan,
+                                                EffectiveProposal = proposal,
+                                                ObservedChanges = observedChanges,
+                                                EffectiveProposalLineage = lineage
+                                        },
+                                        cancellationToken);
+                        return captured.IsSuccess ? captured.Snapshot : null;
+                }
+                catch (OperationCanceledException)
+                        when (cancellationToken.IsCancellationRequested)
+                {
+                        throw;
+                }
+                catch
+                {
+                        return null;
+                }
+        }
+
+        internal static bool HasActiveHumanReviewCorrection(
+                JobState state,
+                IReadOnlyList<JobTransition> transitions)
+        {
+                if (state is not (
+                        JobState.Developing or
+                        JobState.Building or
+                        JobState.Testing or
+                        JobState.Reviewing))
+                        return false;
+
+                JobTransition[] relevant = transitions
+                        .Where(transition =>
+                                transition.ToState == JobState.WaitingHuman ||
+                                (transition.FromState == JobState.WaitingHuman &&
+                                 transition.ToState == JobState.Developing))
+                        .ToArray();
+
+                if (relevant.Length == 0)
+                        return false;
+
+                DateTime latestCorrectionStart = relevant
+                        .Where(transition =>
+                                transition.FromState == JobState.WaitingHuman &&
+                                transition.ToState == JobState.Developing)
+                        .Select(transition => transition.OccurredOnUtc)
+                        .DefaultIfEmpty(DateTime.MinValue)
+                        .Max();
+
+                if (latestCorrectionStart == DateTime.MinValue)
+                        return false;
+
+                return !relevant.Any(transition =>
+                        transition.ToState == JobState.WaitingHuman &&
+                        transition.OccurredOnUtc > latestCorrectionStart);
+        }
+
         private async Task<StageRecoveryResult>
                 CheckRecoveryEvidenceAsync(
                         Job job,
@@ -1166,8 +2390,11 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                                 JobId = job.Id,
                                                 RunId = runId,
                                                 Stage = stage,
+                                                JobRequest =
+                                                        job.Request,
                                                 CorrelationId =
-                                                        correlationId
+                                                        correlationId,
+                                                AttemptCount = job.AttemptCount
                                         },
                                         cancellationToken);
                 }
@@ -1183,6 +2410,11 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 "STAGE_RECOVERY_CHECK_FAILED");
                 }
         }
+
+        private static string Hash<T>(T value) =>
+                Convert.ToHexString(SHA256.HashData(
+                        JsonSerializer.SerializeToUtf8Bytes(value)))
+                    .ToLowerInvariant();
 
         private static JobOperationResult?
                 RecoveryFailure(
@@ -1215,6 +2447,51 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                                 .StageRecoveryFailed)
                 };
         }
+
+        private static JobOperationKind
+                MapDeveloperFailureKind(
+                        DeveloperExecutionFailureKind kind) =>
+                kind switch
+                {
+                        DeveloperExecutionFailureKind.Cancelled or
+                        DeveloperExecutionFailureKind.AiCancelled =>
+                                JobOperationKind.Cancelled,
+
+                        DeveloperExecutionFailureKind.AiTimedOut =>
+                                JobOperationKind.TimedOut,
+
+                        DeveloperExecutionFailureKind.InvalidRequest or
+                        DeveloperExecutionFailureKind.PlanningPlanInvalid or
+                        DeveloperExecutionFailureKind.ContextPackageInvalid or
+                        DeveloperExecutionFailureKind.ContextTooLarge or
+                        DeveloperExecutionFailureKind.AiRejected or
+                        DeveloperExecutionFailureKind.AiInvalidResponse or
+                        DeveloperExecutionFailureKind.PolicyRejected =>
+                                JobOperationKind.PermanentFailure,
+
+                        _ => JobOperationKind.RetryableFailure
+                };
+
+        private static JobOperationKind
+                MapSafeChangeFailureKind(
+                        SafeChangeApplicationFailureKind kind) =>
+                kind switch
+                {
+                        SafeChangeApplicationFailureKind.Cancelled =>
+                                JobOperationKind.Cancelled,
+
+                        SafeChangeApplicationFailureKind.InvalidRequest or
+                        SafeChangeApplicationFailureKind.UnsafeWorkspace or
+                        SafeChangeApplicationFailureKind.InvalidPath or
+                        SafeChangeApplicationFailureKind.ProtectedPath or
+                        SafeChangeApplicationFailureKind.PreconditionFailed or
+                        SafeChangeApplicationFailureKind.DestinationConflict or
+                        SafeChangeApplicationFailureKind.SymlinkDetected or
+                        SafeChangeApplicationFailureKind.LimitExceeded =>
+                                JobOperationKind.PermanentFailure,
+
+                        _ => JobOperationKind.RetryableFailure
+                };
 
         private static JobOperationKind
                 MapPlanningFailureKind(

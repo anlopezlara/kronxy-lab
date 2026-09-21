@@ -42,6 +42,18 @@ public sealed record AiGatewayOptions
         init;
     }
 
+    public TimeSpan PlanningInferenceTimeout
+    {
+        get;
+        init;
+    } = TimeSpan.FromMinutes(3);
+
+    public TimeSpan DeveloperInferenceTimeout
+    {
+        get;
+        init;
+    } = TimeSpan.FromMinutes(3);
+
     public TimeSpan QueueWaitTimeout
     {
         get;
@@ -54,11 +66,35 @@ public sealed record AiGatewayOptions
         init;
     }
 
+    public int ContextWindowTokens
+    {
+        get;
+        init;
+    } = 16_384;
+
     public int MaxInputCharacters
     {
         get;
         init;
     }
+
+    public int PlanningContextCharacters
+    {
+        get;
+        init;
+    } = 48_000;
+
+    public int DeveloperContextCharacters
+    {
+        get;
+        init;
+    } = 48_000;
+
+    public int DeveloperFeedbackCharacters
+    {
+        get;
+        init;
+    } = 8_192;
 
     public int MaxResponseBytes
     {
@@ -136,6 +172,26 @@ public sealed record AiGatewayOptions
             nameof(InferenceTimeout));
 
         ValidatePositiveTimeout(
+            PlanningInferenceTimeout,
+            nameof(PlanningInferenceTimeout));
+
+        if (PlanningInferenceTimeout < InferenceTimeout)
+        {
+            throw new InvalidOperationException(
+                "AI PlanningInferenceTimeout must be greater than or equal to InferenceTimeout.");
+        }
+
+        ValidatePositiveTimeout(
+            DeveloperInferenceTimeout,
+            nameof(DeveloperInferenceTimeout));
+
+        if (DeveloperInferenceTimeout < InferenceTimeout)
+        {
+            throw new InvalidOperationException(
+                "AI DeveloperInferenceTimeout must be greater than or equal to InferenceTimeout.");
+        }
+
+        ValidatePositiveTimeout(
             QueueWaitTimeout,
             nameof(QueueWaitTimeout));
 
@@ -143,6 +199,12 @@ public sealed record AiGatewayOptions
         {
             throw new InvalidOperationException(
                 "AI MaxOutputTokens must be greater than zero.");
+        }
+
+        if (ContextWindowTokens <= MaxOutputTokens)
+        {
+            throw new InvalidOperationException(
+                "AI ContextWindowTokens must be greater than MaxOutputTokens.");
         }
 
         if (MaxInputCharacters <= 0)

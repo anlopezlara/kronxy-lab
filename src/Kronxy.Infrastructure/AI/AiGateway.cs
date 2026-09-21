@@ -117,9 +117,30 @@ public sealed class AiGateway : IAiGateway, IDisposable
 
         try
         {
+            TimeSpan effectiveInferenceTimeout =
+                request.InferenceTimeout ??
+                options.InferenceTimeout;
+
+            TimeSpan maximumInferenceTimeout =
+                options.PlanningInferenceTimeout >
+                    options.DeveloperInferenceTimeout
+                    ? options.PlanningInferenceTimeout
+                    : options.DeveloperInferenceTimeout;
+
+            if (effectiveInferenceTimeout <= TimeSpan.Zero ||
+                effectiveInferenceTimeout == Timeout.InfiniteTimeSpan ||
+                effectiveInferenceTimeout >
+                    maximumInferenceTimeout)
+            {
+                return Failure(
+                    request,
+                    AiOperationStatus.Rejected,
+                    "AI_INFERENCE_TIMEOUT_INVALID");
+            }
+
             using var inferenceTimeout =
                 new CancellationTokenSource(
-                    options.InferenceTimeout);
+                    effectiveInferenceTimeout);
 
             using var linkedToken =
                 CancellationTokenSource

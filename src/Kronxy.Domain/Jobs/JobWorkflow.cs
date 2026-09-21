@@ -62,9 +62,11 @@ public static class JobWorkflow
             (JobState.Building, JobState.Testing) => true,
             (JobState.Testing, JobState.Reviewing) => true,
             (JobState.Reviewing, JobState.WaitingHuman) => true,
+            (JobState.Reviewing, JobState.Developing) => true,
 
             (JobState.WaitingHuman, JobState.Completed) => true,
             (JobState.WaitingHuman, JobState.Rejected) => true,
+            (JobState.WaitingHuman, JobState.Developing) => true,
 
             _ => false
         };

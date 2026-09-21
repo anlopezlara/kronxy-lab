@@ -49,6 +49,16 @@ public static class JobApplicationErrors
                         "Job.PlanningExecutionFailed",
                         "The AI planning execution did not complete successfully.");
 
+        public static readonly Error DeveloperExecutionFailed =
+                new Error(
+                        "Job.DeveloperExecutionFailed",
+                        "The AI developer execution did not complete successfully.");
+
+        public static readonly Error SafeChangeApplicationFailed =
+                new Error(
+                        "Job.SafeChangeApplicationFailed",
+                        "The validated developer proposal could not be safely applied.");
+
         public static readonly Error RestoreExecutionFailed =
                 new Error(
                         "Job.RestoreExecutionFailed",
@@ -64,6 +74,14 @@ public static class JobApplicationErrors
                         "Job.TestExecutionFailed",
                         "The test execution did not complete successfully.");
 
+        public static readonly Error ObservedChangeEvidenceInvalid =
+                new Error(
+                        "Job.ObservedChangeEvidenceInvalid",
+                        "Observed change evidence could not be generated or validated.");
+
+        public static readonly Error ReviewerEvidenceInvalid = new("Job.ReviewerEvidenceInvalid", "Required persisted reviewer evidence is incomplete or invalid.");
+        public static readonly Error ReviewerExecutionFailed = new("Job.ReviewerExecutionFailed", "The reviewer execution failed closed.");
+        public static readonly Error ReviewDecisionFailed = new("Job.ReviewDecisionFailed", "Deterministic review gates rejected the evidence.");
 
     public static readonly Error StageRecoveryFailed =
         new(

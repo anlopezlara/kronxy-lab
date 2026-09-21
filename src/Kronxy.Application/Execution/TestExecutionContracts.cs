@@ -30,6 +30,7 @@ public sealed record TestExecutionRequest
     public required string Target { get; init; }
 
     public string CorrelationId { get; init; } = string.Empty;
+    public bool IsHumanReviewCorrection { get; init; }
 }
 
 public sealed record TestExecutionReport(

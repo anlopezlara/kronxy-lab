@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Kronxy.Application.Abstractions.Clock;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
@@ -33,7 +34,33 @@ public sealed class JobApplicationTests
                 FakeBuildExecutionService Build,
                 FakeTestExecutionService Test,
                 FakePlanningExecutionService Planning,
-                FakeStageRecoveryEvidenceService RecoveryEvidence);
+                FakeDeveloperExecutionService Developer,
+                FakeSafeChangeApplier SafeChange,
+                FakeObservedChangeEvidenceService Observed,
+                FakeStageRecoveryEvidenceService RecoveryEvidence,
+                FakeReviewerExecutionService Reviewer,
+                FakeReviewDecisionPolicy ReviewPolicy,
+                FakeArtifactStore Artifacts);
+
+        private sealed class FakeArtifactStore : IArtifactStore
+        {
+                public List<ArtifactWriteRequest> Writes { get; } = [];
+                public Task<ArtifactWriteResult> WriteAsync(
+                        ArtifactWriteRequest request,
+                        CancellationToken cancellationToken = default)
+                {
+                        Writes.Add(request);
+                        return Task.FromResult(ArtifactWriteResult.Success(new ArtifactRecord
+                        {
+                                ArtifactId = Guid.NewGuid(), JobId = request.JobId,
+                                RunId = request.RunId, ArtifactType = request.ArtifactType,
+                                RelativePath = "human-review/changes-required.json",
+                                Sha256 = new string('a', 64), SizeBytes = request.Content.Length,
+                                CreatedAtUtc = DateTimeOffset.UtcNow,
+                                CorrelationId = request.CorrelationId
+                        }));
+                }
+        }
 
 	private sealed class FakeJobRepository : IJobRepository
 	{
@@ -416,6 +443,8 @@ public sealed class JobApplicationTests
 	{
 		Fixture fixture = CreateFixture(3, TimeSpan.FromMinutes(30.0));
 		Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-TIMEOUT");
+		await fixture.Orchestrator.AdvanceAsync(
+			created.Value.Id, "orchestrator", "corr-start");
 		fixture.Clock.UtcNow = UtcNow.AddMinutes(31.0);
 		JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-timeout");
 		Assert.False(result.IsSuccess);
@@ -1241,6 +1270,9 @@ public sealed class JobApplicationTests
 	                1,
 	                fixture.Restore.CallCount);
 
+                Assert.Equal(1, fixture.Developer.CallCount);
+                Assert.Equal(1, fixture.SafeChange.CallCount);
+
 	        RestoreExecutionRequest request =
 	                Assert.IsType<RestoreExecutionRequest>(
 	                        fixture.Restore.LastRequest);
@@ -1265,6 +1297,129 @@ public sealed class JobApplicationTests
 	                2,
 	                fixture.ExecutionPlane.RecoverCount);
 	}
+
+        [Fact]
+        public async Task Developing_ValidDeveloperRecovery_SkipsInferenceAndRunsSafeChangeThenRestore()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-DEV-RECOVER");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "created");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "context");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "planning");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "workspace");
+                var recovered = new ValidatedDeveloperProposal(
+                        "Recovered",
+                        new[] { new ValidatedDeveloperChange(DeveloperChangeOperationType.CreateFile, "src/recovered.cs", "Recover", "class Recovered {}", string.Empty, 18) },
+                        Array.Empty<string>(), Array.Empty<string>(), 18, 100);
+                fixture.RecoveryEvidence.Handler = request =>
+                        request.Stage == RecoveryStage.Developer
+                                ? StageRecoveryResult.Completed(recovered)
+                                : StageRecoveryResult.NotCompleted();
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "recover");
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.Building, created.Value.State);
+                Assert.Equal(0, fixture.Developer.CallCount);
+                Assert.Equal(1, fixture.SafeChange.CallCount);
+                Assert.Same(recovered, fixture.SafeChange.LastRequest!.Proposal);
+                Assert.Equal(1, fixture.Restore.CallCount);
+        }
+
+        [Fact]
+        public async Task Developing_InvalidDeveloperEvidence_FailsBeforeExternalExecution()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-DEV-EVIDENCE-BAD");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "created");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "context");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "planning");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "workspace");
+                fixture.RecoveryEvidence.Handler = request =>
+                        request.Stage == RecoveryStage.Developer
+                                ? StageRecoveryResult.InvalidEvidence("TAMPERED")
+                                : StageRecoveryResult.NotCompleted();
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "recover-bad");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(0, fixture.Developer.CallCount);
+                Assert.Equal(0, fixture.SafeChange.CallCount);
+                Assert.Equal(0, fixture.Restore.CallCount);
+        }
+
+        [Fact]
+        public async Task Developing_DeveloperFailure_DoesNotApplyOrRestore()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-DEVELOPER-FAIL");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-created");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-context");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-planning");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-workspace");
+                fixture.Developer.FailureKind = DeveloperExecutionFailureKind.AiInvalidResponse;
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "corr-developer-fail");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobApplicationErrors.DeveloperExecutionFailed, result.Error);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(1, fixture.Developer.CallCount);
+                Assert.Equal(0, fixture.SafeChange.CallCount);
+                Assert.Equal(0, fixture.Restore.CallCount);
+        }
+
+        [Fact]
+        public async Task Developing_SafeChangeFailure_DoesNotRestore()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-SAFE-FAIL");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-created");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-context");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-planning");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-workspace");
+                fixture.SafeChange.FailureKind = SafeChangeApplicationFailureKind.PreconditionFailed;
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "corr-safe-fail");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobApplicationErrors.SafeChangeApplicationFailed, result.Error);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(1, fixture.Developer.CallCount);
+                Assert.Equal(1, fixture.SafeChange.CallCount);
+                Assert.Equal(0, fixture.Restore.CallCount);
+                Assert.NotNull(fixture.SafeChange.LastRequest?.Proposal);
+        }
+
+        [Fact]
+        public async Task Developing_ObservedChangeFailure_UsesObservedSpecificError()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync(
+                        "request", "KRX-OBSERVED-FAIL");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "created");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "context");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "planning");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "workspace");
+                fixture.Observed.FailureKind =
+                        ObservedChangeEvidenceFailureKind.UnsafePath;
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "observed-fail");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(JobApplicationErrors.ObservedChangeEvidenceInvalid, result.Error);
+                Assert.NotEqual(JobApplicationErrors.ReviewerEvidenceInvalid, result.Error);
+                Assert.Equal(1, fixture.Observed.CallCount);
+                Assert.Equal(0, fixture.Restore.CallCount);
+                Assert.Equal(0, fixture.Reviewer.CallCount);
+        }
 
 	[Fact]
 	public async Task Developing_RestoreFailure_DoesNotAdvance()
@@ -2127,6 +2282,765 @@ public sealed class JobApplicationTests
                         fixture.Restore.CallCount);
         }
 
+        [Fact]
+        public async Task ChangesRequired_starts_next_bounded_attempt_with_distinct_run_identity()
+        {
+                Fixture fixture = CreateFixture(maxAttempts: 3);
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-CORRECTION-001");
+                int guard=0;
+                while (created.Value.State != JobState.Reviewing && guard++ < 10)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(created.Value.Id,"orchestrator","corr")).IsSuccess);
+
+                fixture.Reviewer.Review = new ReviewerReview
+                { Decision=ReviewerDecision.ChangesRequired, Findings=[], RequiredCorrections=[
+                    new ReviewerCorrection { RelativePath="src/generated.cs", Instruction="correct it" }],
+                  RiskAssessment="medium", Summary="changes" };
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(request, created.Value.BaseRepositoryHead!);
+
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(created.Value.Id,"orchestrator","review")).IsSuccess);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(2, created.Value.AttemptCount);
+                var provider=new DeterministicJobRunIdProvider();
+                Guid firstRun = provider.Create(created.Value.Id,1);
+                Assert.NotEqual(firstRun,provider.Create(created.Value.Id,2));
+
+                ReviewerReview feedback = fixture.Reviewer.Review;
+                fixture.RecoveryEvidence.Handler = request => request.Stage == RecoveryStage.Reviewer
+                        ? StageRecoveryResult.Completed(reviewerReview: feedback)
+                        : request.Stage == RecoveryStage.Developer && request.RunId != firstRun
+                                ? StageRecoveryResult.NotCompleted()
+                                : ReviewerEvidence(request, created.Value.BaseRepositoryHead!);
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(created.Value.Id,"orchestrator","attempt-2")).IsSuccess);
+                Assert.Same(feedback, fixture.Developer.LastRequest!.ReviewerFeedback);
+                Assert.Equal(firstRun, fixture.Developer.LastRequest.AuthorizedEvidenceRunId);
+        }
+
+        [Fact]
+        public async Task ChangesRequired_at_max_attempts_stops_at_human_boundary()
+        {
+                Fixture fixture = CreateFixture(maxAttempts: 1);
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-CORRECTION-MAX");
+                int guard=0;
+                while (created.Value.State != JobState.Reviewing && guard++ < 10)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(created.Value.Id,"orchestrator","corr")).IsSuccess);
+                fixture.Reviewer.Review = new ReviewerReview
+                { Decision=ReviewerDecision.ChangesRequired, Findings=[], RequiredCorrections=[],
+                  RiskAssessment="high", Summary="changes" };
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(request, created.Value.BaseRepositoryHead!);
+
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(created.Value.Id,"orchestrator","review")).IsSuccess);
+                Assert.Equal(JobState.WaitingHuman,created.Value.State);
+                Assert.Equal(1,created.Value.AttemptCount);
+        }
+
+        [Fact]
+        public async Task Human_review_changes_required_runs_governed_same_attempt_cycle()
+        {
+                Fixture fixture = CreateFixture(maxAttempts: 3);
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-HUMAN-CORRECTION");
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(
+                        request, created.Value.BaseRepositoryHead ?? fixture.SourceRevision.Head);
+
+                int guard = 0;
+                while (created.Value.State != JobState.WaitingHuman && guard++ < 12)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                                created.Value.Id, "orchestrator", "initial")).IsSuccess);
+
+                int attemptBefore = created.Value.AttemptCount;
+                Guid runId = new DeterministicJobRunIdProvider().Create(created.Value.Id, attemptBefore);
+                var humanEvidence = new HumanReviewCorrectionEvidence
+                {
+                        JobId = created.Value.Id,
+                        RunId = runId,
+                        Decision = HumanReviewDecision.ChangesRequired,
+                        RequiredCorrections =
+                        [
+                                new HumanReviewRequiredCorrection
+                                {
+                                        RelativePath = "src/generated.cs",
+                                        Instruction = "Replace the existing file to satisfy the human finding."
+                                }
+                        ],
+                        RecordedAtUtc = DateTimeOffset.UtcNow
+                };
+
+                fixture.RecoveryEvidence.Handler = request => request.Stage switch
+                {
+                        RecoveryStage.HumanReviewCorrection => StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.ReviewerOriginal => StageRecoveryResult.Completed(
+                                reviewerReview: new ReviewerReview
+                                {
+                                        Decision = ReviewerDecision.Approved,
+                                        Findings = [], RequiredCorrections = [],
+                                        RiskAssessment = "low", Summary = "approved"
+                                }),
+                        _ => ReviewerEvidence(request, created.Value.BaseRepositoryHead!)
+                };
+
+                JobOperationResult requested = await fixture.Orchestrator.RequestHumanReviewCorrectionAsync(
+                        created.Value.Id,
+                        new HumanReviewCorrectionRequest
+                        {
+                                Actor = "human-reviewer",
+                                CorrelationId = "human-correction",
+                                RequiredCorrections = humanEvidence.RequiredCorrections
+                        });
+
+                Assert.True(requested.IsSuccess);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(attemptBefore, created.Value.AttemptCount);
+                Assert.Single(fixture.Artifacts.Writes);
+                Assert.Equal(ArtifactType.HumanReviewCorrectionEvidence,
+                        fixture.Artifacts.Writes[0].ArtifactType);
+
+                fixture.RecoveryEvidence.Handler = request => request.Stage switch
+                {
+                        RecoveryStage.HumanReviewCorrection => StageRecoveryResult.Completed(
+                                humanReviewCorrection: humanEvidence),
+                        RecoveryStage.EffectiveDeveloperProposal =>
+                                StageRecoveryResult.Completed(
+                                        developerProposal: ReviewerEvidence(
+                                                request,
+                                                created.Value.BaseRepositoryHead!)
+                                            .DeveloperProposal,
+                                        developerProposalLineage:
+                                            DeveloperProposalLineage.HumanReviewCorrection),
+                        RecoveryStage.DeveloperHumanReviewCorrection or
+                        RecoveryStage.ReviewerHumanReviewCorrection => StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.ObservedHumanReviewCorrection =>
+                                created.Value.State == JobState.Reviewing
+                                        ? StageRecoveryResult.Completed(observedChangeManifest:
+                                                new ObservedChangeManifest(
+                                                        created.Value.Id, runId,
+                                                        created.Value.BaseRepositoryHead!, []))
+                                        : StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.BuildHumanReviewCorrection =>
+                                created.Value.State == JobState.Reviewing
+                                        ? StageRecoveryResult.Completed(buildReport:
+                                                new BuildExecutionReport(
+                                                        created.Value.Id, runId, "target",
+                                                        ToolExecutionOutcome.Completed, 0, "",
+                                                        DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero))
+                                        : StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.TestHumanReviewCorrection =>
+                                created.Value.State == JobState.Reviewing
+                                        ? StageRecoveryResult.Completed(testReport:
+                                                new TestExecutionReport(
+                                                        created.Value.Id, runId, "target",
+                                                        ToolExecutionOutcome.Completed, 0, "",
+                                                        DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero))
+                                        : StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.ReviewerOriginal => StageRecoveryResult.Completed(
+                                reviewerReview: new ReviewerReview
+                                {
+                                        Decision = ReviewerDecision.Approved,
+                                        Findings = [], RequiredCorrections = [],
+                                        RiskAssessment = "low", Summary = "approved"
+                                }),
+                        _ => ReviewerEvidence(request, created.Value.BaseRepositoryHead!)
+                };
+
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "human-developer")).IsSuccess);
+                Assert.Equal(JobState.Building, created.Value.State);
+                Assert.NotNull(fixture.Developer.LastRequest?.HumanReviewCorrection);
+                Assert.True(fixture.SafeChange.LastRequest?.IsHumanReviewCorrection);
+                Assert.True(fixture.Observed.LastRequest?.IsHumanReviewCorrection);
+
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "human-build")).IsSuccess);
+                Assert.Equal(JobState.Testing, created.Value.State);
+                Assert.True(fixture.Build.LastRequest?.IsHumanReviewCorrection);
+
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "human-test")).IsSuccess);
+                Assert.Equal(JobState.Reviewing, created.Value.State);
+                Assert.True(fixture.Test.LastRequest?.IsHumanReviewCorrection);
+
+                Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "human-review")).IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+                Assert.Equal(attemptBefore, created.Value.AttemptCount);
+                Assert.NotNull(fixture.Reviewer.LastRequest?.HumanReviewCorrection);
+        }
+
+        [Fact]
+        public async Task Human_review_correction_rejects_path_outside_original_plan()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-HUMAN-PATH");
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(
+                        request, created.Value.BaseRepositoryHead ?? fixture.SourceRevision.Head);
+                int guard = 0;
+                while (created.Value.State != JobState.WaitingHuman && guard++ < 12)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                                created.Value.Id, "orchestrator", "initial")).IsSuccess);
+
+                fixture.RecoveryEvidence.Handler = request => request.Stage switch
+                {
+                        RecoveryStage.HumanReviewCorrection => StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.ReviewerOriginal => StageRecoveryResult.Completed(
+                                reviewerReview: fixture.Reviewer.Review),
+                        _ => ReviewerEvidence(request, created.Value.BaseRepositoryHead!)
+                };
+                JobOperationResult result = await fixture.Orchestrator.RequestHumanReviewCorrectionAsync(
+                        created.Value.Id,
+                        new HumanReviewCorrectionRequest
+                        {
+                                Actor = "human", CorrelationId = "outside",
+                                RequiredCorrections =
+                                [
+                                        new HumanReviewRequiredCorrection
+                                        {
+                                                RelativePath = "src/outside.cs",
+                                                Instruction = "unauthorized"
+                                        }
+                                ]
+                        });
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
+        [Fact]
+        public async Task Human_review_approval_completes_with_audited_evidence_only()
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob("KRX-APPROVE");
+                ConfigureApprovalEvidence(fixture, job);
+                int developer = fixture.Developer.CallCount;
+                int safeChange = fixture.SafeChange.CallCount;
+                int build = fixture.Build.CallCount;
+                int test = fixture.Test.CallCount;
+                int reviewer = fixture.Reviewer.CallCount;
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(job.Id, "human-review", "approve-1");
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.Completed, job.State);
+                Assert.False(job.State == JobState.WaitingHuman);
+                ArtifactWriteRequest write = Assert.Single(fixture.Artifacts.Writes);
+                Assert.Equal(ArtifactType.HumanReviewApprovalEvidence, write.ArtifactType);
+                HumanReviewApprovalEvidence evidence = JsonSerializer.Deserialize<HumanReviewApprovalEvidence>(
+                        write.Content.Span)!;
+                Assert.Equal("human-review", evidence.Actor);
+                Assert.Equal("approve-1", evidence.CorrelationId);
+                Assert.Equal(job.Id, evidence.JobId);
+                Assert.Equal(1, evidence.AttemptCount);
+                Assert.Equal(64, evidence.ReviewerReviewSha256.Length);
+                Assert.Equal(64, evidence.DeterministicAcceptanceGateSha256.Length);
+                Assert.Equal(developer, fixture.Developer.CallCount);
+                Assert.Equal(safeChange, fixture.SafeChange.CallCount);
+                Assert.Equal(build, fixture.Build.CallCount);
+                Assert.Equal(test, fixture.Test.CallCount);
+                Assert.Equal(reviewer, fixture.Reviewer.CallCount);
+        }
+
+        [Fact]
+        public async Task Human_review_approval_is_idempotent_for_same_correlation()
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob("KRX-APPROVE-IDEMPOTENT");
+                ConfigureApprovalEvidence(fixture, job, approvalExistsAfterWrite: true);
+
+                Assert.True((await fixture.Orchestrator.ApproveHumanReviewAsync(
+                        job.Id, "human-review", "approve-idempotent")).IsSuccess);
+                int transitions = job.Transitions.Count;
+                Assert.True((await fixture.Orchestrator.ApproveHumanReviewAsync(
+                        job.Id, "human-review", "approve-idempotent")).IsSuccess);
+
+                Assert.Single(fixture.Artifacts.Writes);
+                Assert.Equal(transitions, job.Transitions.Count);
+        }
+
+        [Theory]
+        [InlineData(ReviewerDecision.ChangesRequired, false)]
+        [InlineData(ReviewerDecision.Approved, true)]
+        public async Task Human_review_approval_rejects_non_approvable_review(
+                ReviewerDecision decision, bool corrections)
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob("KRX-APPROVE-REVIEW");
+                ConfigureApprovalEvidence(fixture, job, decision: decision,
+                        hasCorrections: corrections);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(job.Id, "human-review", "approve-review");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
+        [Fact]
+        public async Task Human_review_approval_rejects_failed_deterministic_gate()
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob("KRX-APPROVE-GATE");
+                ConfigureApprovalEvidence(fixture, job, gatePass: false);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(job.Id, "human-review", "approve-gate");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
+        [Theory]
+        [InlineData(RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding)]
+        [InlineData(RecoveryStage.ObservedHumanReviewCorrection)]
+        [InlineData(RecoveryStage.BuildHumanReviewCorrection)]
+        [InlineData(RecoveryStage.TestHumanReviewCorrection)]
+        public async Task Human_review_approval_rejects_missing_evidence(
+                RecoveryStage missing)
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob("KRX-APPROVE-MISSING");
+                ConfigureApprovalEvidence(fixture, job, missing: missing);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(job.Id, "human-review", "approve-missing");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
+        [Fact]
+        public async Task Human_review_approval_rejects_state_other_than_waiting_human()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync(
+                        "request", "KRX-APPROVE-STATE");
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(created.Value.Id, "human-review", "approve-state");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.Created, created.Value.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
+        private static async Task<(Fixture Fixture, Job Job)> WaitingHumanJob(string externalId)
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", externalId);
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(
+                        request, created.Value.BaseRepositoryHead ?? fixture.SourceRevision.Head);
+                int guard = 0;
+                while (created.Value.State != JobState.WaitingHuman && guard++ < 12)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                                created.Value.Id, "orchestrator", "initial")).IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+                fixture.Artifacts.Writes.Clear();
+                return (fixture, created.Value);
+        }
+
+        private static void ConfigureApprovalEvidence(
+                Fixture fixture,
+                Job job,
+                bool approvalExistsAfterWrite = false,
+                ReviewerDecision decision = ReviewerDecision.Approved,
+                bool hasCorrections = false,
+                bool gatePass = true,
+                RecoveryStage? missing = null)
+        {
+                Guid runId = new DeterministicJobRunIdProvider().Create(job.Id, job.AttemptCount);
+                var criterion = new DeterministicAcceptanceCriterionResult(
+                        new DeterministicAcceptanceCriterion(
+                                "file", DeterministicCriterionKind.FileExists,
+                                "src/generated.cs", "src/generated.cs", "candidate file exists"),
+                        gatePass ? DeterministicCriterionStatus.Pass : DeterministicCriterionStatus.Fail,
+                        gatePass ? "present" : "missing");
+                var review = new ReviewerReview
+                {
+                        Decision = decision,
+                        Findings = [],
+                        RequiredCorrections = hasCorrections
+                                ? [new ReviewerCorrection
+                                    { RelativePath = "src/generated.cs", Instruction = "fix" }]
+                                : [],
+                        RiskAssessment = "low",
+                        Summary = "review",
+                        DeterministicAcceptanceGate = new(
+                                [criterion], ["architecture follows conventions"])
+                };
+                fixture.RecoveryEvidence.Handler = request =>
+                {
+                        if (request.Stage == RecoveryStage.HumanReviewApproval)
+                                return approvalExistsAfterWrite &&
+                                    fixture.Artifacts.Writes.Any(write =>
+                                        write.ArtifactType == ArtifactType.HumanReviewApprovalEvidence)
+                                        ? StageRecoveryResult.Completed()
+                                        : StageRecoveryResult.NotCompleted();
+                        if (request.Stage == missing) return StageRecoveryResult.NotCompleted();
+                        return request.Stage switch
+                        {
+                                RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding =>
+                                        StageRecoveryResult.Completed(reviewerReview: review),
+                                RecoveryStage.ObservedHumanReviewCorrection =>
+                                        StageRecoveryResult.Completed(observedChangeManifest:
+                                            new ObservedChangeManifest(job.Id, runId,
+                                                job.BaseRepositoryHead!, [])),
+                                RecoveryStage.BuildHumanReviewCorrection =>
+                                        StageRecoveryResult.Completed(buildReport:
+                                            new BuildExecutionReport(job.Id, runId, "target",
+                                                ToolExecutionOutcome.Completed, 0, "",
+                                                DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero)),
+                                RecoveryStage.TestHumanReviewCorrection =>
+                                        StageRecoveryResult.Completed(testReport:
+                                            new TestExecutionReport(job.Id, runId, "target",
+                                                ToolExecutionOutcome.Completed, 0, "",
+                                                DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero)),
+                                _ => StageRecoveryResult.NotCompleted()
+                        };
+                };
+        }
+
+        [Fact]
+        public async Task Superseding_human_review_is_reviewer_only_and_idempotent()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync(
+                        "request", "KRX-SUPERSEDE");
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(
+                        request,
+                        created.Value.BaseRepositoryHead ?? fixture.SourceRevision.Head);
+                int guard = 0;
+                while (created.Value.State != JobState.WaitingHuman && guard++ < 12)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                                created.Value.Id, "orchestrator", "initial")).IsSuccess);
+
+                int reviewerCallsBefore = fixture.Reviewer.CallCount;
+                int developerCallsBefore = fixture.Developer.CallCount;
+                int buildCallsBefore = fixture.Build.CallCount;
+                int testCallsBefore = fixture.Test.CallCount;
+                Guid runId = new DeterministicJobRunIdProvider().Create(
+                        created.Value.Id, created.Value.AttemptCount);
+                var correction = new HumanReviewCorrectionEvidence
+                {
+                        JobId = created.Value.Id,
+                        RunId = runId,
+                        Decision = HumanReviewDecision.ChangesRequired,
+                        RequiredCorrections =
+                        [
+                                new HumanReviewRequiredCorrection
+                                {
+                                        RelativePath = "src/generated.cs",
+                                        Instruction = "Apply the human finding."
+                                }
+                        ],
+                        RecordedAtUtc = DateTimeOffset.UtcNow
+                };
+                var effectiveProposal = new ValidatedDeveloperProposal(
+                        "Human correction",
+                        [
+                                new ValidatedDeveloperChange(
+                                        DeveloperChangeOperationType.ReplaceFile,
+                                        "src/generated.cs",
+                                        "Apply finding",
+                                        "class Generated { int HumanFixed; }",
+                                        new string('a', 64),
+                                        41)
+                        ],
+                        [], [], 41, 100);
+
+                fixture.RecoveryEvidence.Handler = request => request.Stage switch
+                {
+                        RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding =>
+                                fixture.Reviewer.CallCount > reviewerCallsBefore
+                                        ? StageRecoveryResult.Completed(
+                                                reviewerReview: fixture.Reviewer.Review)
+                                        : StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.ReviewerHumanReviewCorrection =>
+                                StageRecoveryResult.Completed(
+                                        reviewerReview: fixture.Reviewer.Review with
+                                        {
+                                                Decision = ReviewerDecision.ChangesRequired
+                                        }),
+                        RecoveryStage.HumanReviewCorrection =>
+                                StageRecoveryResult.Completed(
+                                        humanReviewCorrection: correction),
+                        RecoveryStage.EffectiveDeveloperProposal =>
+                                StageRecoveryResult.Completed(
+                                        developerProposal: effectiveProposal,
+                                        developerProposalLineage:
+                                            DeveloperProposalLineage.HumanReviewCorrection),
+                        RecoveryStage.ObservedHumanReviewCorrection =>
+                                StageRecoveryResult.Completed(
+                                        observedChangeManifest: new ObservedChangeManifest(
+                                                created.Value.Id, runId,
+                                                created.Value.BaseRepositoryHead!, [])),
+                        RecoveryStage.BuildHumanReviewCorrection =>
+                                StageRecoveryResult.Completed(
+                                        buildReport: new BuildExecutionReport(
+                                                created.Value.Id, runId, "target",
+                                                ToolExecutionOutcome.Completed, 0, "",
+                                                DateTime.UtcNow, DateTime.UtcNow,
+                                                TimeSpan.Zero)),
+                        RecoveryStage.TestHumanReviewCorrection =>
+                                StageRecoveryResult.Completed(
+                                        testReport: new TestExecutionReport(
+                                                created.Value.Id, runId, "target",
+                                                ToolExecutionOutcome.Completed, 0, "",
+                                                DateTime.UtcNow, DateTime.UtcNow,
+                                                TimeSpan.Zero)),
+                        _ => ReviewerEvidence(
+                                request, created.Value.BaseRepositoryHead!)
+                };
+
+                JobOperationResult first = await fixture.Orchestrator
+                        .SupersedeHumanReviewCorrectionReviewAsync(
+                                created.Value.Id, "human", "supersede-1");
+                JobOperationResult second = await fixture.Orchestrator
+                        .SupersedeHumanReviewCorrectionReviewAsync(
+                                created.Value.Id, "human", "supersede-2");
+
+                Assert.True(first.IsSuccess);
+                Assert.True(second.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+                Assert.Equal(reviewerCallsBefore + 1, fixture.Reviewer.CallCount);
+                Assert.Equal(developerCallsBefore, fixture.Developer.CallCount);
+                Assert.Equal(buildCallsBefore, fixture.Build.CallCount);
+                Assert.Equal(testCallsBefore, fixture.Test.CallCount);
+                Assert.True(fixture.Reviewer.LastRequest?
+                        .IsSupersedingHumanReviewCorrection);
+                Assert.Equal(3,
+                        fixture.Reviewer.LastRequest?.SupersedingReviewVersion);
+                Assert.Equal(DeveloperProposalLineage.HumanReviewCorrection,
+                        fixture.Reviewer.LastRequest?.EffectiveProposalLineage);
+                Assert.Contains("HumanFixed", Assert.Single(
+                        fixture.Reviewer.LastRequest!.DeveloperProposal.Changes)
+                    .Content);
+        }
+
+        [Fact]
+        public async Task Human_review_correction_rejects_invalid_job_state()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-HUMAN-STATE");
+
+                JobOperationResult result = await fixture.Orchestrator.RequestHumanReviewCorrectionAsync(
+                        created.Value.Id,
+                        new HumanReviewCorrectionRequest
+                        {
+                                Actor = "human", CorrelationId = "invalid-state",
+                                RequiredCorrections =
+                                [
+                                        new HumanReviewRequiredCorrection
+                                        {
+                                                RelativePath = "src/generated.cs",
+                                                Instruction = "not valid while queued"
+                                        }
+                                ]
+                        });
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobOperationKind.InvalidTransition, result.Kind);
+                Assert.Empty(fixture.Artifacts.Writes);
+                Assert.Equal(JobState.Created, created.Value.State);
+        }
+
+        [Fact]
+        public async Task Human_review_correction_rejects_terminal_job()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-HUMAN-TERMINAL");
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(
+                        request, created.Value.BaseRepositoryHead ?? fixture.SourceRevision.Head);
+                int guard = 0;
+                while (created.Value.State != JobState.WaitingHuman && guard++ < 12)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                                created.Value.Id, "orchestrator", "initial")).IsSuccess);
+                Assert.True(created.Value.TransitionTo(
+                        JobState.Completed, fixture.Clock.UtcNow,
+                        "human accepted", "human", "complete").IsSuccess);
+
+                JobOperationResult result = await fixture.Orchestrator.RequestHumanReviewCorrectionAsync(
+                        created.Value.Id,
+                        new HumanReviewCorrectionRequest
+                        {
+                                Actor = "human", CorrelationId = "terminal",
+                                RequiredCorrections =
+                                [new HumanReviewRequiredCorrection
+                                {
+                                        RelativePath = "src/generated.cs",
+                                        Instruction = "must be rejected"
+                                }]
+                        });
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobOperationKind.InvalidTransition, result.Kind);
+                Assert.Empty(fixture.Artifacts.Writes);
+                Assert.Equal(JobState.Completed, created.Value.State);
+        }
+
+        [Fact]
+        public void Active_human_review_cycle_is_detected_in_ascending_order()
+        {
+                DateTime now = UtcNow;
+                JobTransition[] transitions =
+                [
+                        Transition(JobState.Reviewing, JobState.WaitingHuman, now.AddMinutes(-2)),
+                        Transition(JobState.WaitingHuman, JobState.Developing, now.AddMinutes(-1))
+                ];
+
+                Assert.True(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.Developing, transitions));
+        }
+
+        [Fact]
+        public void Active_human_review_cycle_is_detected_in_descending_order()
+        {
+                DateTime now = UtcNow;
+                JobTransition[] transitions =
+                [
+                        Transition(JobState.WaitingHuman, JobState.Developing, now.AddMinutes(-1)),
+                        Transition(JobState.Reviewing, JobState.WaitingHuman, now.AddMinutes(-2))
+                ];
+
+                Assert.True(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.Developing, transitions));
+        }
+
+        [Fact]
+        public void Historical_waiting_human_does_not_invalidate_newer_cycle()
+        {
+                DateTime now = UtcNow;
+                JobTransition[] transitions =
+                [
+                        Transition(JobState.WaitingHuman, JobState.Developing, now),
+                        Transition(JobState.Reviewing, JobState.WaitingHuman, now.AddDays(-2)),
+                        Transition(JobState.Testing, JobState.Reviewing, now.AddDays(-3))
+                ];
+
+                Assert.True(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.Building, transitions));
+        }
+
+        [Fact]
+        public void Completed_or_missing_human_review_cycle_is_inactive()
+        {
+                DateTime now = UtcNow;
+                JobTransition[] completed =
+                [
+                        Transition(JobState.WaitingHuman, JobState.Developing, now.AddMinutes(-2)),
+                        Transition(JobState.Reviewing, JobState.WaitingHuman, now.AddMinutes(-1))
+                ];
+
+                Assert.False(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.WaitingHuman, completed));
+                Assert.False(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.Developing, []));
+        }
+
+        [Fact]
+        public async Task Active_human_review_cycle_without_evidence_fails_closed()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-HUMAN-MISSING-EVIDENCE");
+                fixture.RecoveryEvidence.Handler = request => ReviewerEvidence(
+                        request, created.Value.BaseRepositoryHead ?? fixture.SourceRevision.Head);
+                int guard = 0;
+                while (created.Value.State != JobState.WaitingHuman && guard++ < 12)
+                        Assert.True((await fixture.Orchestrator.AdvanceAsync(
+                                created.Value.Id, "orchestrator", "initial")).IsSuccess);
+
+                fixture.RecoveryEvidence.Handler = request => request.Stage switch
+                {
+                        RecoveryStage.HumanReviewCorrection => StageRecoveryResult.NotCompleted(),
+                        RecoveryStage.ReviewerOriginal => StageRecoveryResult.Completed(
+                                reviewerReview: fixture.Reviewer.Review),
+                        _ => ReviewerEvidence(request, created.Value.BaseRepositoryHead!)
+                };
+                Assert.True((await fixture.Orchestrator.RequestHumanReviewCorrectionAsync(
+                        created.Value.Id,
+                        new HumanReviewCorrectionRequest
+                        {
+                                Actor = "human", CorrelationId = "missing-evidence",
+                                RequiredCorrections =
+                                [new HumanReviewRequiredCorrection
+                                {
+                                        RelativePath = "src/generated.cs",
+                                        Instruction = "correct it"
+                                }]
+                        })).IsSuccess);
+
+                int developerCalls = fixture.Developer.CallCount;
+                int writes = fixture.Artifacts.Writes.Count;
+                fixture.RecoveryEvidence.Handler = request =>
+                        request.Stage == RecoveryStage.HumanReviewCorrection
+                                ? StageRecoveryResult.NotCompleted()
+                                : ReviewerEvidence(request, created.Value.BaseRepositoryHead!);
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "missing-evidence-advance");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobApplicationErrors.StageRecoveryFailed, result.Error);
+                Assert.Equal(JobState.Developing, created.Value.State);
+                Assert.Equal(developerCalls, fixture.Developer.CallCount);
+                Assert.Equal(writes, fixture.Artifacts.Writes.Count);
+        }
+
+        [Fact]
+        public void Human_review_cycle_detection_is_idempotent_and_side_effect_free()
+        {
+                Fixture fixture = CreateFixture();
+                DateTime now = UtcNow;
+                JobTransition[] transitions =
+                [
+                        Transition(JobState.WaitingHuman, JobState.Developing, now),
+                        Transition(JobState.Reviewing, JobState.WaitingHuman, now.AddMinutes(-1))
+                ];
+
+                Assert.True(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.Developing, transitions));
+                Assert.True(JobOrchestrator.HasActiveHumanReviewCorrection(
+                        JobState.Developing, transitions.Reverse().ToArray()));
+                Assert.Equal(0, fixture.Developer.CallCount);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
+        private static JobTransition Transition(
+                JobState from,
+                JobState to,
+                DateTime occurredOnUtc) =>
+                new(from, to, occurredOnUtc, "test", "test", "test");
+
+        private static StageRecoveryResult ReviewerEvidence(StageRecoveryRequest request,string head)
+        {
+                return request.Stage switch
+                {
+                        RecoveryStage.Planning => StageRecoveryResult.Completed(plannerPlan:new PlannerPlan
+                        { Objective="o",FilesToInspect=[],CandidateFilesToModify=["src/generated.cs"],Strategy="s",
+                          AcceptanceCriteria=[],Risks=[],ExpectedTests=[],Assumptions=[],Uncertainties=[] }),
+                        RecoveryStage.Developer => StageRecoveryResult.Completed(developerProposal:
+                            new ValidatedDeveloperProposal("s",
+                                [new ValidatedDeveloperChange(
+                                    DeveloperChangeOperationType.CreateFile,
+                                    "src/generated.cs", "create",
+                                    "class Generated {}", string.Empty, 18)],
+                                [],[],18,100)),
+                        RecoveryStage.EffectiveDeveloperProposal => StageRecoveryResult.Completed(
+                            developerProposal: new ValidatedDeveloperProposal("s",
+                                [new ValidatedDeveloperChange(
+                                    DeveloperChangeOperationType.CreateFile,
+                                    "src/generated.cs", "create",
+                                    "class Generated {}", string.Empty, 18)],
+                                [],[],18,100),
+                            developerProposalLineage: DeveloperProposalLineage.Original),
+                        RecoveryStage.ObservedChanges => StageRecoveryResult.Completed(observedChangeManifest:
+                            new ObservedChangeManifest(request.JobId,request.RunId,head,[])),
+                        RecoveryStage.Build => StageRecoveryResult.Completed(buildReport:
+                            new BuildExecutionReport(request.JobId,request.RunId,"target",ToolExecutionOutcome.Completed,0,"",
+                                DateTime.UtcNow,DateTime.UtcNow,TimeSpan.Zero)),
+                        RecoveryStage.Test => StageRecoveryResult.Completed(testReport:
+                            new TestExecutionReport(request.JobId,request.RunId,"target",ToolExecutionOutcome.Completed,0,"",
+                                DateTime.UtcNow,DateTime.UtcNow,TimeSpan.Zero)),
+                        RecoveryStage.Reviewer => StageRecoveryResult.NotCompleted(),
+                        _ => StageRecoveryResult.NotCompleted()
+                };
+        }
+
         private sealed class FakeStageRecoveryEvidenceService :
                 IStageRecoveryEvidenceService
         {
@@ -2200,6 +3114,36 @@ public sealed class JobApplicationTests
                                         CreatedAtUtc =
                                                 DateTimeOffset.UtcNow,
                                         CorrelationId = "test"
+                                },
+                                new ArtifactRecord
+                                {
+                                        ArtifactId = Guid.NewGuid(),
+                                        JobId = Guid.NewGuid(),
+                                        RunId = Guid.NewGuid(),
+                                        ArtifactType =
+                                                ArtifactType.PlanningPlan,
+                                        RelativePath =
+                                                "planner/plan.json",
+                                        Sha256 =
+                                                new string('e', 64),
+                                        SizeBytes = 1,
+                                        CreatedAtUtc =
+                                                DateTimeOffset.UtcNow,
+                                        CorrelationId = "test"
+                                },
+                                new PlannerPlan
+                                {
+                                        Objective = "Test planning objective.",
+                                        FilesToInspect = Array.Empty<string>(),
+                                        CandidateFilesToModify =
+                                                Array.Empty<string>(),
+                                        Strategy = "Test planning strategy.",
+                                        AcceptanceCriteria =
+                                                Array.Empty<string>(),
+                                        Risks = Array.Empty<string>(),
+                                        ExpectedTests = Array.Empty<string>(),
+                                        Assumptions = Array.Empty<string>(),
+                                        Uncertainties = Array.Empty<string>()
                                 });
 
                 public Task<PlanningExecutionResult> ExecuteAsync(
@@ -2208,6 +3152,153 @@ public sealed class JobApplicationTests
                 {
                         CallCount++;
                         return Task.FromResult(Result);
+                }
+        }
+
+        private sealed class FakeDeveloperExecutionService : IDeveloperExecutionService
+        {
+                public int CallCount { get; private set; }
+                public DeveloperExecutionFailureKind FailureKind { get; set; }
+                public DeveloperExecutionRequest? LastRequest { get; private set; }
+
+                public Task<DeveloperExecutionResult> ExecuteAsync(DeveloperExecutionRequest request, CancellationToken cancellationToken = default)
+                {
+                        CallCount++;
+                        LastRequest = request;
+                        if (FailureKind != DeveloperExecutionFailureKind.None)
+                                return Task.FromResult(DeveloperExecutionResult.Failure(FailureKind, "TEST_DEVELOPER_FAILURE"));
+
+                        var proposal = new ValidatedDeveloperProposal(
+                                "Test proposal",
+                                new[] { new ValidatedDeveloperChange(
+                                        request.HumanReviewCorrection is null
+                                                ? DeveloperChangeOperationType.CreateFile
+                                                : DeveloperChangeOperationType.ReplaceFile,
+                                        "src/generated.cs", "Test", "class Generated {}",
+                                        request.HumanReviewCorrection is null
+                                                ? string.Empty
+                                                : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                                                        System.Text.Encoding.UTF8.GetBytes(
+                                                                request.HumanReviewCorrection.CurrentProposal.Changes[0].Content)))
+                                                        .ToLowerInvariant(),
+                                        18) },
+                                Array.Empty<string>(), Array.Empty<string>(), 18, 100);
+                        ArtifactRecord Artifact(ArtifactType type, string path) => new()
+                        {
+                                ArtifactId = Guid.NewGuid(), JobId = request.JobId, RunId = request.RunId,
+                                ArtifactType = type, RelativePath = path, Sha256 = new string('a', 64), SizeBytes = 1,
+                                CreatedAtUtc = DateTimeOffset.UtcNow, CorrelationId = request.CorrelationId
+                        };
+                        return Task.FromResult(DeveloperExecutionResult.Success(
+                                new DeveloperExecutionReport
+                                {
+                                        JobId = request.JobId, RunId = request.RunId, LogicalModel = "CodingQuality",
+                                        Provider = "Fake", PhysicalModel = "fake", Duration = TimeSpan.Zero, TerminationReason = "Stop"
+                                },
+                                Artifact(ArtifactType.DeveloperResponse, "developer/response.json"),
+                                Artifact(ArtifactType.DeveloperProposal, "developer/proposal.json"), proposal));
+                }
+        }
+
+        private sealed class FakeObservedChangeEvidenceService : IObservedChangeEvidenceService
+        {
+                public int CallCount { get; private set; }
+                public ObservedChangeEvidenceFailureKind FailureKind { get; set; }
+                public ObservedChangeEvidenceRequest? LastRequest { get; private set; }
+                public Task<ObservedChangeEvidenceResult> CaptureAsync(ObservedChangeEvidenceRequest request, CancellationToken cancellationToken=default)
+                {
+                        CallCount++;
+                        LastRequest = request;
+                        if (FailureKind != ObservedChangeEvidenceFailureKind.None)
+                                return Task.FromResult(ObservedChangeEvidenceResult.Failure(
+                                        FailureKind, "TEST_OBSERVED_CHANGE_FAILURE"));
+                        var manifest = new ObservedChangeManifest(request.JobId, request.RunId, request.Repository.Head, []);
+                        var artifact = new ArtifactRecord { ArtifactId=Guid.NewGuid(), JobId=request.JobId, RunId=request.RunId,
+                                ArtifactType=ArtifactType.ObservedChangeManifest, RelativePath="changes/manifest.json", Sha256=new string('a',64),
+                                SizeBytes=1, CreatedAtUtc=DateTimeOffset.UtcNow, CorrelationId=request.CorrelationId };
+                        return Task.FromResult(ObservedChangeEvidenceResult.Success(manifest, artifact));
+                }
+        }
+
+        private sealed class FakeReviewerExecutionService : IReviewerExecutionService
+        {
+                public int CallCount { get; private set; }
+                public ReviewerExecutionRequest? LastRequest { get; private set; }
+                public ReviewerReview Review { get; set; } = new()
+                {
+                        Decision=ReviewerDecision.Approved, Findings=[], RequiredCorrections=[],
+                        RiskAssessment="low", Summary="ok"
+                };
+                public Task<ReviewerExecutionResult> ExecuteAsync(
+                        ReviewerExecutionRequest request, CancellationToken cancellationToken=default)
+                {
+                        CallCount++;
+                        LastRequest = request;
+                        ArtifactRecord review = CreateArtifact(request, ArtifactType.ReviewerReview);
+                        ArtifactRecord response = CreateArtifact(request, ArtifactType.ReviewerResponse);
+                        return Task.FromResult(ReviewerExecutionResult.Success(Review, review, response));
+                }
+                private static ArtifactRecord CreateArtifact(ReviewerExecutionRequest request, ArtifactType type) => new()
+                {
+                        ArtifactId=Guid.NewGuid(), JobId=request.JobId, RunId=request.RunId,
+                        ArtifactType=type, RelativePath="review/artifact.json", Sha256=new string('a',64),
+                        SizeBytes=1, CreatedAtUtc=DateTimeOffset.UtcNow, CorrelationId=request.CorrelationId
+                };
+        }
+
+        private sealed class FakeReviewerEffectiveSourceSnapshotService :
+                IReviewerEffectiveSourceSnapshotService
+        {
+                public int CallCount { get; private set; }
+
+                public Task<ReviewerEffectiveSourceSnapshotResult> CaptureAsync(
+                        ReviewerEffectiveSourceSnapshotRequest request,
+                        CancellationToken cancellationToken = default)
+                {
+                        CallCount++;
+                        ReviewerEffectiveSourceFile[] files = request.Plan
+                                .CandidateFilesToModify
+                                .Select(path => new ReviewerEffectiveSourceFile(
+                                        path, new string('a', 64), 0, string.Empty))
+                                .ToArray();
+                        return Task.FromResult(
+                                ReviewerEffectiveSourceSnapshotResult.Success(
+                                        new ReviewerEffectiveSourceSnapshot(
+                                                request.JobId,
+                                                request.RunId,
+                                                request.EffectiveProposalLineage,
+                                                files)));
+                }
+        }
+
+        private sealed class FakeReviewDecisionPolicy : IReviewDecisionPolicy
+        {
+                public int CallCount { get; private set; }
+                public ReviewDecisionResult Evaluate(ReviewDecisionInput input)
+                {
+                        CallCount++;
+                        return ReviewDecisionResult.Success(input.Review.Decision);
+                }
+        }
+
+        private sealed class FakeSafeChangeApplier : ISafeChangeApplier
+        {
+                public int CallCount { get; private set; }
+                public SafeChangeApplicationFailureKind FailureKind { get; set; }
+                public SafeChangeApplicationRequest? LastRequest { get; private set; }
+
+                public Task<SafeChangeApplicationResult> ApplyAsync(SafeChangeApplicationRequest request, CancellationToken cancellationToken = default)
+                {
+                        CallCount++;
+                        LastRequest = request;
+                        if (FailureKind != SafeChangeApplicationFailureKind.None)
+                                return Task.FromResult(SafeChangeApplicationResult.Failure(FailureKind, "TEST_SAFE_CHANGE_FAILURE"));
+
+                        DateTime now = DateTime.UtcNow;
+                        return Task.FromResult(SafeChangeApplicationResult.Success(
+                                new SafeChangeApplicationReport(request.JobId, request.RunId,
+                                        new[] { new AppliedFileChange(DeveloperChangeOperationType.CreateFile, "src/generated.cs", null, new string('b', 64), 18) },
+                                        18, now, now)));
                 }
         }
 
@@ -2251,8 +3342,20 @@ public sealed class JobApplicationTests
                 FakePlanningExecutionService planning =
                         new FakePlanningExecutionService();
 
+                FakeDeveloperExecutionService developer =
+                        new FakeDeveloperExecutionService();
+
+                FakeSafeChangeApplier safeChange =
+                        new FakeSafeChangeApplier();
+
                 FakeStageRecoveryEvidenceService recoveryEvidence =
                         new FakeStageRecoveryEvidenceService();
+
+                FakeObservedChangeEvidenceService observed = new();
+                FakeReviewerEffectiveSourceSnapshotService effectiveSource = new();
+                FakeReviewerExecutionService reviewer = new();
+                FakeReviewDecisionPolicy reviewPolicy = new();
+                FakeArtifactStore artifacts = new();
 
                 IJobRunIdProvider runIdProvider =
                         new DeterministicJobRunIdProvider();
@@ -2272,7 +3375,14 @@ public sealed class JobApplicationTests
                                 build,
                                 test,
                                 planning,
-                                recoveryEvidence);
+                                developer,
+                                safeChange,
+                                observed,
+                                recoveryEvidence,
+                                effectiveSource,
+                                reviewer,
+                                reviewPolicy,
+                                artifacts);
 
 		return new Fixture(
 		        fakeJobRepository,
@@ -2288,6 +3398,12 @@ public sealed class JobApplicationTests
                         build,
                         test,
                         planning,
-                        recoveryEvidence);
+                        developer,
+                        safeChange,
+                        observed,
+                        recoveryEvidence,
+                        reviewer,
+                        reviewPolicy,
+                        artifacts);
 	}
 }

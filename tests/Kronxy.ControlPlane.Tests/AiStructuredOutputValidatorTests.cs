@@ -127,6 +127,92 @@ public sealed class AiStructuredOutputValidatorTests
     }
 
     [Fact]
+    public void Array_items_are_validated()
+    {
+        JsonElement schema =
+            Parse(
+                """
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+                """);
+
+        bool valid =
+            validator.TryValidate(
+                schema,
+                """
+                [
+                  "first",
+                  "second"
+                ]
+                """,
+                out string error);
+
+        Assert.True(valid);
+        Assert.Equal(
+            string.Empty,
+            error);
+    }
+
+    [Fact]
+    public void Array_item_with_wrong_type_is_rejected()
+    {
+        JsonElement schema =
+            Parse(
+                """
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+                """);
+
+        bool valid =
+            validator.TryValidate(
+                schema,
+                """
+                [
+                  "first",
+                  42
+                ]
+                """,
+                out string error);
+
+        Assert.False(valid);
+        Assert.Equal(
+            "AI_STRUCTURED_SCHEMA_MISMATCH",
+            error);
+    }
+
+    [Fact]
+    public void Invalid_items_schema_is_rejected()
+    {
+        JsonElement schema =
+            Parse(
+                """
+                {
+                  "type": "array",
+                  "items": "string"
+                }
+                """);
+
+        bool valid =
+            validator.TryValidate(
+                schema,
+                "[]",
+                out string error);
+
+        Assert.False(valid);
+        Assert.Equal(
+            "AI_STRUCTURED_SCHEMA_UNSUPPORTED",
+            error);
+    }
+
+    [Fact]
     public void Unsupported_schema_keyword_is_rejected()
     {
         JsonElement schema =

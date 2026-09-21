@@ -12,6 +12,7 @@ internal enum SecureGitOperation
     WorktreePrune = 80,
     WorktreeRemove = 90,
     Status = 100,
+    StatusNull = 105,
     Diff = 110,
     DiffStat = 120
 }

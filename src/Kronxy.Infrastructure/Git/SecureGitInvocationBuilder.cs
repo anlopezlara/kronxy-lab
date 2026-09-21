@@ -64,6 +64,14 @@ internal static class SecureGitInvocationBuilder
                     "--porcelain=v1",
                     "--untracked-files=all"),
 
+            SecureGitOperation.StatusNull =>
+                NoParameters(
+                    request,
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all"),
+
             SecureGitOperation.Diff =>
                 NoParameters(
                     request,

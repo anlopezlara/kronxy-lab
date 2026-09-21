@@ -626,6 +626,102 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             ArtifactType.AiResponse =>
                 new("ai", "response.json"),
 
+            ArtifactType.PlanningPlan =>
+                new("planner", "plan.json"),
+
+            ArtifactType.PlanningRejectedResponse =>
+                new("planner", "rejected-response.json"),
+
+            ArtifactType.DeveloperResponse =>
+                new("developer", "response.json"),
+
+            ArtifactType.DeveloperRejectedResponse =>
+                new("developer", "rejected-response.json"),
+
+            ArtifactType.DeveloperRejectedStructuredResponse =>
+                new("developer", "rejected-structured-response.json"),
+
+            ArtifactType.DeveloperProposal =>
+                new("developer", "proposal.json"),
+
+            ArtifactType.DeveloperBuildCorrectionResponse =>
+                new("developer", "build-correction-response.json"),
+
+            ArtifactType.DeveloperBuildCorrectionProposal =>
+                new("developer", "build-correction-proposal.json"),
+
+            ArtifactType.DeveloperBuildCorrectionRejectedResponse =>
+                new("developer", "build-correction-rejected-response.json"),
+
+            ArtifactType.DeveloperBuildCorrectionRejectedStructuredResponse =>
+                new("developer", "build-correction-rejected-structured-response.json"),
+
+            ArtifactType.HumanReviewCorrectionEvidence =>
+                new("human-review", "changes-required.json"),
+
+            ArtifactType.DeveloperHumanReviewCorrectionResponse =>
+                new("developer", "human-review-correction-response.json"),
+
+            ArtifactType.DeveloperHumanReviewCorrectionProposal =>
+                new("developer", "human-review-correction-proposal.json"),
+
+            ArtifactType.DeveloperHumanReviewCorrectionRejectedResponse =>
+                new("developer", "human-review-correction-rejected-response.json"),
+
+            ArtifactType.DeveloperHumanReviewCorrectionRejectedStructuredResponse =>
+                new("developer", "human-review-correction-rejected-structured-response.json"),
+
+            ArtifactType.ObservedChangeManifest =>
+                new("changes", "manifest.json"),
+
+            ArtifactType.ObservedBuildCorrectionManifest =>
+                new("changes", "build-correction-manifest.json"),
+
+            ArtifactType.ObservedHumanReviewCorrectionManifest =>
+                new("changes", "human-review-correction-manifest.json"),
+
+            ArtifactType.ReviewerResponse =>
+                new("review", "response.json"),
+
+            ArtifactType.ReviewerReview =>
+                new("review", "review.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionResponse =>
+                new("review", "human-review-correction-response.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionReview =>
+                new("review", "human-review-correction-review.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionSupersedingResponse =>
+                new("review", "human-review-correction-superseding-response.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionSupersedingReview =>
+                new("review", "human-review-correction-superseding-review.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionSupersessionEvidence =>
+                new("review", "human-review-correction-supersession.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionSourceAwareSupersedingResponse =>
+                new("review", "human-review-correction-source-aware-superseding-v2-response.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionSourceAwareSupersedingReview =>
+                new("review", "human-review-correction-source-aware-superseding-v2-review.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionSourceAwareSupersessionEvidence =>
+                new("review", "human-review-correction-source-aware-supersession-v2.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionDeterministicSupersedingResponse =>
+                new("review", "human-review-correction-deterministic-superseding-v3-response.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionDeterministicSupersedingReview =>
+                new("review", "human-review-correction-deterministic-superseding-v3-review.json"),
+
+            ArtifactType.ReviewerHumanReviewCorrectionDeterministicSupersessionEvidence =>
+                new("review", "human-review-correction-deterministic-supersession-v3.json"),
+
+            ArtifactType.HumanReviewApprovalEvidence =>
+                new("human-review", "approval.json"),
+
             ArtifactType.RestoreReport =>
                 new("restore", "report.json"),
 
@@ -644,6 +740,24 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             ArtifactType.BuildStandardError =>
                 new("build", "stderr.txt"),
 
+            ArtifactType.BuildCorrectionReport =>
+                new("build", "correction-report.json"),
+
+            ArtifactType.BuildCorrectionStandardOutput =>
+                new("build", "correction-stdout.txt"),
+
+            ArtifactType.BuildCorrectionStandardError =>
+                new("build", "correction-stderr.txt"),
+
+            ArtifactType.BuildHumanReviewCorrectionReport =>
+                new("build", "human-review-correction-report.json"),
+
+            ArtifactType.BuildHumanReviewCorrectionStandardOutput =>
+                new("build", "human-review-correction-stdout.txt"),
+
+            ArtifactType.BuildHumanReviewCorrectionStandardError =>
+                new("build", "human-review-correction-stderr.txt"),
+
             ArtifactType.TestReport =>
                 new("tests", "report.json"),
 
@@ -655,6 +769,18 @@ public sealed class FileSystemArtifactStore : IArtifactStore
 
             ArtifactType.TestStandardError =>
                 new("tests", "stderr.txt"),
+
+            ArtifactType.TestHumanReviewCorrectionReport =>
+                new("tests", "human-review-correction-report.json"),
+
+            ArtifactType.TestHumanReviewCorrectionResults =>
+                new("tests", "human-review-correction-results.zip"),
+
+            ArtifactType.TestHumanReviewCorrectionStandardOutput =>
+                new("tests", "human-review-correction-stdout.txt"),
+
+            ArtifactType.TestHumanReviewCorrectionStandardError =>
+                new("tests", "human-review-correction-stderr.txt"),
 
             ArtifactType.GeneralReport =>
                 new("reports", "report.json"),

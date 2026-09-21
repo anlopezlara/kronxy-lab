@@ -128,6 +128,106 @@ public static class DependencyInjection
         services.AddSingleton(
             executionOptions);
 
+        DeveloperChangePolicyOptions
+            defaultDeveloperPolicyOptions =
+                new();
+
+        DeveloperChangePolicyOptions
+            developerPolicyOptions =
+                new()
+                {
+                    MaxOperations =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxOperations",
+                            defaultDeveloperPolicyOptions
+                                .MaxOperations),
+
+                    MaxCreatedFiles =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxCreatedFiles",
+                            defaultDeveloperPolicyOptions
+                                .MaxCreatedFiles),
+
+                    MaxFileBytes =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxFileBytes",
+                            defaultDeveloperPolicyOptions
+                                .MaxFileBytes),
+
+                    MaxTotalChangeBytes =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxTotalChangeBytes",
+                            defaultDeveloperPolicyOptions
+                                .MaxTotalChangeBytes),
+
+                    MaxProposalBytes =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxProposalBytes",
+                            defaultDeveloperPolicyOptions
+                                .MaxProposalBytes),
+
+                    MaxPathDepth =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxPathDepth",
+                            defaultDeveloperPolicyOptions
+                                .MaxPathDepth),
+
+                    MaxPathCharacters =
+                        GetOptionalPositiveInt(
+                            configuration,
+                            "DeveloperPolicy:MaxPathCharacters",
+                            defaultDeveloperPolicyOptions
+                                .MaxPathCharacters),
+
+                    MaxSummaryCharacters =
+                        GetOptionalPositiveInt(configuration, "DeveloperPolicy:MaxSummaryCharacters", defaultDeveloperPolicyOptions.MaxSummaryCharacters),
+                    MaxIntentCharacters =
+                        GetOptionalPositiveInt(configuration, "DeveloperPolicy:MaxIntentCharacters", defaultDeveloperPolicyOptions.MaxIntentCharacters),
+                    MaxMetadataItems =
+                        GetOptionalPositiveInt(configuration, "DeveloperPolicy:MaxMetadataItems", defaultDeveloperPolicyOptions.MaxMetadataItems),
+                    MaxMetadataItemCharacters =
+                        GetOptionalPositiveInt(configuration, "DeveloperPolicy:MaxMetadataItemCharacters", defaultDeveloperPolicyOptions.MaxMetadataItemCharacters)
+                };
+
+        developerPolicyOptions.Validate();
+
+        services.AddSingleton(
+            developerPolicyOptions);
+
+        services.AddSingleton<
+            IPlanningPriorityPathSelector,
+            PlanningPriorityPathSelector>();
+
+        services.AddSingleton<
+            IPlannerPlanPolicy,
+            PlannerPlanPolicy>();
+
+        services.AddSingleton<
+            IDeveloperProposalPolicy,
+            DeveloperProposalPolicy>();
+
+        services.AddSingleton<
+            SafeChangeWorkspaceValidator>();
+
+        services.AddSingleton<
+            IDeveloperProposalMetadataBinder>(provider =>
+                provider.GetRequiredService<
+                    SafeChangeWorkspaceValidator>());
+
+        services.AddSingleton<
+            ISafeChangeCommitObserver,
+            NoOpSafeChangeCommitObserver>();
+
+        services.AddSingleton<
+            ISafeChangeApplier,
+            SafeChangeApplier>();
+
         services.AddSingleton<
             IExecutionTargetProvider,
             ConfiguredExecutionTargetProvider>();
@@ -299,6 +399,30 @@ public static class DependencyInjection
             PlanningExecutionService>();
 
         services.AddScoped<
+            IDeveloperExecutionService,
+            DeveloperExecutionService>();
+
+        services.AddScoped<
+            IObservedChangeEvidenceService,
+            ObservedChangeEvidenceService>();
+
+        services.AddScoped<
+            IReviewerEffectiveSourceSnapshotService,
+            ReviewerEffectiveSourceSnapshotService>();
+
+        services.AddScoped<
+            IDeterministicAcceptanceGate,
+            DeterministicAcceptanceGate>();
+
+        services.AddScoped<
+            IReviewerExecutionService,
+            ReviewerExecutionService>();
+
+        services.AddSingleton<
+            IReviewDecisionPolicy,
+            ReviewDecisionPolicy>();
+
+        services.AddScoped<
             IStageRecoveryEvidenceService,
             StageRecoveryEvidenceService>();
 
@@ -348,6 +472,16 @@ public static class DependencyInjection
                         configuration,
                         "AI:InferenceTimeout"),
 
+                PlanningInferenceTimeout =
+                    GetRequiredPositiveTimeSpan(
+                        configuration,
+                        "AI:PlanningInferenceTimeout"),
+
+                DeveloperInferenceTimeout =
+                    GetRequiredPositiveTimeSpan(
+                        configuration,
+                        "AI:DeveloperInferenceTimeout"),
+
                 QueueWaitTimeout =
                     GetRequiredPositiveTimeSpan(
                         configuration,
@@ -358,10 +492,34 @@ public static class DependencyInjection
                         configuration,
                         "AI:MaxOutputTokens"),
 
+                ContextWindowTokens =
+                    GetOptionalPositiveInt(
+                        configuration,
+                        "AI:ContextWindowTokens",
+                        16_384),
+
                 MaxInputCharacters =
                     GetRequiredPositiveInt(
                         configuration,
                         "AI:MaxInputCharacters"),
+
+                PlanningContextCharacters =
+                    GetOptionalPositiveInt(
+                        configuration,
+                        "AI:PlanningContextCharacters",
+                        48_000),
+
+                DeveloperContextCharacters =
+                    GetOptionalPositiveInt(
+                        configuration,
+                        "AI:DeveloperContextCharacters",
+                        48_000),
+
+                DeveloperFeedbackCharacters =
+                    GetOptionalPositiveInt(
+                        configuration,
+                        "AI:DeveloperFeedbackCharacters",
+                        8_192),
 
                 MaxResponseBytes =
                     GetRequiredPositiveInt(

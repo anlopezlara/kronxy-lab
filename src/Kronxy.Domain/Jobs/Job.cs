@@ -57,7 +57,9 @@ public sealed class Job : Entity
 
 	public bool HasTimedOut(DateTime utcNow)
 	{
-		return !IsTerminal && utcNow - CreatedOnUtc >= Limits.MaxJobDuration;
+		return !IsTerminal &&
+			JobWorkflow.IsOperationalState(State) &&
+			utcNow - UpdatedOnUtc >= Limits.MaxJobDuration;
 	}
 
 	public static Result<Job> Create(Guid id, string externalId, string request, JobLimits limits, DateTime utcNow)
@@ -154,6 +156,24 @@ public sealed class Job : Entity
 		}
 		_transitions.Add(new JobTransition(state, targetState, utcNow, reason ?? string.Empty, actor ?? string.Empty, correlationId ?? string.Empty));
 		return Result.Success();
+	}
+
+	public Result BeginDevelopmentCorrection(DateTime utcNow, string reason, string actor, string correlationId)
+	{
+		if (State != JobState.Reviewing) return Result.Failure(JobErrors.InvalidTransition(State, JobState.Developing));
+		if (AttemptCount >= Limits.MaxDevelopmentAttempts) return Result.Failure(JobErrors.MaxAttemptsExceeded);
+		AttemptCount++;
+		return TransitionTo(JobState.Developing, utcNow, reason, actor, correlationId);
+	}
+
+	public Result BeginHumanReviewCorrection(DateTime utcNow, string reason, string actor, string correlationId)
+	{
+		if (State != JobState.WaitingHuman)
+		{
+			return Result.Failure(JobErrors.InvalidTransition(State, JobState.Developing));
+		}
+
+		return TransitionTo(JobState.Developing, utcNow, reason, actor, correlationId);
 	}
 
 	public Result Resume(DateTime utcNow, string reason, string actor, string correlationId)

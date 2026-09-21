@@ -82,8 +82,11 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult stdoutWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType
-                            .BuildStandardOutput,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.BuildHumanReviewCorrectionStandardOutput
+                            : request.IsBuildCorrection
+                            ? ArtifactType.BuildCorrectionStandardOutput
+                            : ArtifactType.BuildStandardOutput,
                         Encoding.UTF8.GetBytes(
                             toolResult.StandardOutput),
                         cancellationToken)
@@ -92,8 +95,11 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult stderrWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType
-                            .BuildStandardError,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.BuildHumanReviewCorrectionStandardError
+                            : request.IsBuildCorrection
+                            ? ArtifactType.BuildCorrectionStandardError
+                            : ArtifactType.BuildStandardError,
                         Encoding.UTF8.GetBytes(
                             toolResult.StandardError),
                         cancellationToken)
@@ -107,7 +113,11 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult reportWrite =
                 await WriteArtifactAsync(
                         request,
-                        ArtifactType.BuildReport,
+                        request.IsHumanReviewCorrection
+                            ? ArtifactType.BuildHumanReviewCorrectionReport
+                            : request.IsBuildCorrection
+                            ? ArtifactType.BuildCorrectionReport
+                            : ArtifactType.BuildReport,
                         reportBytes,
                         cancellationToken)
                     .ConfigureAwait(false);

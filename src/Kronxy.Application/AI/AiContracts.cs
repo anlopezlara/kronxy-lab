@@ -56,11 +56,30 @@ public sealed record AiRequest
         new();
 
     public AiStructuredOutput? StructuredOutput { get; init; }
+
+    public TimeSpan? InferenceTimeout { get; init; }
 }
 
 public sealed record AiUsage(
     long? PromptTokens,
     long? CompletionTokens);
+
+public sealed record AiProviderResponseMetadata
+{
+    public bool? Done { get; init; }
+
+    public string? DoneReason { get; init; }
+
+    public long? PromptEvalCount { get; init; }
+
+    public long? EvalCount { get; init; }
+
+    public long? TotalDurationNanoseconds { get; init; }
+
+    public long? PromptEvalDurationNanoseconds { get; init; }
+
+    public long? EvalDurationNanoseconds { get; init; }
+}
 
 public sealed record AiResponse
 {
@@ -84,6 +103,8 @@ public sealed record AiResponse
 
     public AiUsage Usage { get; init; } =
         new(null, null);
+
+    public AiProviderResponseMetadata? ProviderMetadata { get; init; }
 
     public string ErrorCode { get; init; } =
         string.Empty;

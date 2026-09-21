@@ -1,4 +1,5 @@
 using Kronxy.Application.Jobs;
+using Kronxy.Application.Execution;
 using Kronxy.Domain.Abstractions;
 using Kronxy.Domain.Jobs;
 using Microsoft.AspNetCore.Mvc;
@@ -112,6 +113,37 @@ public sealed class JobsController : ControllerBase
         return ToOperationResponse(result);
     }
 
+    [HttpPost("{jobId:guid}/human-review/changes-required")]
+    public async Task<IActionResult> RequestHumanReviewCorrection(
+        Guid jobId,
+        HumanReviewCorrectionRequest request,
+        CancellationToken cancellationToken)
+    {
+        JobOperationResult result =
+            await _jobOrchestrator.RequestHumanReviewCorrectionAsync(
+                jobId,
+                request,
+                cancellationToken);
+
+        return ToOperationResponse(result);
+    }
+
+    [HttpPost("{jobId:guid}/human-review/approve")]
+    public async Task<IActionResult> ApproveHumanReview(
+        Guid jobId,
+        JobActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        JobOperationResult result = await _jobOrchestrator
+            .ApproveHumanReviewAsync(
+                jobId,
+                request.Actor,
+                request.CorrelationId,
+                cancellationToken);
+
+        return ToOperationResponse(result);
+    }
+
     [HttpPost("{jobId:guid}/retry-pending")]
     public async Task<IActionResult> RetryPending(
         Guid jobId,
@@ -122,6 +154,22 @@ public sealed class JobsController : ControllerBase
             await _jobOrchestrator.MarkRetryPendingAsync(
                 jobId,
                 request.Reason,
+                request.Actor,
+                request.CorrelationId,
+                cancellationToken);
+
+        return ToOperationResponse(result);
+    }
+
+    [HttpPost("{jobId:guid}/reviewer/human-review-correction/supersede")]
+    public async Task<IActionResult> SupersedeHumanReviewCorrectionReview(
+        Guid jobId,
+        JobActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        JobOperationResult result = await _jobOrchestrator
+            .SupersedeHumanReviewCorrectionReviewAsync(
+                jobId,
                 request.Actor,
                 request.CorrelationId,
                 cancellationToken);
@@ -215,6 +263,7 @@ public sealed class JobsController : ControllerBase
             resumeState =
                 job.ResumeState?.ToString(),
             attemptCount = job.AttemptCount,
+            humanReviewRequired = job.State == JobState.WaitingHuman,
             baseRepositoryHead =
                 job.BaseRepositoryHead,
             createdOnUtc =

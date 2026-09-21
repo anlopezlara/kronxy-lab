@@ -23,7 +23,8 @@ public enum RepositoryFailureKind
     DirtyWorktree = 70,
     TimedOut = 80,
     OutputLimitExceeded = 90,
-    GitFailure = 100
+    GitFailure = 100,
+    UnsupportedObservedChange = 110
 }
 
 public sealed record RepositoryWorktreeHandle(
@@ -38,6 +39,17 @@ public sealed record RepositoryWorktreeHandle(
 public sealed record RepositoryStatus(
     bool IsClean,
     string Porcelain);
+
+public enum ObservedRepositoryChangeKind
+{
+    Created = 10,
+    Modified = 20,
+    Deleted = 30
+}
+
+public sealed record ObservedRepositoryChange(
+    ObservedRepositoryChangeKind ChangeKind,
+    string RelativePath);
 
 public sealed record RepositoryOperationResult<T>(
     T? Value,
@@ -82,6 +94,11 @@ public interface IRepositoryManager
 
     Task<RepositoryOperationResult<RepositoryStatus>>
         GetStatusAsync(
+            WorkspaceHandle workspace,
+            CancellationToken cancellationToken = default);
+
+    Task<RepositoryOperationResult<IReadOnlyList<ObservedRepositoryChange>>>
+        GetObservedChangesAsync(
             WorkspaceHandle workspace,
             CancellationToken cancellationToken = default);
 
