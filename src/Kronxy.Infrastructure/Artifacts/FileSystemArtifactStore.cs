@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using Kronxy.Application.Artifacts;
 
 namespace Kronxy.Infrastructure.Artifacts;
@@ -59,7 +60,9 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                     "ARTIFACT_ROOT_UNSAFE");
             }
 
-            var layout = GetLayout(request.ArtifactType);
+            var layout = GetLayout(
+                request.ArtifactType,
+                request.CorrelationId);
 
             string jobSegment =
                 request.JobId.ToString("N");
@@ -617,7 +620,8 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             errorCode);
 
     private static ArtifactLayout GetLayout(
-        ArtifactType type) =>
+        ArtifactType type,
+        string correlationId) =>
         type switch
         {
             ArtifactType.ContextPackage =>
@@ -630,7 +634,10 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                 new("planner", "plan.json"),
 
             ArtifactType.PlanningRejectedResponse =>
-                new("planner", "rejected-response.json"),
+                new(
+                    "planner",
+                    PlanningRejectedResponseFileName(
+                        correlationId)),
 
             ArtifactType.DeveloperResponse =>
                 new("developer", "response.json"),
@@ -645,37 +652,64 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                 new("developer", "proposal.json"),
 
             ArtifactType.DeveloperBuildCorrectionResponse =>
-                new("developer", "build-correction-response.json"),
+                new("developer", VersionedFileName(
+                    "build-correction-response.json", correlationId)),
 
             ArtifactType.DeveloperBuildCorrectionProposal =>
-                new("developer", "build-correction-proposal.json"),
+                new("developer", VersionedFileName(
+                    "build-correction-proposal.json", correlationId)),
+
+            ArtifactType.DeveloperBuildCorrectionRetryResponse =>
+                new("developer", VersionedFileName(
+                    "build-correction-retry-response.json", correlationId)),
+
+            ArtifactType.DeveloperBuildCorrectionRetryProposal =>
+                new("developer", VersionedFileName(
+                    "build-correction-retry-proposal.json", correlationId)),
+
+            ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse =>
+                new("developer", VersionedFileName(
+                    "build-correction-retry-rejected-response.json", correlationId)),
+
+            ArtifactType.DeveloperBuildCorrectionRetryRejectedStructuredResponse =>
+                new("developer", VersionedFileName(
+                    "build-correction-retry-rejected-structured-response.json", correlationId)),
 
             ArtifactType.DeveloperBuildCorrectionRejectedResponse =>
-                new("developer", "build-correction-rejected-response.json"),
+                new("developer", VersionedFileName(
+                    "build-correction-rejected-response.json", correlationId)),
 
             ArtifactType.DeveloperBuildCorrectionRejectedStructuredResponse =>
-                new("developer", "build-correction-rejected-structured-response.json"),
+                new("developer", VersionedFileName(
+                    "build-correction-rejected-structured-response.json", correlationId)),
 
             ArtifactType.HumanReviewCorrectionEvidence =>
                 new("human-review", "changes-required.json"),
 
             ArtifactType.DeveloperHumanReviewCorrectionResponse =>
-                new("developer", "human-review-correction-response.json"),
+                new("developer", VersionedFileName(
+                    "human-review-correction-response.json", correlationId)),
 
             ArtifactType.DeveloperHumanReviewCorrectionProposal =>
-                new("developer", "human-review-correction-proposal.json"),
+                new("developer", VersionedFileName(
+                    "human-review-correction-proposal.json", correlationId)),
 
             ArtifactType.DeveloperHumanReviewCorrectionRejectedResponse =>
-                new("developer", "human-review-correction-rejected-response.json"),
+                new("developer", VersionedFileName(
+                    "human-review-correction-rejected-response.json", correlationId)),
 
             ArtifactType.DeveloperHumanReviewCorrectionRejectedStructuredResponse =>
-                new("developer", "human-review-correction-rejected-structured-response.json"),
+                new("developer", VersionedFileName(
+                    "human-review-correction-rejected-structured-response.json", correlationId)),
 
             ArtifactType.ObservedChangeManifest =>
                 new("changes", "manifest.json"),
 
             ArtifactType.ObservedBuildCorrectionManifest =>
                 new("changes", "build-correction-manifest.json"),
+
+            ArtifactType.ObservedBuildCorrectionRetryManifest =>
+                new("changes", "build-correction-retry-manifest.json"),
 
             ArtifactType.ObservedHumanReviewCorrectionManifest =>
                 new("changes", "human-review-correction-manifest.json"),
@@ -722,6 +756,18 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             ArtifactType.HumanReviewApprovalEvidence =>
                 new("human-review", "approval.json"),
 
+            ArtifactType.GovernedHumanCorrectionRequest =>
+                new("human-correction", VersionedFileName(
+                    "request.json", correlationId)),
+
+            ArtifactType.GovernedHumanCorrectionReceipt =>
+                new("human-correction", VersionedFileName(
+                    "receipt.json", correlationId)),
+
+            ArtifactType.ObservedGovernedHumanCorrectionManifest =>
+                new("human-correction", VersionedFileName(
+                    "observed-changes.json", correlationId)),
+
             ArtifactType.RestoreReport =>
                 new("restore", "report.json"),
 
@@ -748,6 +794,15 @@ public sealed class FileSystemArtifactStore : IArtifactStore
 
             ArtifactType.BuildCorrectionStandardError =>
                 new("build", "correction-stderr.txt"),
+
+            ArtifactType.BuildCorrectionRetryReport =>
+                new("build", "correction-retry-report.json"),
+
+            ArtifactType.BuildCorrectionRetryStandardOutput =>
+                new("build", "correction-retry-stdout.txt"),
+
+            ArtifactType.BuildCorrectionRetryStandardError =>
+                new("build", "correction-retry-stderr.txt"),
 
             ArtifactType.BuildHumanReviewCorrectionReport =>
                 new("build", "human-review-correction-report.json"),
@@ -789,6 +844,32 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                 throw new ArgumentOutOfRangeException(
                     nameof(type))
         };
+
+    private static string PlanningRejectedResponseFileName(
+        string correlationId)
+    {
+        return VersionedFileName(
+            "rejected-response.json",
+            correlationId);
+    }
+
+    private static string VersionedFileName(
+        string legacyFileName,
+        string correlationId)
+    {
+        if (string.IsNullOrWhiteSpace(correlationId))
+        {
+            return legacyFileName;
+        }
+
+        string identity = Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(correlationId)))
+            .ToLowerInvariant();
+        string extension = Path.GetExtension(legacyFileName);
+        string stem = Path.GetFileNameWithoutExtension(legacyFileName);
+        return $"{stem}-{identity}{extension}";
+    }
 
     private sealed record ArtifactLayout(
         string Directory,

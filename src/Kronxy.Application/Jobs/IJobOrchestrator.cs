@@ -16,6 +16,8 @@ public interface IJobOrchestrator
 
 	Task<JobOperationResult> RequestHumanReviewCorrectionAsync(Guid jobId, HumanReviewCorrectionRequest request, CancellationToken cancellationToken = default(CancellationToken));
 
+	Task<JobOperationResult> ApplyGovernedHumanCorrectionAsync(Guid jobId, GovernedHumanCorrectionRequest request, CancellationToken cancellationToken = default(CancellationToken));
+
 	Task<JobOperationResult> SupersedeHumanReviewCorrectionReviewAsync(Guid jobId, string actor, string correlationId, CancellationToken cancellationToken = default(CancellationToken));
 
 	Task<JobOperationResult> ApproveHumanReviewAsync(Guid jobId, string actor, string correlationId, CancellationToken cancellationToken = default(CancellationToken));

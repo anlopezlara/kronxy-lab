@@ -389,8 +389,9 @@ public sealed class StageRecoveryEvidenceServiceTests
         {
             Handler = request =>
             {
-                if (request.ArtifactType ==
-                    ArtifactType.BuildCorrectionReport)
+                if (request.ArtifactType is
+                    ArtifactType.BuildCorrectionReport or
+                    ArtifactType.BuildCorrectionRetryReport)
                 {
                     return ArtifactReadResult.Failure(
                         ArtifactReadFailureKind.NotFound,
@@ -424,14 +425,8 @@ public sealed class StageRecoveryEvidenceServiceTests
         Assert.True(
             result.IsCompleted);
 
-        Assert.Equal(
-            artifactType,
-            reader.Requests[^1]
-                .ArtifactType);
-
-        Assert.Equal(
-            stage == RecoveryStage.Build ? 2 : 1,
-            reader.Requests.Count);
+        Assert.Equal(artifactType, reader.Requests[^1].ArtifactType);
+        Assert.Equal(stage == RecoveryStage.Build ? 3 : 1, reader.Requests.Count);
     }
 
     [Fact]
@@ -441,7 +436,8 @@ public sealed class StageRecoveryEvidenceServiceTests
         {
             Handler = request => request.ArtifactType switch
             {
-                ArtifactType.BuildCorrectionReport =>
+                ArtifactType.BuildCorrectionReport or
+                    ArtifactType.BuildCorrectionRetryReport =>
                     ArtifactReadResult.Failure(
                         ArtifactReadFailureKind.NotFound,
                         "TEST_NOT_FOUND"),
@@ -491,7 +487,10 @@ public sealed class StageRecoveryEvidenceServiceTests
                         request,
                         JsonSerializer.SerializeToUtf8Bytes(
                             SuccessfulBuildReport()))
-                    : throw new InvalidOperationException(
+                    : request.ArtifactType == ArtifactType.BuildCorrectionRetryReport
+                        ? ArtifactReadResult.Failure(
+                            ArtifactReadFailureKind.NotFound, "TEST_NOT_FOUND")
+                        : throw new InvalidOperationException(
                         "Original build evidence must not be read.")
         };
 
@@ -503,7 +502,7 @@ public sealed class StageRecoveryEvidenceServiceTests
         Assert.True(result.IsCompleted);
         Assert.Equal(
             ArtifactType.BuildCorrectionReport,
-            Assert.Single(reader.Requests).ArtifactType);
+            reader.Requests[^1].ArtifactType);
     }
 
     [Fact]
@@ -581,6 +580,8 @@ public sealed class StageRecoveryEvidenceServiceTests
             [
                 ArtifactType.DeveloperProposal,
                 ArtifactType.DeveloperResponse,
+                ArtifactType.DeveloperBuildCorrectionRetryProposal,
+                ArtifactType.DeveloperBuildCorrectionRetryResponse,
                 ArtifactType.DeveloperBuildCorrectionProposal,
                 ArtifactType.DeveloperBuildCorrectionResponse,
                 ArtifactType.HumanReviewCorrectionEvidence,
@@ -645,6 +646,34 @@ public sealed class StageRecoveryEvidenceServiceTests
             result.DeveloperProposalLineage);
         Assert.Contains("BuildFixed",
             Assert.Single(result.DeveloperProposal!.Changes).Content);
+    }
+
+    [Fact]
+    public async Task Developer_correction_with_mismatched_lineage_fails_closed()
+    {
+        (byte[] response, _, byte[] build, _) =
+            EffectiveProposalArtifacts();
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => request.ArtifactType switch
+            {
+                ArtifactType.DeveloperBuildCorrectionProposal =>
+                    Success(request, build, "proposal-correlation"),
+                ArtifactType.DeveloperBuildCorrectionResponse =>
+                    Success(request, response, "response-correlation"),
+                _ => ArtifactReadResult.Failure(
+                    ArtifactReadFailureKind.NotFound, "TEST_NOT_FOUND")
+            }
+        };
+
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(
+            reader, Options()).CheckAsync(
+                Request(RecoveryStage.DeveloperBuildCorrection));
+
+        Assert.Equal(StageRecoveryStatus.InvalidEvidence, result.Status);
+        Assert.Equal(
+            "STAGE_RECOVERY_DEVELOPER_LINEAGE_MISMATCH",
+            result.ErrorCode);
     }
 
     [Fact]
@@ -1048,6 +1077,12 @@ public sealed class StageRecoveryEvidenceServiceTests
     private static ArtifactReadResult Success(
         ArtifactReadRequest request,
         byte[] content) =>
+        Success(request, content, request.CorrelationId);
+
+    private static ArtifactReadResult Success(
+        ArtifactReadRequest request,
+        byte[] content,
+        string correlationId) =>
         ArtifactReadResult.Success(
             new ArtifactRecord
             {
@@ -1063,7 +1098,7 @@ public sealed class StageRecoveryEvidenceServiceTests
                 CreatedAtUtc =
                     DateTimeOffset.UtcNow,
                 CorrelationId =
-                    request.CorrelationId
+                    correlationId
             },
             content);
 

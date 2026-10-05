@@ -445,6 +445,7 @@ public sealed class JobApplicationTests
 		Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-TIMEOUT");
 		await fixture.Orchestrator.AdvanceAsync(
 			created.Value.Id, "orchestrator", "corr-start");
+		created.Value.BeginActiveExecution(UtcNow);
 		fixture.Clock.UtcNow = UtcNow.AddMinutes(31.0);
 		JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-timeout");
 		Assert.False(result.IsSuccess);
@@ -452,6 +453,48 @@ public sealed class JobApplicationTests
 		Assert.Equal<JobState>(JobState.TimedOut, created.Value.State);
 		Assert.True(created.Value.IsTerminal);
 		Assert.NotNull<DateTime>(created.Value.CompletedOnUtc);
+	}
+
+	[Fact]
+	public async Task Planning_retry_after_long_inactive_pause_starts_without_timeout()
+	{
+		Fixture fixture = CreateFixture(3, TimeSpan.FromMinutes(30.0));
+		Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-LATE-PLANNING");
+		await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-1");
+		await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-2");
+		Assert.Equal(JobState.Planning, created.Value.State);
+		fixture.Clock.UtcNow = UtcNow.AddHours(20.0);
+
+		JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+			created.Value.Id, "orchestrator", "corr-late-retry");
+
+		Assert.True(result.IsSuccess);
+		Assert.Equal(JobState.WorkspacePreparing, created.Value.State);
+		Assert.Equal(1, created.Value.AttemptCount);
+		Assert.Equal(1, fixture.Planning.CallCount);
+		Assert.Null(created.Value.ActiveExecutionStartedOnUtc);
+		Assert.Equal(fixture.Clock.UtcNow, created.Value.LastActiveProgressOnUtc);
+	}
+
+	[Fact]
+	public async Task Rejected_planning_invocation_records_governed_progress_and_closes_lease()
+	{
+		Fixture fixture = CreateFixture(3, TimeSpan.FromMinutes(30.0));
+		Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-PLANNING-REJECTED");
+		await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-1");
+		await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "corr-2");
+		fixture.Planning.Result = PlanningExecutionResult.Failure(
+			PlanningExecutionFailureKind.AiInvalidResponse,
+			"PLANNING_PATH_COHERENCE_INVALID");
+		fixture.Clock.UtcNow = UtcNow.AddHours(20.0);
+
+		JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+			created.Value.Id, "orchestrator", "corr-rejected");
+
+		Assert.False(result.IsSuccess);
+		Assert.Equal(JobState.Planning, created.Value.State);
+		Assert.Null(created.Value.ActiveExecutionStartedOnUtc);
+		Assert.Equal(fixture.Clock.UtcNow, created.Value.LastActiveProgressOnUtc);
 	}
 
 	[Fact]
@@ -731,7 +774,7 @@ public sealed class JobApplicationTests
                     fixture.Context.CallCount);
 
             Assert.Equal(
-                    saveCount,
+                    saveCount + 2,
                     fixture.UnitOfWork.SaveCount);
 
             Assert.Equal(
@@ -810,7 +853,7 @@ public sealed class JobApplicationTests
                     fixture.ExecutionPlane.RecoverCount);
 
             Assert.Equal(
-                    saveCount,
+                    saveCount + 2,
                     fixture.UnitOfWork.SaveCount);
 
             Assert.Equal(
@@ -1481,7 +1524,7 @@ public sealed class JobApplicationTests
 	                created.Value.State);
 
 	        Assert.Equal(
-	                saveCount,
+	                saveCount + 2,
 	                fixture.UnitOfWork.SaveCount);
 
 	        Assert.Equal(
@@ -1635,7 +1678,7 @@ public sealed class JobApplicationTests
 	                created.Value.State);
 
 	        Assert.Equal(
-	                saveCount,
+	                saveCount + 2,
 	                fixture.UnitOfWork.SaveCount);
 
 	        Assert.Equal(
@@ -1803,7 +1846,7 @@ public sealed class JobApplicationTests
                    created.Value.State);
 
            Assert.Equal(
-                   saveCount,
+                   saveCount + 2,
                    fixture.UnitOfWork.SaveCount);
 
            Assert.Equal(
@@ -2537,6 +2580,101 @@ public sealed class JobApplicationTests
                 Assert.Equal(reviewer, fixture.Reviewer.CallCount);
         }
 
+        [Theory]
+        [InlineData(DeveloperProposalLineage.Original,
+                RecoveryStage.ReviewerOriginal,
+                RecoveryStage.ObservedChanges,
+                RecoveryStage.Build,
+                RecoveryStage.Test)]
+        [InlineData(DeveloperProposalLineage.BuildCorrection,
+                RecoveryStage.ReviewerOriginal,
+                RecoveryStage.ObservedChanges,
+                RecoveryStage.Build,
+                RecoveryStage.Test)]
+        [InlineData(DeveloperProposalLineage.HumanReviewCorrection,
+                RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding,
+                RecoveryStage.ObservedHumanReviewCorrection,
+                RecoveryStage.BuildHumanReviewCorrection,
+                RecoveryStage.TestHumanReviewCorrection)]
+        [InlineData(DeveloperProposalLineage.GovernedHumanCorrection,
+                RecoveryStage.ReviewerOriginal,
+                RecoveryStage.ObservedGovernedHumanCorrection,
+                RecoveryStage.BuildGovernedHumanCorrection,
+                RecoveryStage.TestGovernedHumanCorrection)]
+        public async Task Human_review_approval_selects_final_effective_lineage(
+                DeveloperProposalLineage lineage,
+                RecoveryStage reviewerStage,
+                RecoveryStage observedStage,
+                RecoveryStage buildStage,
+                RecoveryStage testStage)
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob(
+                        $"KRX-APPROVE-{lineage}");
+                ConfigureApprovalEvidence(fixture, job, lineage: lineage);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(
+                                job.Id,
+                                "human-review",
+                                $"approve-{lineage}");
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.Completed, job.State);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == reviewerStage);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == observedStage);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == buildStage);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == testStage);
+                if (lineage == DeveloperProposalLineage.GovernedHumanCorrection)
+                        Assert.DoesNotContain(fixture.RecoveryEvidence.Requests,
+                                request => request.Stage ==
+                                    RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding);
+
+                HumanReviewApprovalEvidence evidence = JsonSerializer
+                        .Deserialize<HumanReviewApprovalEvidence>(
+                                Assert.Single(fixture.Artifacts.Writes)
+                                    .Content.Span)!;
+                Assert.Equal(lineage, evidence.EffectiveProposalLineage);
+                Assert.All(new[]
+                {
+                        evidence.EffectiveProposalSha256,
+                        evidence.ObservedChangesSha256,
+                        evidence.BuildReportSha256,
+                        evidence.TestReportSha256,
+                        evidence.EffectiveSourceSnapshotSha256
+                }, hash => Assert.Equal(64, hash.Length));
+        }
+
+        [Theory]
+        [InlineData(RecoveryStage.ReviewerOriginal)]
+        [InlineData(RecoveryStage.ObservedGovernedHumanCorrection)]
+        [InlineData(RecoveryStage.BuildGovernedHumanCorrection)]
+        [InlineData(RecoveryStage.TestGovernedHumanCorrection)]
+        public async Task Governed_human_review_approval_fails_closed_when_selected_evidence_is_missing(
+                RecoveryStage missing)
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob(
+                        "KRX-APPROVE-GOVERNED-MISSING");
+                ConfigureApprovalEvidence(
+                        fixture,
+                        job,
+                        missing: missing,
+                        lineage: DeveloperProposalLineage.GovernedHumanCorrection);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(
+                                job.Id,
+                                "human-review",
+                                "approve-governed-missing");
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
         [Fact]
         public async Task Human_review_approval_is_idempotent_for_same_correlation()
         {
@@ -2641,15 +2779,38 @@ public sealed class JobApplicationTests
                 ReviewerDecision decision = ReviewerDecision.Approved,
                 bool hasCorrections = false,
                 bool gatePass = true,
-                RecoveryStage? missing = null)
+                RecoveryStage? missing = null,
+                DeveloperProposalLineage lineage =
+                        DeveloperProposalLineage.HumanReviewCorrection)
         {
                 Guid runId = new DeterministicJobRunIdProvider().Create(job.Id, job.AttemptCount);
+                DeveloperChangeOperationType operation = lineage ==
+                        DeveloperProposalLineage.Original
+                                ? DeveloperChangeOperationType.CreateFile
+                                : DeveloperChangeOperationType.ReplaceFile;
+                const string content = "class Generated {}";
+                string contentSha = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                                System.Text.Encoding.UTF8.GetBytes(content)))
+                    .ToLowerInvariant();
+                var proposal = new ValidatedDeveloperProposal(
+                        "approval proposal",
+                        [new ValidatedDeveloperChange(
+                                operation,
+                                "src/generated.cs",
+                                "approval",
+                                content,
+                                operation == DeveloperChangeOperationType.ReplaceFile
+                                        ? new string('b', 64)
+                                        : string.Empty,
+                                content.Length)],
+                        [], [], content.Length, content.Length + 100);
                 var criterion = new DeterministicAcceptanceCriterionResult(
                         new DeterministicAcceptanceCriterion(
                                 "file", DeterministicCriterionKind.FileExists,
                                 "src/generated.cs", "src/generated.cs", "candidate file exists"),
                         gatePass ? DeterministicCriterionStatus.Pass : DeterministicCriterionStatus.Fail,
-                        gatePass ? "present" : "missing");
+                        gatePass ? $"sha256:{new string('a', 64)}" : "missing");
                 var review = new ReviewerReview
                 {
                         Decision = decision,
@@ -2663,6 +2824,95 @@ public sealed class JobApplicationTests
                         DeterministicAcceptanceGate = new(
                                 [criterion], ["architecture follows conventions"])
                 };
+                var observed = new ObservedChangeManifest(
+                        job.Id,
+                        runId,
+                        job.BaseRepositoryHead!,
+                        [new ObservedChangeManifestEntry(
+                                "src/generated.cs",
+                                operation == DeveloperChangeOperationType.CreateFile
+                                        ? ObservedRepositoryChangeKind.Created
+                                        : ObservedRepositoryChangeKind.Modified,
+                                contentSha,
+                                content.Length,
+                                operation,
+                                operation == DeveloperChangeOperationType.CreateFile
+                                        ? ObservedRepositoryChangeKind.Created
+                                        : ObservedRepositoryChangeKind.Modified,
+                                operation == DeveloperChangeOperationType.ReplaceFile
+                                        ? new string('b', 64)
+                                        : null,
+                                "PASS")],
+                        job.AttemptCount,
+                        lineage == DeveloperProposalLineage.GovernedHumanCorrection
+                                ? "governed-human-correction:approval-governed"
+                                : string.Empty,
+                        lineage == DeveloperProposalLineage.GovernedHumanCorrection
+                                ? SafeChangeProposalIdentity.Fingerprint(proposal)
+                                : string.Empty,
+                        lineage == DeveloperProposalLineage.GovernedHumanCorrection
+                                ? "governed-human-correction:approval-governed"
+                                : string.Empty);
+                var governedEvidence = new GovernedHumanCorrectionEvidence
+                {
+                        JobId = job.Id,
+                        RunId = runId,
+                        AttemptCount = job.AttemptCount,
+                        Stage = "Building",
+                        Actor = "human-review",
+                        CorrelationId = "approval-governed",
+                        Reason = "test",
+                        RequestSha256 = new string('c', 64),
+                        FailureEvidence = ["build/report.json"],
+                        ExhaustedAiCorrectionEvidence = ["developer/rejected.json"],
+                        AllowedPaths = ["src/generated.cs"],
+                        Proposal = proposal,
+                        RecordedAtUtc = DateTimeOffset.UtcNow
+                };
+                var governedReceipt = new GovernedHumanCorrectionReceipt
+                {
+                        JobId = job.Id,
+                        RunId = runId,
+                        AttemptCount = job.AttemptCount,
+                        Actor = "human-review",
+                        CorrelationId = "approval-governed",
+                        RequestSha256 = governedEvidence.RequestSha256,
+                        Changes = [new AppliedFileChange(
+                                operation,
+                                "src/generated.cs",
+                                new string('b', 64),
+                                contentSha,
+                                content.Length)],
+                        RecordedAtUtc = DateTimeOffset.UtcNow
+                };
+                RecoveryStage reviewerStage = lineage ==
+                        DeveloperProposalLineage.HumanReviewCorrection
+                                ? RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding
+                                : RecoveryStage.ReviewerOriginal;
+                RecoveryStage observedStage = lineage switch
+                {
+                        DeveloperProposalLineage.HumanReviewCorrection =>
+                                RecoveryStage.ObservedHumanReviewCorrection,
+                        DeveloperProposalLineage.GovernedHumanCorrection =>
+                                RecoveryStage.ObservedGovernedHumanCorrection,
+                        _ => RecoveryStage.ObservedChanges
+                };
+                RecoveryStage buildStage = lineage switch
+                {
+                        DeveloperProposalLineage.HumanReviewCorrection =>
+                                RecoveryStage.BuildHumanReviewCorrection,
+                        DeveloperProposalLineage.GovernedHumanCorrection =>
+                                RecoveryStage.BuildGovernedHumanCorrection,
+                        _ => RecoveryStage.Build
+                };
+                RecoveryStage testStage = lineage switch
+                {
+                        DeveloperProposalLineage.HumanReviewCorrection =>
+                                RecoveryStage.TestHumanReviewCorrection,
+                        DeveloperProposalLineage.GovernedHumanCorrection =>
+                                RecoveryStage.TestGovernedHumanCorrection,
+                        _ => RecoveryStage.Test
+                };
                 fixture.RecoveryEvidence.Handler = request =>
                 {
                         if (request.Stage == RecoveryStage.HumanReviewApproval)
@@ -2672,26 +2922,40 @@ public sealed class JobApplicationTests
                                         ? StageRecoveryResult.Completed()
                                         : StageRecoveryResult.NotCompleted();
                         if (request.Stage == missing) return StageRecoveryResult.NotCompleted();
-                        return request.Stage switch
-                        {
-                                RecoveryStage.ReviewerHumanReviewCorrectionSourceAwareSuperseding =>
-                                        StageRecoveryResult.Completed(reviewerReview: review),
-                                RecoveryStage.ObservedHumanReviewCorrection =>
-                                        StageRecoveryResult.Completed(observedChangeManifest:
-                                            new ObservedChangeManifest(job.Id, runId,
-                                                job.BaseRepositoryHead!, [])),
-                                RecoveryStage.BuildHumanReviewCorrection =>
-                                        StageRecoveryResult.Completed(buildReport:
-                                            new BuildExecutionReport(job.Id, runId, "target",
+                        if (request.Stage == RecoveryStage.Planning)
+                                return ReviewerEvidence(
+                                        request,
+                                        job.BaseRepositoryHead!).PlannerPlan is { } plan
+                                        ? StageRecoveryResult.Completed(plannerPlan: plan)
+                                        : StageRecoveryResult.NotCompleted();
+                        if (request.Stage == RecoveryStage.EffectiveDeveloperProposal)
+                                return StageRecoveryResult.Completed(
+                                        developerProposal: proposal,
+                                        developerProposalLineage: lineage,
+                                        governedHumanCorrection: lineage ==
+                                                DeveloperProposalLineage.GovernedHumanCorrection
+                                                        ? governedEvidence
+                                                        : null,
+                                        governedHumanCorrectionReceipt: lineage ==
+                                                DeveloperProposalLineage.GovernedHumanCorrection
+                                                        ? governedReceipt
+                                                        : null);
+                        if (request.Stage == reviewerStage)
+                                return StageRecoveryResult.Completed(reviewerReview: review);
+                        if (request.Stage == observedStage)
+                                return StageRecoveryResult.Completed(
+                                        observedChangeManifest: observed);
+                        if (request.Stage == buildStage)
+                                return StageRecoveryResult.Completed(buildReport:
+                                        new BuildExecutionReport(job.Id, runId, "target",
                                                 ToolExecutionOutcome.Completed, 0, "",
-                                                DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero)),
-                                RecoveryStage.TestHumanReviewCorrection =>
-                                        StageRecoveryResult.Completed(testReport:
-                                            new TestExecutionReport(job.Id, runId, "target",
+                                                DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero));
+                        if (request.Stage == testStage)
+                                return StageRecoveryResult.Completed(testReport:
+                                        new TestExecutionReport(job.Id, runId, "target",
                                                 ToolExecutionOutcome.Completed, 0, "",
-                                                DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero)),
-                                _ => StageRecoveryResult.NotCompleted()
-                        };
+                                                DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero));
+                        return StageRecoveryResult.NotCompleted();
                 };
         }
 

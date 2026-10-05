@@ -331,6 +331,8 @@ public sealed class ReviewerExecutionService : IReviewerExecutionService
                 ArtifactType.DeveloperBuildCorrectionProposal.ToString(),
             DeveloperProposalLineage.HumanReviewCorrection =>
                 ArtifactType.DeveloperHumanReviewCorrectionProposal.ToString(),
+            DeveloperProposalLineage.GovernedHumanCorrection =>
+                ArtifactType.GovernedHumanCorrectionRequest.ToString(),
             _ => throw new ArgumentOutOfRangeException(nameof(lineage))
         };
 

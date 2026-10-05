@@ -46,6 +46,28 @@ public sealed class ObservedChangeEvidenceService : IObservedChangeEvidenceServi
                 return Failure(ObservedChangeEvidenceFailureKind.RepositoryFailure, "OBSERVED_CHANGE_REPOSITORY_FAILURE");
 
             IReadOnlyList<ObservedRepositoryChange> observed = observedResult.Value;
+            if (request.SafeChangeChanges.Count > 0)
+                return await CaptureProposalScopedAsync(
+                    request,
+                    observed,
+                    cancellationToken);
+
+            if (request.IsGovernedHumanCorrection)
+            {
+                HashSet<string> allowed = request.AllowedPaths
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (allowed.Count == 0 ||
+                    observed.Any(change => !allowed.Contains(change.RelativePath)))
+                    return Failure(
+                        ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                        "OBSERVED_CHANGE_OUTSIDE_HUMAN_CORRECTION_SCOPE");
+                HashSet<string> humanPaths = request.Proposal.Changes
+                    .Select(change => change.RelativePath)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                observed = observed
+                    .Where(change => humanPaths.Contains(change.RelativePath))
+                    .ToArray();
+            }
             if (observed.Count > MaxFiles)
                 return Failure(ObservedChangeEvidenceFailureKind.EvidenceMismatch, "OBSERVED_CHANGE_LIMIT_EXCEEDED");
 
@@ -95,8 +117,12 @@ public sealed class ObservedChangeEvidenceService : IObservedChangeEvidenceServi
             {
                 JobId = request.JobId,
                 RunId = request.RunId,
-                ArtifactType = request.IsHumanReviewCorrection
+                ArtifactType = request.IsGovernedHumanCorrection
+                    ? ArtifactType.ObservedGovernedHumanCorrectionManifest
+                    : request.IsHumanReviewCorrection
                     ? ArtifactType.ObservedHumanReviewCorrectionManifest
+                    : request.IsBuildCorrectionRetry
+                    ? ArtifactType.ObservedBuildCorrectionRetryManifest
                     : request.IsBuildCorrection
                     ? ArtifactType.ObservedBuildCorrectionManifest
                     : ArtifactType.ObservedChangeManifest,
@@ -116,6 +142,186 @@ public sealed class ObservedChangeEvidenceService : IObservedChangeEvidenceServi
         {
             return Failure(ObservedChangeEvidenceFailureKind.IoFailure, "OBSERVED_CHANGE_IO_FAILURE");
         }
+    }
+
+    private async Task<ObservedChangeEvidenceResult>
+        CaptureProposalScopedAsync(
+            ObservedChangeEvidenceRequest request,
+            IReadOnlyList<ObservedRepositoryChange> gitObserved,
+            CancellationToken cancellationToken)
+    {
+        if (request.AttemptCount <= 0 ||
+            string.IsNullOrWhiteSpace(request.ProposalLineageId) ||
+            string.IsNullOrWhiteSpace(request.SafeChangeReceiptReference) ||
+            request.ProposalFingerprintSha256.Length != 64 ||
+            !string.Equals(
+                request.ProposalFingerprintSha256,
+                SafeChangeProposalIdentity.Fingerprint(request.Proposal),
+                StringComparison.Ordinal) ||
+            request.SafeChangeChanges.Count != request.Proposal.Changes.Count)
+            return Failure(
+                ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                "OBSERVED_CHANGE_SAFECHANGE_LINEAGE_INVALID");
+
+        HashSet<string> proposalPaths = request.Proposal.Changes
+            .Select(change => change.RelativePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> allowed = request.AllowedPaths.Count > 0
+            ? request.AllowedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : proposalPaths;
+        if (!proposalPaths.IsSubsetOf(allowed) ||
+            gitObserved.Any(change => !allowed.Contains(change.RelativePath)))
+            return Failure(
+                ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                "OBSERVED_CHANGE_OUTSIDE_PROPOSAL_LINEAGE_SCOPE");
+
+        Dictionary<string, ObservedRepositoryChange> gitByPath;
+        try
+        {
+            gitByPath = gitObserved.ToDictionary(
+                change => change.RelativePath,
+                StringComparer.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return Failure(
+                ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                "OBSERVED_CHANGE_GIT_PATH_DUPLICATE");
+        }
+
+        var entries = new List<ObservedChangeManifestEntry>(
+            request.Proposal.Changes.Count);
+        foreach (ValidatedDeveloperChange proposed in
+            request.Proposal.Changes.OrderBy(
+                change => change.RelativePath,
+                StringComparer.Ordinal))
+        {
+            AppliedFileChange? applied = request.SafeChangeChanges
+                .SingleOrDefault(change => string.Equals(
+                    change.RelativePath,
+                    proposed.RelativePath,
+                    StringComparison.OrdinalIgnoreCase));
+            if (applied is null ||
+                applied.Operation != proposed.Operation ||
+                !gitByPath.TryGetValue(
+                    proposed.RelativePath,
+                    out ObservedRepositoryChange? gitChange))
+                return Failure(
+                    ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                    "OBSERVED_CHANGE_SAFECHANGE_RECEIPT_MISMATCH");
+
+            ObservedRepositoryChangeKind semanticKind;
+            if (proposed.Operation == DeveloperChangeOperationType.CreateFile)
+            {
+                if (!string.IsNullOrEmpty(applied.BeforeSha256) ||
+                    !string.IsNullOrEmpty(proposed.ExpectedContentSha256))
+                    return Failure(
+                        ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                        "OBSERVED_CHANGE_CREATE_BEFORE_PRESENT");
+                semanticKind = ObservedRepositoryChangeKind.Created;
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(applied.BeforeSha256) ||
+                    !string.Equals(
+                        applied.BeforeSha256,
+                        proposed.ExpectedContentSha256,
+                        StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(
+                        applied.BeforeSha256,
+                        applied.AfterSha256,
+                        StringComparison.OrdinalIgnoreCase))
+                    return Failure(
+                        ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                        "OBSERVED_CHANGE_REPLACE_HASH_INVALID");
+                semanticKind = ObservedRepositoryChangeKind.Modified;
+            }
+
+            string? path = ResolveRegularFile(
+                request.Repository.RepositoryPath,
+                proposed.RelativePath);
+            if (path is null)
+                return Failure(
+                    ObservedChangeEvidenceFailureKind.UnsafePath,
+                    "OBSERVED_CHANGE_FILE_UNSAFE");
+
+            var info = new FileInfo(path);
+            if (info.Length > MaxFileBytes)
+                return Failure(
+                    ObservedChangeEvidenceFailureKind.UnsafePath,
+                    "OBSERVED_CHANGE_FILE_TOO_LARGE");
+
+            await using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                16_384,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            string finalHash = Convert.ToHexString(
+                    await SHA256.HashDataAsync(stream, cancellationToken))
+                .ToLowerInvariant();
+            string proposedHash = Convert.ToHexString(
+                    SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(proposed.Content)))
+                .ToLowerInvariant();
+            if (!string.Equals(
+                    finalHash,
+                    applied.AfterSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    finalHash,
+                    proposedHash,
+                    StringComparison.OrdinalIgnoreCase) ||
+                info.Length != applied.SizeBytes)
+                return Failure(
+                    ObservedChangeEvidenceFailureKind.EvidenceMismatch,
+                    "OBSERVED_CHANGE_AFTER_HASH_MISMATCH");
+
+            entries.Add(new ObservedChangeManifestEntry(
+                proposed.RelativePath,
+                semanticKind,
+                finalHash,
+                info.Length,
+                proposed.Operation,
+                gitChange.ChangeKind,
+                applied.BeforeSha256,
+                "PASS"));
+        }
+
+        var manifest = new ObservedChangeManifest(
+            request.JobId,
+            request.RunId,
+            request.Repository.Head,
+            entries,
+            request.AttemptCount,
+            request.ProposalLineageId,
+            request.ProposalFingerprintSha256,
+            request.SafeChangeReceiptReference);
+        ArtifactWriteResult write = await artifactStore.WriteAsync(
+            new ArtifactWriteRequest
+            {
+                JobId = request.JobId,
+                RunId = request.RunId,
+                ArtifactType = request.IsGovernedHumanCorrection
+                    ? ArtifactType.ObservedGovernedHumanCorrectionManifest
+                    : request.IsHumanReviewCorrection
+                        ? ArtifactType.ObservedHumanReviewCorrectionManifest
+                        : request.IsBuildCorrectionRetry
+                            ? ArtifactType.ObservedBuildCorrectionRetryManifest
+                            : request.IsBuildCorrection
+                                ? ArtifactType.ObservedBuildCorrectionManifest
+                                : ArtifactType.ObservedChangeManifest,
+                Content = JsonSerializer.SerializeToUtf8Bytes(manifest),
+                CorrelationId = request.CorrelationId
+            },
+            cancellationToken);
+
+        return write.IsSuccess && write.Artifact is not null
+            ? ObservedChangeEvidenceResult.Success(manifest, write.Artifact)
+            : Failure(
+                ObservedChangeEvidenceFailureKind.ArtifactWriteFailure,
+                "OBSERVED_CHANGE_ARTIFACT_WRITE_FAILED");
     }
 
     private static string? ResolveRegularFile(string root, string relativePath)

@@ -145,6 +145,8 @@ internal static class SafeChangeTransactionJournal
                     CurrentVersion,
                     request.JobId,
                     request.RunId,
+                    request.AttemptCount,
+                    SafeChangeProposalLineage.GetLineageId(request),
                     Path.GetFullPath(
                         request.Repository.RepositoryPath),
                     entries);
@@ -540,6 +542,12 @@ internal static class SafeChangeTransactionJournal
             document.Version != CurrentVersion ||
             document.JobId != request.JobId ||
             document.RunId != request.RunId ||
+            (SafeChangeProposalLineage.HasVersionedIdentity(request) &&
+             (document.AttemptCount != request.AttemptCount ||
+              !string.Equals(
+                  document.ProposalLineageId,
+                  SafeChangeProposalLineage.GetLineageId(request),
+                  StringComparison.Ordinal))) ||
             document.Entries is null ||
             document.Entries.Count !=
                 request.Proposal.Changes.Count ||
@@ -731,18 +739,8 @@ internal static class SafeChangeTransactionJournal
     {
         try
         {
-            string expected =
-                Path.GetFullPath(
-                    Path.Combine(
-                        request.Repository.WorkspacePath,
-                        ".kronxy",
-                        "change-transactions",
-                        $"{request.JobId:N}-{request.RunId:N}" +
-                        (request.IsHumanReviewCorrection
-                            ? "-human-review-correction"
-                            : request.IsBuildCorrection
-                                ? "-build-correction"
-                                : string.Empty)));
+            string expected = Path.GetFullPath(
+                SafeChangeProposalLineage.GetTransactionPath(request));
 
             return string.Equals(
                 expected,
@@ -1032,6 +1030,8 @@ internal static class SafeChangeTransactionJournal
         int Version,
         Guid JobId,
         Guid RunId,
+        int AttemptCount,
+        string? ProposalLineageId,
         string RepositoryPath,
         IReadOnlyList<JournalEntry> Entries);
 

@@ -38,6 +38,7 @@ public sealed class JobLimitTests
 	{
 		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
 		job.TransitionTo(JobState.ContextBuilding, UtcNow, "start", "orchestrator", "corr");
+		job.BeginActiveExecution(UtcNow);
 		Assert.False(job.HasTimedOut(UtcNow.AddMinutes(29.0)));
 		Assert.True(job.HasTimedOut(UtcNow.AddMinutes(30.0)));
 	}
@@ -48,6 +49,7 @@ public sealed class JobLimitTests
 		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
 		DateTime recentProgress = UtcNow.AddDays(3.0);
 		job.TransitionTo(JobState.ContextBuilding, recentProgress, "start", "orchestrator", "corr");
+		job.BeginActiveExecution(recentProgress);
 
 		Assert.False(job.HasTimedOut(recentProgress.AddMinutes(29.0)));
 	}
@@ -57,6 +59,7 @@ public sealed class JobLimitTests
 	{
 		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
 		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.BeginActiveExecution(UtcNow);
 		job.TransitionTo(JobState.Planning, UtcNow.AddMinutes(29.0), "planning", "orchestrator", "corr-2");
 
 		Assert.False(job.HasTimedOut(UtcNow.AddMinutes(58.0)));
@@ -93,6 +96,95 @@ public sealed class JobLimitTests
 	{
 		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
 
+		Assert.False(job.HasTimedOut(UtcNow.AddDays(30.0)));
+	}
+
+	[Fact]
+	public void Inactive_planning_job_does_not_age_while_operator_is_paused()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.TransitionTo(JobState.Planning, UtcNow, "planning", "orchestrator", "corr-2");
+
+		Assert.False(job.HasTimedOut(UtcNow.AddHours(20.0)));
+	}
+
+	[Fact]
+	public void Authorized_retry_in_same_stage_starts_a_fresh_active_lease()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.TransitionTo(JobState.Planning, UtcNow, "planning", "orchestrator", "corr-2");
+		DateTime retryStarted = UtcNow.AddHours(20.0);
+
+		job.BeginActiveExecution(retryStarted);
+
+		Assert.False(job.HasTimedOut(retryStarted));
+		Assert.Equal(retryStarted, job.ActiveExecutionStartedOnUtc);
+		Assert.Equal(retryStarted, job.LastActiveProgressOnUtc);
+		Assert.Equal(1, job.AttemptCount);
+	}
+
+	[Fact]
+	public void Governed_progress_refreshes_active_timeout_reference()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.BeginActiveExecution(UtcNow);
+		DateTime progress = UtcNow.AddMinutes(25.0);
+
+		job.RecordActiveProgress(progress);
+
+		Assert.False(job.HasTimedOut(progress.AddMinutes(29.0)));
+		Assert.True(job.HasTimedOut(progress.AddMinutes(30.0)));
+	}
+
+	[Fact]
+	public void Completing_execution_stops_wall_clock_aging()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.BeginActiveExecution(UtcNow);
+		job.CompleteActiveExecution(UtcNow.AddMinutes(5.0));
+
+		Assert.False(job.HasTimedOut(UtcNow.AddDays(30.0)));
+		Assert.Null(job.ActiveExecutionStartedOnUtc);
+	}
+
+	[Fact]
+	public void Active_execution_without_progress_times_out_fail_closed()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.BeginActiveExecution(UtcNow);
+
+		Assert.True(job.HasTimedOut(UtcNow.AddMinutes(30.0)));
+	}
+
+	[Fact]
+	public void Reading_job_state_does_not_refresh_active_progress()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.BeginActiveExecution(UtcNow);
+		DateTime? progress = job.LastActiveProgressOnUtc;
+
+		_ = job.State;
+		_ = job.UpdatedOnUtc;
+		_ = job.Transitions.Count;
+
+		Assert.Equal(progress, job.LastActiveProgressOnUtc);
+	}
+
+	[Fact]
+	public void Timed_out_job_is_terminal_and_never_times_out_again()
+	{
+		Job job = CreateJob(3, TimeSpan.FromMinutes(30.0));
+		job.TransitionTo(JobState.ContextBuilding, UtcNow, "context", "orchestrator", "corr-1");
+		job.BeginActiveExecution(UtcNow);
+		job.TransitionTo(JobState.TimedOut, UtcNow.AddMinutes(30.0), "timeout", "orchestrator", "corr-2");
+
+		Assert.True(job.IsTerminal);
 		Assert.False(job.HasTimedOut(UtcNow.AddDays(30.0)));
 	}
 

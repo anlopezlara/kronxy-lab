@@ -79,6 +79,22 @@ public sealed class FileSystemArtifactReader :
                                 request.ArtifactType)
                     .ToArray();
 
+            if (request.ArtifactType ==
+                ArtifactType.PlanningRejectedResponse)
+            {
+                matching = SelectPlanningRejectedResponse(
+                    matching,
+                    request.CorrelationId);
+            }
+            else if (request.ArtifactType
+                .IsVersionedDeveloperCorrection() ||
+                request.ArtifactType.IsVersionedHumanCorrection())
+            {
+                matching = SelectVersionedDeveloperCorrection(
+                    matching,
+                    request.CorrelationId);
+            }
+
             if (matching.Length == 0)
             {
                 return Failure(
@@ -271,6 +287,71 @@ public sealed class FileSystemArtifactReader :
                 ArtifactReadFailureKind.IoFailure,
                 "ARTIFACT_READ_INTERNAL_FAILURE");
         }
+    }
+
+    private static ArtifactRecord[]
+        SelectPlanningRejectedResponse(
+            IReadOnlyList<ArtifactRecord> artifacts,
+            string correlationId)
+    {
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            return artifacts
+                .Where(artifact =>
+                    string.Equals(
+                        artifact.CorrelationId,
+                        correlationId,
+                        StringComparison.Ordinal))
+                .ToArray();
+        }
+
+        ArtifactRecord[] legacy = artifacts
+            .Where(artifact =>
+                artifact.RelativePath.EndsWith(
+                    "/planner/rejected-response.json",
+                    StringComparison.Ordinal))
+            .ToArray();
+
+        if (legacy.Length > 0)
+        {
+            return legacy;
+        }
+
+        return artifacts
+            .OrderByDescending(artifact =>
+                artifact.CreatedAtUtc)
+            .ThenByDescending(artifact =>
+                artifact.ArtifactId)
+            .Take(1)
+            .ToArray();
+    }
+
+    private static ArtifactRecord[]
+        SelectVersionedDeveloperCorrection(
+            IReadOnlyList<ArtifactRecord> artifacts,
+            string correlationId)
+    {
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            ArtifactRecord[] exact = artifacts
+                .Where(artifact => string.Equals(
+                    artifact.CorrelationId,
+                    correlationId,
+                    StringComparison.Ordinal))
+                .ToArray();
+            if (exact.Length > 0)
+            {
+                return exact;
+            }
+        }
+
+        return artifacts
+            .OrderByDescending(artifact =>
+                artifact.CreatedAtUtc)
+            .ThenByDescending(artifact =>
+                artifact.ArtifactId)
+            .Take(1)
+            .ToArray();
     }
 
     private static bool IsValidRequest(

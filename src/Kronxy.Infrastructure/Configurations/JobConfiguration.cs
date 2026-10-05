@@ -49,6 +49,12 @@ internal sealed class JobConfiguration : IEntityTypeConfiguration<Job>
             .HasColumnName("updated_on_utc")
             .IsRequired();
 
+        builder.Property(job => job.ActiveExecutionStartedOnUtc)
+            .HasColumnName("active_execution_started_on_utc");
+
+        builder.Property(job => job.LastActiveProgressOnUtc)
+            .HasColumnName("last_active_progress_on_utc");
+
         builder.Property(job => job.CompletedOnUtc)
             .HasColumnName("completed_on_utc");
 

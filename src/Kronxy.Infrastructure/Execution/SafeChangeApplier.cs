@@ -852,19 +852,8 @@ public sealed class SafeChangeApplier :
     }
 
     private static string GetTransactionPath(
-        SafeChangeApplicationRequest request)
-    {
-        return Path.Combine(
-            request.Repository.WorkspacePath,
-            ".kronxy",
-            "change-transactions",
-            $"{request.JobId:N}-{request.RunId:N}" +
-            (request.IsHumanReviewCorrection
-                ? "-human-review-correction"
-                : request.IsBuildCorrection
-                    ? "-build-correction"
-                    : string.Empty));
-    }
+        SafeChangeApplicationRequest request) =>
+        SafeChangeProposalLineage.GetTransactionPath(request);
 
     private static bool TryDeleteTransaction(
         string transactionPath)

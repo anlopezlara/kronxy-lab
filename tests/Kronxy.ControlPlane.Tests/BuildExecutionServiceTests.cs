@@ -2,6 +2,7 @@ using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
 using Kronxy.Application.Repositories;
 using Kronxy.Infrastructure.Execution;
+using System.Text;
 using Xunit;
 
 namespace Kronxy.ControlPlane.Tests;
@@ -69,6 +70,13 @@ public sealed class BuildExecutionServiceTests
         Assert.Equal(
             3,
             fixture.ArtifactStore.Writes.Count);
+
+        ArtifactWriteRequest stdout = Assert.Single(
+            fixture.ArtifactStore.Writes,
+            item => item.ArtifactType == ArtifactType.BuildStandardOutput);
+        Assert.Equal(
+            "build stdout",
+            Encoding.UTF8.GetString(stdout.Content.Span));
     }
 
     [Fact]

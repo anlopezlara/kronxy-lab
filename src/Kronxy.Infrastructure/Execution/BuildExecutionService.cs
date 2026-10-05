@@ -82,8 +82,11 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult stdoutWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.BuildHumanReviewCorrectionStandardOutput
+                            : request.IsBuildCorrectionRetry
+                            ? ArtifactType.BuildCorrectionRetryStandardOutput
                             : request.IsBuildCorrection
                             ? ArtifactType.BuildCorrectionStandardOutput
                             : ArtifactType.BuildStandardOutput,
@@ -95,8 +98,11 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult stderrWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.BuildHumanReviewCorrectionStandardError
+                            : request.IsBuildCorrectionRetry
+                            ? ArtifactType.BuildCorrectionRetryStandardError
                             : request.IsBuildCorrection
                             ? ArtifactType.BuildCorrectionStandardError
                             : ArtifactType.BuildStandardError,
@@ -113,8 +119,11 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult reportWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.BuildHumanReviewCorrectionReport
+                            : request.IsBuildCorrectionRetry
+                            ? ArtifactType.BuildCorrectionRetryReport
                             : request.IsBuildCorrection
                             ? ArtifactType.BuildCorrectionReport
                             : ArtifactType.BuildReport,

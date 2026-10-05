@@ -109,6 +109,12 @@ public sealed class JobPostgresPersistenceTests
                 Assert.True(
                     transitionResult.IsSuccess);
 
+                job.BeginActiveExecution(
+                    now.AddSeconds(2));
+
+                job.RecordActiveProgress(
+                    now.AddSeconds(3));
+
                 repository.Add(job);
 
                 await unitOfWork.SaveChangesAsync();
@@ -151,6 +157,15 @@ public sealed class JobPostgresPersistenceTests
                 Assert.Equal(
                     TimeSpan.FromMinutes(30),
                     recovered.Limits.MaxJobDuration);
+                Assert.Equal(
+                    recovered.CreatedOnUtc.AddSeconds(2),
+                    recovered.ActiveExecutionStartedOnUtc);
+                Assert.Equal(
+                    recovered.CreatedOnUtc.AddSeconds(3),
+                    recovered.LastActiveProgressOnUtc);
+                Assert.False(
+                    recovered.HasTimedOut(
+                        recovered.CreatedOnUtc.AddMinutes(29)));
                 Assert.Equal(
                     3,
                     recovered.Limits.MaxAttempts);

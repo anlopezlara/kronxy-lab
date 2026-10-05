@@ -116,6 +116,10 @@ public sealed class PlanningPriorityPathSelector :
             RequestsAutomatedTests(
                 jobRequest);
 
+        IReadOnlyList<HashSet<string>> explicitReferences =
+            ExtractExplicitReferenceTerms(
+                jobRequest);
+
         if (requestTokens.Count == 0)
         {
             return Array.Empty<string>();
@@ -155,7 +159,8 @@ public sealed class PlanningPriorityPathSelector :
                                 entry.Path,
                                 requestTokens,
                                 prioritizeTests,
-                                jobRequest)
+                                jobRequest,
+                                explicitReferences)
                     })
             .Where(
                 value =>
@@ -262,7 +267,8 @@ public sealed class PlanningPriorityPathSelector :
         string path,
         HashSet<string> requestTokens,
         bool prioritizeTests,
-        string jobRequest)
+        string jobRequest,
+        IReadOnlyList<HashSet<string>> explicitReferences)
     {
         HashSet<string> pathTokens =
             Tokenize(
@@ -296,6 +302,12 @@ public sealed class PlanningPriorityPathSelector :
             score += 10_000;
         }
 
+        if (explicitReferences.Any(reference =>
+                reference.IsSubsetOf(pathTokens)))
+        {
+            score += 20_000;
+        }
+
         if (prioritizeTests &&
             IsTestPath(path))
         {
@@ -303,6 +315,61 @@ public sealed class PlanningPriorityPathSelector :
         }
 
         return score;
+    }
+
+    internal static IReadOnlyList<HashSet<string>>
+        ExtractExplicitReferenceTerms(
+            string jobRequest)
+    {
+        var references =
+            new List<HashSet<string>>();
+
+        int searchFrom = 0;
+
+        while (searchFrom < jobRequest.Length)
+        {
+            int useIndex = jobRequest.IndexOf(
+                "use ",
+                searchFrom,
+                StringComparison.OrdinalIgnoreCase);
+
+            if (useIndex < 0)
+            {
+                break;
+            }
+
+            int valueStart = useIndex + 4;
+            int asIndex = jobRequest.IndexOf(
+                " as ",
+                valueStart,
+                StringComparison.OrdinalIgnoreCase);
+
+            if (asIndex < 0)
+            {
+                break;
+            }
+
+            string? identifier =
+                SplitTokens(
+                    jobRequest[valueStart..asIndex])
+                    .LastOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(identifier))
+            {
+                HashSet<string> tokens =
+                    Tokenize(
+                        SplitCamelCase(identifier));
+
+                if (tokens.Count > 0)
+                {
+                    references.Add(tokens);
+                }
+            }
+
+            searchFrom = asIndex + 4;
+        }
+
+        return references;
     }
 
     private static bool IsTestPath(

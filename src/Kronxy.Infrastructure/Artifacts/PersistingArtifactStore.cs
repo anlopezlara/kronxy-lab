@@ -104,6 +104,17 @@ public sealed class PersistingArtifactStore :
                         item =>
                             item.ArtifactType ==
                                 request.ArtifactType)
+                    .Where(
+                        item =>
+                            (request.ArtifactType !=
+                                ArtifactType.PlanningRejectedResponse &&
+                             !request.ArtifactType
+                                .IsVersionedDeveloperCorrection() &&
+                             !request.ArtifactType.IsVersionedHumanCorrection()) ||
+                            string.Equals(
+                                item.CorrelationId,
+                                request.CorrelationId,
+                                StringComparison.Ordinal))
                     .ToArray();
 
             if (candidates.Length != 1)

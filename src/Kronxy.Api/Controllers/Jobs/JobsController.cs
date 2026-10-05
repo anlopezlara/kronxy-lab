@@ -144,6 +144,21 @@ public sealed class JobsController : ControllerBase
         return ToOperationResponse(result);
     }
 
+    [HttpPost("{jobId:guid}/human-correction")]
+    public async Task<IActionResult> ApplyGovernedHumanCorrection(
+        Guid jobId,
+        GovernedHumanCorrectionRequest request,
+        CancellationToken cancellationToken)
+    {
+        JobOperationResult result = await _jobOrchestrator
+            .ApplyGovernedHumanCorrectionAsync(
+                jobId,
+                request,
+                cancellationToken);
+
+        return ToOperationResponse(result);
+    }
+
     [HttpPost("{jobId:guid}/retry-pending")]
     public async Task<IActionResult> RetryPending(
         Guid jobId,

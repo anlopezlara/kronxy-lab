@@ -25,6 +25,9 @@ public sealed class DeveloperExecutionService :
 
     private const string BuildCorrectionInstructions =
         " The previous proposal failed Build. Produce only the smallest correction required by the supplied compiler evidence. " +
+        "The compiler diagnostic path is where the inconsistency is observed, not necessarily where the root cause must be fixed. " +
+        "Inspect related declarations before selecting the correction target. " +
+        "When a diagnostic references a type or symbol declared in another allowed source file, consider correcting the declaration rather than rewriting the diagnostic file. " +
         "Do not add functionality, rewrite unrelated files, expand scope, or create files. " +
         "Use ReplaceFile only and stay within the original Planner candidates. " +
         "Set expectedContentSha256 to an empty placeholder; KRONXY binds the governed workspace hash.";
@@ -104,6 +107,7 @@ public sealed class DeveloperExecutionService :
 
         try
         {
+            bool isBuildRetry = request.BuildCorrection?.PreviousNoOpPaths.Count > 0;
             Guid evidenceRunId = request.AuthorizedEvidenceRunId ?? request.RunId;
             ArtifactReadResult planArtifact =
                 await ReadAsync(
@@ -174,13 +178,43 @@ public sealed class DeveloperExecutionService :
             string feedbackJson =
                 JsonSerializer.Serialize(request.ReviewerFeedback);
 
-            string correctionJson = request.HumanReviewCorrection is not null
-                ? CreateHumanReviewCorrectionEvidenceJson(
-                    request.HumanReviewCorrection)
-                : request.BuildCorrection is null
-                    ? "null"
-                    : CreateBuildCorrectionEvidenceJson(
-                        request.BuildCorrection);
+            string correctionJson;
+            if (request.HumanReviewCorrection is not null)
+            {
+                correctionJson = CreateHumanReviewCorrectionEvidenceJson(
+                    request.HumanReviewCorrection);
+            }
+            else if (request.BuildCorrection is not null)
+            {
+                BuildCorrectionEvidenceResult compacted =
+                    await BuildCorrectionEvidenceCompactor.CreateAsync(
+                        request.BuildCorrection,
+                        request.Repository,
+                        aiOptions.DeveloperFeedbackCharacters - feedbackJson.Length,
+                        plan.CandidateFilesToModify,
+                        plan.FilesToInspect,
+                        cancellationToken).ConfigureAwait(false);
+                if (!compacted.IsSuccess)
+                    return Failure(
+                        DeveloperExecutionFailureKind.ContextTooLarge,
+                        compacted.ErrorCode);
+                correctionJson = compacted.Content;
+                logger?.LogInformation(
+                    "Build correction evidence: diagnostics={DiagnosticsCharacters} chars, relatedDeclarations={RelatedDeclarationsCharacters} chars, envelope={EnvelopeCharacters} chars, feedbackLimit={FeedbackLimit}, unique={UniqueCount}, included={IncludedCount}, duplicates={DuplicateCount}.",
+                    compacted.DiagnosticsCharacters,
+                    compacted.RelatedDeclarationsCharacters,
+                    compacted.Content.Length,
+                    aiOptions.DeveloperFeedbackCharacters, compacted.UniqueCount,
+                    compacted.IncludedCount, compacted.DuplicateCount);
+                if (compacted.IncludedCount < compacted.UniqueCount)
+                    logger?.LogWarning(
+                        "Build correction diagnostics reduced from {UniqueCount} to {IncludedCount} unique items.",
+                        compacted.UniqueCount, compacted.IncludedCount);
+            }
+            else
+            {
+                correctionJson = "null";
+            }
 
             if ((long)feedbackJson.Length + correctionJson.Length >
                 aiOptions.DeveloperFeedbackCharacters)
@@ -203,6 +237,9 @@ public sealed class DeveloperExecutionService :
                     : request.BuildCorrection is null
                         ? string.Empty
                         : BuildCorrectionInstructions);
+            if (isBuildRetry)
+                systemInstructions +=
+                    " The previous correction was a no-op. Inspect the compiler diagnostics, effective source and reference patterns, then make an actual source change in an allowed file. Never repeat unchanged content.";
 
             string correctionRequirements =
                 request.HumanReviewCorrection is not null
@@ -212,6 +249,9 @@ public sealed class DeveloperExecutionService :
                     : request.BuildCorrection is null
                         ? string.Empty
                         : "This is a Build correction. Return only ReplaceFile operations. " +
+                          "The compiler diagnostic path is where the inconsistency is observed, not necessarily where the root cause must be fixed. " +
+                          "Inspect related declarations before selecting the correction target. " +
+                          "When a diagnostic references a type or symbol declared in another allowed source file, consider correcting the declaration rather than rewriting the diagnostic file. " +
                           "KRONXY binds each expectedContentSha256 from the governed workspace; use an empty placeholder.\n";
 
             string outputRequirements =
@@ -282,11 +322,18 @@ public sealed class DeveloperExecutionService :
                     "DEVELOPER_INPUT_LIMIT_EXCEEDED");
             }
 
+            if (request.BuildCorrection is not null)
+                logger?.LogInformation(
+                    "Build correction input: system={SystemCharacters} chars, user={UserCharacters} chars, schema={SchemaCharacters} chars.",
+                    systemInstructions.Length, userContent.Length, schemaCharacters);
+
             AiResponse response =
                 await aiGateway.GenerateAsync(
                     new AiRequest
                     {
-                        Model = AiLogicalModel.General,
+                        Model = request.BuildCorrection is null
+                            ? AiLogicalModel.General
+                            : AiLogicalModel.CodingQuality,
                         SystemInstructions = systemInstructions,
                         UserContent = userContent,
                         CorrelationId = request.CorrelationId,
@@ -316,11 +363,15 @@ public sealed class DeveloperExecutionService :
                                 ? ArtifactType.DeveloperHumanReviewCorrectionRejectedStructuredResponse
                                 : request.BuildCorrection is null
                                 ? ArtifactType.DeveloperRejectedStructuredResponse
+                                : isBuildRetry
+                                ? ArtifactType.DeveloperBuildCorrectionRetryRejectedStructuredResponse
                                 : ArtifactType.DeveloperBuildCorrectionRejectedStructuredResponse
                             : request.HumanReviewCorrection is not null
                                 ? ArtifactType.DeveloperHumanReviewCorrectionRejectedResponse
                                 : request.BuildCorrection is null
                                 ? ArtifactType.DeveloperRejectedResponse
+                                : isBuildRetry
+                                ? ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse
                                 : ArtifactType.DeveloperBuildCorrectionRejectedResponse,
                         JsonSerializer.SerializeToUtf8Bytes(response),
                         cancellationToken).ConfigureAwait(false);
@@ -421,6 +472,15 @@ public sealed class DeveloperExecutionService :
                     cancellationToken).ConfigureAwait(false);
             }
 
+            if (request.BuildCorrection is not null &&
+                BuildCorrectionNoOpPolicy.IsEntireNoOp(validated.Proposal))
+            {
+                return await PolicyFailureAsync(
+                    request, response,
+                    "DEVELOPER_BUILD_CORRECTION_NO_OP",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             if (request.HumanReviewCorrection is not null &&
                 !IsValidHumanReviewCorrectionProposal(
                     validated.Proposal,
@@ -440,6 +500,8 @@ public sealed class DeveloperExecutionService :
                         ? ArtifactType.DeveloperHumanReviewCorrectionProposal
                         : request.BuildCorrection is null
                         ? ArtifactType.DeveloperProposal
+                        : isBuildRetry
+                        ? ArtifactType.DeveloperBuildCorrectionRetryProposal
                         : ArtifactType.DeveloperBuildCorrectionProposal,
                     JsonSerializer.SerializeToUtf8Bytes(normalizedProposal),
                     cancellationToken).ConfigureAwait(false);
@@ -458,6 +520,8 @@ public sealed class DeveloperExecutionService :
                         ? ArtifactType.DeveloperHumanReviewCorrectionResponse
                         : request.BuildCorrection is null
                         ? ArtifactType.DeveloperResponse
+                        : isBuildRetry
+                        ? ArtifactType.DeveloperBuildCorrectionRetryResponse
                         : ArtifactType.DeveloperBuildCorrectionResponse,
                     JsonSerializer.SerializeToUtf8Bytes(response),
                     cancellationToken).ConfigureAwait(false);
@@ -548,6 +612,8 @@ public sealed class DeveloperExecutionService :
                 ? ArtifactType.DeveloperHumanReviewCorrectionRejectedResponse
                 : request.BuildCorrection is null
                     ? ArtifactType.DeveloperRejectedResponse
+                    : request.BuildCorrection.PreviousNoOpPaths.Count > 0
+                        ? ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse
                     : ArtifactType.DeveloperBuildCorrectionRejectedResponse,
             JsonSerializer.SerializeToUtf8Bytes(new
             {
@@ -622,6 +688,10 @@ public sealed class DeveloperExecutionService :
         request.BuildCorrection is not null &&
         request.BuildCorrection.OriginalProposal is not null &&
         request.BuildCorrection.OriginalProposal.Changes.Count > 0 &&
+        request.BuildCorrection.PreviousNoOpPaths.All(path =>
+            request.BuildCorrection.OriginalProposal.Changes.Any(change =>
+                string.Equals(change.RelativePath, path,
+                    StringComparison.OrdinalIgnoreCase))) &&
         request.BuildCorrection.FailedBuildReport is not null &&
         request.BuildCorrection.FailedBuildReport.JobId == request.JobId &&
         request.BuildCorrection.FailedBuildReport.RunId == request.RunId &&
@@ -657,21 +727,6 @@ public sealed class DeveloperExecutionService :
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return requiredPaths.SetEquals(correctionPaths);
-    }
-
-    private static string CreateBuildCorrectionEvidenceJson(
-        DeveloperBuildCorrectionContext correction)
-    {
-        return JsonSerializer.Serialize(new
-        {
-            PreviousProposal = correction.OriginalProposal,
-            FailedBuild = new
-            {
-                correction.FailedBuildReport.ExitCode,
-                correction.FailedBuildReport.ErrorCode
-            },
-            CompilerOutput = correction.BuildStandardOutput
-        });
     }
 
     private static string CreateHumanReviewCorrectionEvidenceJson(

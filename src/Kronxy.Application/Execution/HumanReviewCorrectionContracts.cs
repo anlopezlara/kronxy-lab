@@ -16,6 +16,12 @@ public sealed record HumanReviewApprovalEvidence
     public required string CorrelationId { get; init; }
     public required string ReviewerReviewSha256 { get; init; }
     public required string DeterministicAcceptanceGateSha256 { get; init; }
+    public required DeveloperProposalLineage EffectiveProposalLineage { get; init; }
+    public required string EffectiveProposalSha256 { get; init; }
+    public required string ObservedChangesSha256 { get; init; }
+    public required string BuildReportSha256 { get; init; }
+    public required string TestReportSha256 { get; init; }
+    public required string EffectiveSourceSnapshotSha256 { get; init; }
     public required DateTimeOffset RecordedAtUtc { get; init; }
 }
 

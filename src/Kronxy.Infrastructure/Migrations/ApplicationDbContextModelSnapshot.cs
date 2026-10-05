@@ -250,6 +250,10 @@ namespace Kronxy.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("attempt_count");
 
+                    b.Property<DateTime?>("ActiveExecutionStartedOnUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("active_execution_started_on_utc");
+
                     b.Property<string>("BaseRepositoryHead")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
@@ -277,6 +281,10 @@ namespace Kronxy.Infrastructure.Migrations
                     b.Property<string>("LastErrorMessage")
                         .HasColumnType("text")
                         .HasColumnName("last_error_message");
+
+                    b.Property<DateTime?>("LastActiveProgressOnUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_active_progress_on_utc");
 
                     b.Property<string>("Request")
                         .IsRequired()

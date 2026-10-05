@@ -24,6 +24,10 @@ public sealed class Job : Entity
 
 	public DateTime UpdatedOnUtc { get; private set; }
 
+	public DateTime? ActiveExecutionStartedOnUtc { get; private set; }
+
+	public DateTime? LastActiveProgressOnUtc { get; private set; }
+
 	public DateTime? CompletedOnUtc { get; private set; }
 
 	public string? BaseRepositoryHead { get; private set; }
@@ -59,7 +63,41 @@ public sealed class Job : Entity
 	{
 		return !IsTerminal &&
 			JobWorkflow.IsOperationalState(State) &&
-			utcNow - UpdatedOnUtc >= Limits.MaxJobDuration;
+			ActiveExecutionStartedOnUtc.HasValue &&
+			LastActiveProgressOnUtc.HasValue &&
+			utcNow - LastActiveProgressOnUtc.Value >= Limits.MaxJobDuration;
+	}
+
+	public void BeginActiveExecution(DateTime utcNow)
+	{
+		if (ActiveExecutionStartedOnUtc.HasValue)
+		{
+			return;
+		}
+
+		ActiveExecutionStartedOnUtc = utcNow;
+		LastActiveProgressOnUtc = utcNow;
+	}
+
+	public void RecordActiveProgress(DateTime utcNow)
+	{
+		if (!ActiveExecutionStartedOnUtc.HasValue)
+		{
+			return;
+		}
+
+		LastActiveProgressOnUtc = utcNow;
+	}
+
+	public void CompleteActiveExecution(DateTime utcNow)
+	{
+		if (!ActiveExecutionStartedOnUtc.HasValue)
+		{
+			return;
+		}
+
+		LastActiveProgressOnUtc = utcNow;
+		ActiveExecutionStartedOnUtc = null;
 	}
 
 	public static Result<Job> Create(Guid id, string externalId, string request, JobLimits limits, DateTime utcNow)
@@ -149,6 +187,7 @@ public sealed class Job : Entity
 		}
 		State = targetState;
 		UpdatedOnUtc = utcNow;
+		RecordActiveProgress(utcNow);
 		if (JobWorkflow.IsTerminalState(targetState))
 		{
 			CompletedOnUtc = utcNow;

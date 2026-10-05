@@ -7,10 +7,12 @@ public enum RecoveryStage
     Developer = 25,
     DeveloperOriginal = 26,
     DeveloperBuildCorrection = 27,
+    DeveloperBuildCorrectionRetry = 34,
     HumanReviewCorrection = 28,
     DeveloperHumanReviewCorrection = 29,
     ObservedChanges = 30,
     ObservedBuildCorrection = 31,
+    ObservedBuildCorrectionRetry = 36,
     ObservedHumanReviewCorrection = 32,
     EffectiveDeveloperProposal = 33,
     Restore = 35,
@@ -23,14 +25,19 @@ public enum RecoveryStage
     ReviewerHumanReviewCorrection = 61,
     ReviewerHumanReviewCorrectionSuperseding = 62,
     ReviewerHumanReviewCorrectionSourceAwareSuperseding = 63,
-    HumanReviewApproval = 64
+    HumanReviewApproval = 64,
+    GovernedHumanCorrection = 65,
+    ObservedGovernedHumanCorrection = 66,
+    BuildGovernedHumanCorrection = 67,
+    TestGovernedHumanCorrection = 68
 }
 
 public enum DeveloperProposalLineage
 {
     Original = 10,
     BuildCorrection = 20,
-    HumanReviewCorrection = 30
+    HumanReviewCorrection = 30,
+    GovernedHumanCorrection = 40
 }
 
 public enum StageRecoveryStatus
@@ -71,7 +78,9 @@ public sealed record StageRecoveryResult(
     ReviewerReview? ReviewerReview = null,
     string? BuildStandardOutput = null,
     HumanReviewCorrectionEvidence? HumanReviewCorrection = null,
-    DeveloperProposalLineage? DeveloperProposalLineage = null)
+    DeveloperProposalLineage? DeveloperProposalLineage = null,
+    GovernedHumanCorrectionEvidence? GovernedHumanCorrection = null,
+    GovernedHumanCorrectionReceipt? GovernedHumanCorrectionReceipt = null)
 {
     public bool IsCompleted =>
         Status == StageRecoveryStatus.Completed;
@@ -85,7 +94,9 @@ public sealed record StageRecoveryResult(
         ReviewerReview? reviewerReview = null,
         string? buildStandardOutput = null,
         HumanReviewCorrectionEvidence? humanReviewCorrection = null,
-        DeveloperProposalLineage? developerProposalLineage = null) =>
+        DeveloperProposalLineage? developerProposalLineage = null,
+        GovernedHumanCorrectionEvidence? governedHumanCorrection = null,
+        GovernedHumanCorrectionReceipt? governedHumanCorrectionReceipt = null) =>
         new(
             StageRecoveryStatus.Completed,
             string.Empty,
@@ -97,7 +108,9 @@ public sealed record StageRecoveryResult(
             reviewerReview,
             buildStandardOutput,
             humanReviewCorrection,
-            developerProposalLineage);
+            developerProposalLineage,
+            governedHumanCorrection,
+            governedHumanCorrectionReceipt);
 
     public static StageRecoveryResult FailedBuild(
         BuildExecutionReport report,

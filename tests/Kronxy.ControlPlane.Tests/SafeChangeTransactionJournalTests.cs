@@ -272,11 +272,10 @@ public sealed class SafeChangeTransactionJournalTests
         public RepositoryWorktreeHandle Repository { get; }
 
         public string TransactionPath =>
-            Path.Combine(
-                WorkspacePath,
-                ".kronxy",
-                "change-transactions",
-                $"{JobId:N}-{RunId:N}");
+            SafeChangeProposalLineage.GetTransactionPath(
+                Request(Create(
+                    "placeholder.cs",
+                    "placeholder")));
 
         public string StagePath(
             int index)
@@ -339,6 +338,7 @@ public sealed class SafeChangeTransactionJournalTests
             {
                 JobId = JobId,
                 RunId = RunId,
+                AttemptCount = 1,
                 Repository = Repository,
                 Proposal =
                     new ValidatedDeveloperProposal(
@@ -349,7 +349,9 @@ public sealed class SafeChangeTransactionJournalTests
                         totalBytes,
                         totalBytes),
                 CorrelationId =
-                    "recovery-test"
+                    "recovery-test",
+                ProposalLineageId =
+                    "developer:recovery-test"
             };
         }
 

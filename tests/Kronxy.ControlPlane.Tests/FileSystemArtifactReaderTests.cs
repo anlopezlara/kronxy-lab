@@ -307,6 +307,147 @@ public sealed class FileSystemArtifactReaderTests :
             result.ErrorCode);
     }
 
+    [Fact]
+    public async Task Planning_rejected_reader_preserves_legacy_lookup()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+        byte[] legacyContent = "legacy"u8.ToArray();
+        byte[] versionedContent = "versioned"u8.ToArray();
+        ArtifactRecord legacy = CreateArtifact(
+            jobId, runId,
+            ArtifactType.PlanningRejectedResponse,
+            legacyContent) with
+        {
+            CorrelationId = "legacy-correlation"
+        };
+        ArtifactRecord versioned = CreateArtifact(
+            jobId, runId,
+            ArtifactType.PlanningRejectedResponse,
+            versionedContent) with
+        {
+            RelativePath =
+                $"{jobId:N}/{runId:N}/planner/rejected-response-versioned.json",
+            CorrelationId = "versioned-correlation",
+            CreatedAtUtc = legacy.CreatedAtUtc.AddMinutes(1)
+        };
+        WriteArtifact(legacy.RelativePath, legacyContent);
+        WriteArtifact(versioned.RelativePath, versionedContent);
+        FileSystemArtifactReader reader = CreateReader(
+            new FakeArtifactMetadataRepository(legacy, versioned));
+
+        ArtifactReadResult result = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.PlanningRejectedResponse) with
+            {
+                CorrelationId = string.Empty
+            });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(legacy.ArtifactId, result.Artifact!.ArtifactId);
+        Assert.Equal(legacyContent, result.Content.ToArray());
+    }
+
+    [Fact]
+    public async Task Planning_rejected_reader_selects_invocation_or_latest_deterministically()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+        byte[] firstContent = "first"u8.ToArray();
+        byte[] secondContent = "second"u8.ToArray();
+        DateTimeOffset created = DateTimeOffset.UtcNow;
+        ArtifactRecord first = CreateArtifact(
+            jobId, runId,
+            ArtifactType.PlanningRejectedResponse,
+            firstContent) with
+        {
+            RelativePath =
+                $"{jobId:N}/{runId:N}/planner/rejected-response-first.json",
+            CorrelationId = "first-correlation",
+            CreatedAtUtc = created
+        };
+        ArtifactRecord second = CreateArtifact(
+            jobId, runId,
+            ArtifactType.PlanningRejectedResponse,
+            secondContent) with
+        {
+            RelativePath =
+                $"{jobId:N}/{runId:N}/planner/rejected-response-second.json",
+            CorrelationId = "second-correlation",
+            CreatedAtUtc = created.AddMinutes(1)
+        };
+        WriteArtifact(first.RelativePath, firstContent);
+        WriteArtifact(second.RelativePath, secondContent);
+        FileSystemArtifactReader reader = CreateReader(
+            new FakeArtifactMetadataRepository(first, second));
+
+        ArtifactReadResult selected = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.PlanningRejectedResponse) with
+            {
+                CorrelationId = "first-correlation"
+            });
+        ArtifactReadResult latest = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.PlanningRejectedResponse) with
+            {
+                CorrelationId = string.Empty
+            });
+
+        Assert.Equal(first.ArtifactId, selected.Artifact!.ArtifactId);
+        Assert.Equal(second.ArtifactId, latest.Artifact!.ArtifactId);
+    }
+
+    [Fact]
+    public async Task Developer_correction_reader_selects_invocation_or_latest_deterministically()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+        byte[] firstContent = "first"u8.ToArray();
+        byte[] secondContent = "second"u8.ToArray();
+        DateTimeOffset created = DateTimeOffset.UtcNow;
+        ArtifactRecord first = CreateArtifact(
+            jobId, runId,
+            ArtifactType.DeveloperBuildCorrectionRetryProposal,
+            firstContent) with
+        {
+            RelativePath =
+                $"{jobId:N}/{runId:N}/developer/build-correction-retry-proposal-first.json",
+            CorrelationId = "first-correction",
+            CreatedAtUtc = created
+        };
+        ArtifactRecord second = CreateArtifact(
+            jobId, runId,
+            ArtifactType.DeveloperBuildCorrectionRetryProposal,
+            secondContent) with
+        {
+            RelativePath =
+                $"{jobId:N}/{runId:N}/developer/build-correction-retry-proposal-second.json",
+            CorrelationId = "second-correction",
+            CreatedAtUtc = created.AddMinutes(1)
+        };
+        WriteArtifact(first.RelativePath, firstContent);
+        WriteArtifact(second.RelativePath, secondContent);
+        FileSystemArtifactReader reader = CreateReader(
+            new FakeArtifactMetadataRepository(first, second));
+
+        ArtifactReadResult selected = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.DeveloperBuildCorrectionRetryProposal) with
+            {
+                CorrelationId = "first-correction"
+            });
+        ArtifactReadResult latest = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.DeveloperBuildCorrectionRetryProposal) with
+            {
+                CorrelationId = "unknown-correction"
+            });
+
+        Assert.Equal(first.ArtifactId, selected.Artifact!.ArtifactId);
+        Assert.Equal(second.ArtifactId, latest.Artifact!.ArtifactId);
+    }
+
     private FileSystemArtifactReader CreateReader(
         IArtifactMetadataRepository metadata)
     {
@@ -351,6 +492,12 @@ public sealed class FileSystemArtifactReaderTests :
                 ArtifactType.AiResponse =>
                     "ai",
 
+                ArtifactType.PlanningRejectedResponse =>
+                    "planner",
+
+                ArtifactType.DeveloperBuildCorrectionRetryProposal =>
+                    "developer",
+
                 _ =>
                     throw new ArgumentOutOfRangeException(
                         nameof(artifactType))
@@ -364,6 +511,12 @@ public sealed class FileSystemArtifactReaderTests :
 
                 ArtifactType.AiResponse =>
                     "response.json",
+
+                ArtifactType.PlanningRejectedResponse =>
+                    "rejected-response.json",
+
+                ArtifactType.DeveloperBuildCorrectionRetryProposal =>
+                    "build-correction-retry-proposal.json",
 
                 _ =>
                     throw new ArgumentOutOfRangeException(

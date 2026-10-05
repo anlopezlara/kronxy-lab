@@ -83,8 +83,6 @@ public sealed class ArtifactStoreTests
     [InlineData(ArtifactType.ReviewerReview, "review/review.json")]
     [InlineData(ArtifactType.ReviewerResponse, "review/response.json")]
     [InlineData(ArtifactType.HumanReviewCorrectionEvidence, "human-review/changes-required.json")]
-    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionResponse, "developer/human-review-correction-response.json")]
-    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionProposal, "developer/human-review-correction-proposal.json")]
     [InlineData(ArtifactType.ObservedHumanReviewCorrectionManifest, "changes/human-review-correction-manifest.json")]
     [InlineData(ArtifactType.BuildHumanReviewCorrectionReport, "build/human-review-correction-report.json")]
     [InlineData(ArtifactType.TestHumanReviewCorrectionReport, "tests/human-review-correction-report.json")]
@@ -129,7 +127,10 @@ public sealed class ArtifactStoreTests
                     jobId,
                     runId,
                     ArtifactType.PlanningRejectedResponse,
-                    "rejected"u8.ToArray()));
+                    "rejected"u8.ToArray()) with
+                {
+                    CorrelationId = string.Empty
+                });
 
         Assert.True(
             result.IsSuccess);
@@ -141,6 +142,115 @@ public sealed class ArtifactStoreTests
                 runId.ToString("N"),
                 "/planner/rejected-response.json"),
             result.Artifact!.RelativePath);
+    }
+
+    [Fact]
+    public async Task Planning_rejected_responses_use_distinct_deterministic_paths()
+    {
+        using var fixture = new ArtifactStoreFixture();
+        FileSystemArtifactStore store = fixture.CreateStore();
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+
+        ArtifactWriteResult first = await store.WriteAsync(
+            Request(jobId, runId,
+                ArtifactType.PlanningRejectedResponse,
+                "first"u8.ToArray()) with
+            {
+                CorrelationId = "planning-invocation-001"
+            });
+        ArtifactWriteResult second = await store.WriteAsync(
+            Request(jobId, runId,
+                ArtifactType.PlanningRejectedResponse,
+                "second"u8.ToArray()) with
+            {
+                CorrelationId = "planning-invocation-002"
+            });
+
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsSuccess);
+        Assert.NotEqual(
+            first.Artifact!.RelativePath,
+            second.Artifact!.RelativePath);
+        Assert.EndsWith(
+            $"planner/rejected-response-{CorrelationHash("planning-invocation-001")}.json",
+            first.Artifact.RelativePath,
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"planner/rejected-response-{CorrelationHash("planning-invocation-002")}.json",
+            second.Artifact.RelativePath,
+            StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(
+            fixture.Root,
+            first.Artifact.RelativePath.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.True(File.Exists(Path.Combine(
+            fixture.Root,
+            second.Artifact.RelativePath.Replace('/', Path.DirectorySeparatorChar))));
+    }
+
+    [Theory]
+    [InlineData(ArtifactType.DeveloperBuildCorrectionProposal, "build-correction-proposal")]
+    [InlineData(ArtifactType.DeveloperBuildCorrectionResponse, "build-correction-response")]
+    [InlineData(ArtifactType.DeveloperBuildCorrectionRejectedResponse, "build-correction-rejected-response")]
+    [InlineData(ArtifactType.DeveloperBuildCorrectionRetryProposal, "build-correction-retry-proposal")]
+    [InlineData(ArtifactType.DeveloperBuildCorrectionRetryResponse, "build-correction-retry-response")]
+    [InlineData(ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse, "build-correction-retry-rejected-response")]
+    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionProposal, "human-review-correction-proposal")]
+    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionResponse, "human-review-correction-response")]
+    [InlineData(ArtifactType.DeveloperHumanReviewCorrectionRejectedResponse, "human-review-correction-rejected-response")]
+    public async Task Developer_corrections_use_distinct_deterministic_paths(
+        ArtifactType artifactType,
+        string fileStem)
+    {
+        using var fixture = new ArtifactStoreFixture();
+        FileSystemArtifactStore store = fixture.CreateStore();
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+
+        ArtifactWriteResult first = await store.WriteAsync(
+            Request(jobId, runId, artifactType, "first"u8.ToArray()) with
+            {
+                CorrelationId = "correction-invocation-001"
+            });
+        ArtifactWriteResult second = await store.WriteAsync(
+            Request(jobId, runId, artifactType, "second"u8.ToArray()) with
+            {
+                CorrelationId = "correction-invocation-002"
+            });
+
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsSuccess);
+        Assert.EndsWith(
+            $"developer/{fileStem}-{CorrelationHash("correction-invocation-001")}.json",
+            first.Artifact!.RelativePath,
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"developer/{fileStem}-{CorrelationHash("correction-invocation-002")}.json",
+            second.Artifact!.RelativePath,
+            StringComparison.Ordinal);
+        Assert.NotEqual(first.Artifact.RelativePath, second.Artifact.RelativePath);
+    }
+
+    [Fact]
+    public async Task Developer_correction_without_correlation_preserves_legacy_path()
+    {
+        using var fixture = new ArtifactStoreFixture();
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+
+        ArtifactWriteResult result = await fixture.CreateStore().WriteAsync(
+            Request(jobId, runId,
+                ArtifactType.DeveloperBuildCorrectionProposal,
+                "legacy"u8.ToArray()) with
+            {
+                CorrelationId = string.Empty
+            });
+
+        Assert.True(result.IsSuccess);
+        Assert.EndsWith(
+            "developer/build-correction-proposal.json",
+            result.Artifact!.RelativePath,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -204,7 +314,10 @@ public sealed class ArtifactStoreTests
             "original"u8.ToArray()));
         ArtifactWriteResult correction = await store.WriteAsync(Request(
             jobId, runId, ArtifactType.DeveloperHumanReviewCorrectionProposal,
-            "correction"u8.ToArray()));
+            "correction"u8.ToArray()) with
+        {
+            CorrelationId = string.Empty
+        });
 
         Assert.True(original.IsSuccess);
         Assert.True(correction.IsSuccess);
@@ -490,6 +603,12 @@ public sealed class ArtifactStoreTests
             Content = content,
             CorrelationId = "test-correlation"
         };
+
+    private static string CorrelationHash(string value) =>
+        Convert.ToHexString(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(value)))
+        .ToLowerInvariant();
 }
 
 internal sealed class ArtifactStoreFixture :

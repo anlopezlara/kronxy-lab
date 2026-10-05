@@ -83,6 +83,7 @@ public sealed record DeveloperBuildCorrectionContext
     public required ValidatedDeveloperProposal OriginalProposal { get; init; }
     public required BuildExecutionReport FailedBuildReport { get; init; }
     public required string BuildStandardOutput { get; init; }
+    public IReadOnlyList<string> PreviousNoOpPaths { get; init; } = [];
 }
 
 public sealed record DeveloperExecutionReport

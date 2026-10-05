@@ -221,9 +221,42 @@ public sealed class PlanningExecutionService :
                     context.ErrorCode);
             }
 
+            ArtifactReadResult priorRejection =
+                await artifactReader.ReadAsync(
+                    new ArtifactReadRequest
+                    {
+                        JobId = request.JobId,
+                        RunId = request.RunId,
+                        ArtifactType =
+                            ArtifactType.PlanningRejectedResponse,
+                        MaxBytes = artifactOptions.MaxArtifactBytes,
+                        CorrelationId = request.CorrelationId
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+            string retryFeedback = string.Empty;
+
+            if (priorRejection.IsSuccess)
+            {
+                retryFeedback = BuildRetryFeedback(
+                    priorRejection.Content,
+                    request.JobRequest,
+                    context.Content,
+                    priorityPaths);
+            }
+            else if (priorRejection.FailureKind !=
+                ArtifactReadFailureKind.NotFound)
+            {
+                return Failure(
+                    MapArtifactReadFailure(
+                        priorRejection.FailureKind),
+                    priorRejection.ErrorCode);
+            }
+
             string userContent =
                 prefix +
                 context.Content +
+                retryFeedback +
                 requestReminder;
 
             if ((long)SystemInstructions.Length +
@@ -517,8 +550,113 @@ public sealed class PlanningExecutionService :
         request.RunId != Guid.Empty &&
         !string.IsNullOrWhiteSpace(
             request.JobRequest) &&
-        request.CorrelationId.IndexOfAny(
+            request.CorrelationId.IndexOfAny(
             ['\0', '\r', '\n']) < 0;
+
+    private string BuildRetryFeedback(
+        ReadOnlyMemory<byte> rejectedResponse,
+        string jobRequest,
+        string authorizedContext,
+        IReadOnlyList<string> priorityPaths)
+    {
+        AiResponse? response;
+        PlannerPlan? rejectedPlan;
+
+        try
+        {
+            response = JsonSerializer.Deserialize<AiResponse>(
+                rejectedResponse.Span);
+            rejectedPlan = response is null
+                ? null
+                : JsonSerializer.Deserialize<PlannerPlan>(
+                    response.Content);
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
+
+        if (response is null ||
+            !response.IsSuccess ||
+            rejectedPlan is null ||
+            !plannerPlanPolicy.Validate(
+                rejectedPlan,
+                jobRequest).IsSuccess ||
+            PlanningPriorityPathSelector.HasTopFivePlanPathOverlap(
+                rejectedPlan,
+                priorityPaths))
+        {
+            return string.Empty;
+        }
+
+        string[] existingPaths =
+            ExtractFileHeaders(authorizedContext);
+
+        HashSet<string> existing =
+            existingPaths.ToHashSet(StringComparer.Ordinal);
+
+        string[] newCandidatePaths =
+            ExtractRequestedPaths(jobRequest)
+                .Where(path => !existing.Contains(path))
+                .ToArray();
+
+        var feedback = new StringBuilder();
+        feedback.Append(
+            "\nPLANNING RETRY FEEDBACK:\n" +
+            "The previous response failed PLANNING_PATH_COHERENCE_INVALID.\n" +
+            "filesToInspect must use exact existing FILE-header paths from this list:\n");
+
+        foreach (string path in existingPaths)
+        {
+            feedback.Append("- ").Append(path).Append('\n');
+        }
+
+        feedback.Append(
+            "New requested paths absent from FILE headers are allowed only in candidateFilesToModify:\n");
+
+        foreach (string path in newCandidatePaths)
+        {
+            feedback.Append("- ").Append(path).Append('\n');
+        }
+
+        feedback.Append(
+            "Do not place a new candidate path in filesToInspect and do not invent alternative existing paths.\n");
+
+        return feedback.ToString();
+    }
+
+    internal static string[] ExtractFileHeaders(
+        string content) =>
+        content
+            .Split('\n')
+            .Where(line =>
+                line.StartsWith(
+                    "===== FILE: ",
+                    StringComparison.Ordinal) &&
+                line.EndsWith(
+                    " =====",
+                    StringComparison.Ordinal))
+            .Select(line => line[12..^6])
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+    internal static string[] ExtractRequestedPaths(
+        string jobRequest) =>
+        jobRequest
+            .Split((char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries)
+            .Select(token => token.Trim(
+                '`', '"', '\'', '(', ')', '[', ']',
+                '{', '}', ',', ';', ':'))
+            .Where(path =>
+                path.Contains('/') &&
+                !path.StartsWith('/') &&
+                !path.Contains('\\') &&
+                path.Split('/').All(segment =>
+                    segment.Length > 0 &&
+                    segment is not "." and not ".."))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
     private static PlanningExecutionFailureKind
         MapArtifactReadFailure(

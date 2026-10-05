@@ -86,6 +86,11 @@ public sealed class StageRecoveryEvidenceService :
                         request,
                         cancellationToken),
 
+                RecoveryStage.GovernedHumanCorrection =>
+                    await CheckGovernedHumanCorrectionAsync(
+                        request,
+                        cancellationToken),
+
                 RecoveryStage.Developer =>
                     await CheckHumanDeveloperAsync(
                         request,
@@ -100,6 +105,13 @@ public sealed class StageRecoveryEvidenceService :
                         cancellationToken),
 
                 RecoveryStage.DeveloperBuildCorrection =>
+                    await CheckDeveloperAsync(
+                        request,
+                        preferBuildCorrection: true,
+                        correctionOnly: true,
+                        cancellationToken),
+
+                RecoveryStage.DeveloperBuildCorrectionRetry =>
                     await CheckDeveloperAsync(
                         request,
                         preferBuildCorrection: true,
@@ -133,10 +145,22 @@ public sealed class StageRecoveryEvidenceService :
                         manifest => StageRecoveryResult.Completed(
                             observedChangeManifest: manifest)),
 
+                RecoveryStage.ObservedBuildCorrectionRetry =>
+                    await CheckObservedChangesArtifactAsync(
+                        request,
+                        ArtifactType.ObservedBuildCorrectionRetryManifest,
+                        cancellationToken),
+
                 RecoveryStage.ObservedHumanReviewCorrection =>
                     await CheckObservedChangesArtifactAsync(
                         request,
                         ArtifactType.ObservedHumanReviewCorrectionManifest,
+                        cancellationToken),
+
+                RecoveryStage.ObservedGovernedHumanCorrection =>
+                    await CheckObservedChangesArtifactAsync(
+                        request,
+                        ArtifactType.ObservedGovernedHumanCorrectionManifest,
                         cancellationToken),
 
                 RecoveryStage.Restore =>
@@ -157,12 +181,25 @@ public sealed class StageRecoveryEvidenceService :
                         ArtifactType.BuildHumanReviewCorrectionReport,
                         cancellationToken),
 
+                RecoveryStage.BuildGovernedHumanCorrection =>
+                    await CheckBuildReportAsync(
+                        request,
+                        ArtifactType.BuildHumanReviewCorrectionReport,
+                        cancellationToken),
+
                 RecoveryStage.Test =>
                     await CheckTestAsync(
                         request,
                         cancellationToken),
 
                 RecoveryStage.TestHumanReviewCorrection =>
+                    await CheckTestArtifactsAsync(
+                        request,
+                        ArtifactType.TestHumanReviewCorrectionReport,
+                        ArtifactType.TestHumanReviewCorrectionResults,
+                        cancellationToken),
+
+                RecoveryStage.TestGovernedHumanCorrection =>
                     await CheckTestArtifactsAsync(
                         request,
                         ArtifactType.TestHumanReviewCorrectionReport,
@@ -210,7 +247,13 @@ public sealed class StageRecoveryEvidenceService :
                             !string.IsNullOrWhiteSpace(value.Actor) &&
                             value.CorrelationId == request.CorrelationId &&
                             IsSha256(value.ReviewerReviewSha256) &&
-                            IsSha256(value.DeterministicAcceptanceGateSha256),
+                            IsSha256(value.DeterministicAcceptanceGateSha256) &&
+                            Enum.IsDefined(value.EffectiveProposalLineage) &&
+                            IsSha256(value.EffectiveProposalSha256) &&
+                            IsSha256(value.ObservedChangesSha256) &&
+                            IsSha256(value.BuildReportSha256) &&
+                            IsSha256(value.TestReportSha256) &&
+                            IsSha256(value.EffectiveSourceSnapshotSha256),
                         cancellationToken),
 
                 _ =>
@@ -423,11 +466,30 @@ public sealed class StageRecoveryEvidenceService :
             return original;
         }
 
-        StageRecoveryResult correction = await CheckDeveloperArtifactsAsync(
-            request,
-            ArtifactType.DeveloperBuildCorrectionProposal,
-            ArtifactType.DeveloperBuildCorrectionResponse,
-            cancellationToken);
+        StageRecoveryResult correction;
+        if (request.Stage == RecoveryStage.DeveloperBuildCorrection)
+        {
+            correction = await CheckDeveloperArtifactsAsync(
+                request,
+                ArtifactType.DeveloperBuildCorrectionProposal,
+                ArtifactType.DeveloperBuildCorrectionResponse,
+                cancellationToken);
+        }
+        else
+        {
+            correction = await CheckDeveloperArtifactsAsync(
+                request,
+                ArtifactType.DeveloperBuildCorrectionRetryProposal,
+                ArtifactType.DeveloperBuildCorrectionRetryResponse,
+                cancellationToken);
+            if (request.Stage != RecoveryStage.DeveloperBuildCorrectionRetry &&
+                correction.Status == StageRecoveryStatus.NotCompleted)
+                correction = await CheckDeveloperArtifactsAsync(
+                    request,
+                    ArtifactType.DeveloperBuildCorrectionProposal,
+                    ArtifactType.DeveloperBuildCorrectionResponse,
+                    cancellationToken);
+        }
 
         if (correction.Status == StageRecoveryStatus.NotCompleted)
         {
@@ -542,6 +604,13 @@ public sealed class StageRecoveryEvidenceService :
             StageRecoveryRequest request,
             CancellationToken cancellationToken)
     {
+        StageRecoveryResult governed = await CheckGovernedHumanCorrectionAsync(
+            request, cancellationToken);
+        if (governed.IsCompleted)
+            return governed;
+        if (governed.Status != StageRecoveryStatus.NotCompleted)
+            return governed;
+
         StageRecoveryResult humanEvidence =
             await CheckHumanReviewCorrectionAsync(request, cancellationToken);
         StageRecoveryResult humanProposal = await CheckHumanDeveloperAsync(
@@ -613,6 +682,82 @@ public sealed class StageRecoveryEvidenceService :
             : original;
     }
 
+    private async Task<StageRecoveryResult>
+        CheckGovernedHumanCorrectionAsync(
+            StageRecoveryRequest request,
+            CancellationToken cancellationToken)
+    {
+        StageRecoveryResult evidenceResult =
+            await CheckReportAsync<GovernedHumanCorrectionEvidence>(
+                request,
+                ArtifactType.GovernedHumanCorrectionRequest,
+                evidence =>
+                    evidence.JobId == request.JobId &&
+                    evidence.RunId == request.RunId &&
+                    evidence.AttemptCount == request.AttemptCount &&
+                    evidence.Stage == "Building" &&
+                    !string.IsNullOrWhiteSpace(evidence.Actor) &&
+                    !string.IsNullOrWhiteSpace(evidence.CorrelationId) &&
+                    IsSha256(evidence.RequestSha256) &&
+                    evidence.AllowedPaths.Count > 0 &&
+                    evidence.Proposal.Changes.Count > 0 &&
+                    evidence.Proposal.Changes.All(change =>
+                        change.Operation == DeveloperChangeOperationType.ReplaceFile &&
+                        evidence.AllowedPaths.Contains(
+                            change.RelativePath,
+                            StringComparer.OrdinalIgnoreCase)),
+                cancellationToken,
+                evidence => StageRecoveryResult.Completed(
+                    developerProposal: evidence.Proposal,
+                    developerProposalLineage:
+                        DeveloperProposalLineage.GovernedHumanCorrection,
+                    governedHumanCorrection: evidence));
+        if (!evidenceResult.IsCompleted)
+            return evidenceResult;
+
+        StageRecoveryResult receiptResult =
+            await CheckReportAsync<GovernedHumanCorrectionReceipt>(
+                request,
+                ArtifactType.GovernedHumanCorrectionReceipt,
+                receipt =>
+                    receipt.JobId == request.JobId &&
+                    receipt.RunId == request.RunId &&
+                    receipt.AttemptCount == request.AttemptCount &&
+                    receipt.CorrelationId ==
+                        evidenceResult.GovernedHumanCorrection!.CorrelationId &&
+                    receipt.RequestSha256 ==
+                        evidenceResult.GovernedHumanCorrection.RequestSha256 &&
+                    receipt.Changes.Count ==
+                        evidenceResult.DeveloperProposal!.Changes.Count &&
+                    receipt.Changes.All(change =>
+                        evidenceResult.DeveloperProposal.Changes.Any(proposed =>
+                            string.Equals(
+                                proposed.RelativePath,
+                                change.RelativePath,
+                                StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(
+                                proposed.ExpectedContentSha256,
+                                change.BeforeSha256,
+                                StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(
+                                HashContent(proposed.Content),
+                                change.AfterSha256,
+                                StringComparison.OrdinalIgnoreCase))),
+                cancellationToken,
+                receipt => StageRecoveryResult.Completed(
+                    governedHumanCorrectionReceipt: receipt));
+        return receiptResult.IsCompleted
+            ? StageRecoveryResult.Completed(
+                developerProposal: evidenceResult.DeveloperProposal,
+                developerProposalLineage:
+                    DeveloperProposalLineage.GovernedHumanCorrection,
+                governedHumanCorrection:
+                    evidenceResult.GovernedHumanCorrection,
+                governedHumanCorrectionReceipt:
+                    receiptResult.GovernedHumanCorrectionReceipt)
+            : receiptResult;
+    }
+
     private static bool HasExactCorrectionPaths(
         ValidatedDeveloperProposal proposal,
         HumanReviewCorrectionEvidence evidence)
@@ -654,6 +799,15 @@ public sealed class StageRecoveryEvidenceService :
 
         if (!proposalRead.IsSuccess) return MapReadFailure(proposalRead);
         if (!responseRead.IsSuccess) return MapReadFailure(responseRead);
+
+        if (proposalRead.Artifact is null ||
+            responseRead.Artifact is null ||
+            !string.Equals(
+                proposalRead.Artifact.CorrelationId,
+                responseRead.Artifact.CorrelationId,
+                StringComparison.Ordinal))
+            return StageRecoveryResult.InvalidEvidence(
+                "STAGE_RECOVERY_DEVELOPER_LINEAGE_MISMATCH");
 
         string proposalJson;
         try
@@ -706,6 +860,14 @@ public sealed class StageRecoveryEvidenceService :
             StageRecoveryRequest request,
             CancellationToken cancellationToken)
     {
+        StageRecoveryResult retry =
+            await CheckObservedChangesArtifactAsync(
+                request,
+                ArtifactType.ObservedBuildCorrectionRetryManifest,
+                cancellationToken);
+        if (retry.Status != StageRecoveryStatus.NotCompleted)
+            return retry;
+
         StageRecoveryResult correction =
             await CheckReportAsync<ObservedChangeManifest>(
                 request,
@@ -737,17 +899,56 @@ public sealed class StageRecoveryEvidenceService :
         CheckReportAsync<ObservedChangeManifest>(
             request,
             artifactType,
-            manifest => manifest.JobId == request.JobId &&
-                manifest.RunId == request.RunId &&
-                manifest.Entries is not null,
+            manifest => IsValidObservedManifest(
+                request,
+                artifactType,
+                manifest),
             cancellationToken,
             manifest => StageRecoveryResult.Completed(
                 observedChangeManifest: manifest));
+
+    private static bool IsValidObservedManifest(
+        StageRecoveryRequest request,
+        ArtifactType artifactType,
+        ObservedChangeManifest manifest)
+    {
+        if (manifest.JobId != request.JobId ||
+            manifest.RunId != request.RunId ||
+            manifest.Entries is null)
+            return false;
+
+        if (artifactType !=
+            ArtifactType.ObservedGovernedHumanCorrectionManifest)
+            return true;
+
+        return manifest.AttemptCount == request.AttemptCount &&
+            !string.IsNullOrWhiteSpace(manifest.ProposalLineageId) &&
+            IsSha256(manifest.ProposalFingerprintSha256) &&
+            !string.IsNullOrWhiteSpace(
+                manifest.SafeChangeReceiptReference) &&
+            manifest.Entries.Count > 0 &&
+            manifest.Entries.All(entry =>
+                entry.ProposalOperation is not null &&
+                entry.GitChangeKind is not null &&
+                entry.ValidationResult == "PASS");
+    }
 
     private async Task<StageRecoveryResult> CheckBuildAsync(
         StageRecoveryRequest request,
         CancellationToken cancellationToken)
     {
+        ArtifactReadResult retryRead = await ReadAsync(
+            request,
+            ArtifactType.BuildCorrectionRetryReport,
+            MaxReportBytes,
+            cancellationToken);
+        if (retryRead.FailureKind != ArtifactReadFailureKind.NotFound)
+            return ParseBuildReport(
+                request,
+                retryRead,
+                allowFailedExecution: false,
+                standardOutput: null);
+
         ArtifactReadResult correctionRead = await ReadAsync(
             request,
             ArtifactType.BuildCorrectionReport,
@@ -756,11 +957,28 @@ public sealed class StageRecoveryEvidenceService :
 
         if (correctionRead.FailureKind != ArtifactReadFailureKind.NotFound)
         {
-            return ParseBuildReport(
+            StageRecoveryResult correctedBuild = ParseBuildReport(
                 request,
                 correctionRead,
                 allowFailedExecution: false,
                 standardOutput: null);
+            if (correctedBuild.IsCompleted ||
+                correctedBuild.ErrorCode != "STAGE_RECOVERY_REPORT_NOT_SUCCESSFUL")
+                return correctedBuild;
+
+            StageRecoveryResult previousCorrection =
+                await CheckDeveloperArtifactsAsync(
+                    request,
+                    ArtifactType.DeveloperBuildCorrectionProposal,
+                    ArtifactType.DeveloperBuildCorrectionResponse,
+                    cancellationToken);
+            if (!previousCorrection.IsCompleted ||
+                previousCorrection.DeveloperProposal is null ||
+                !BuildCorrectionNoOpPolicy.IsEntireNoOp(
+                    previousCorrection.DeveloperProposal))
+                return correctedBuild;
+            // A failed no-op build did not alter source. Keep the original
+            // compiler evidence available for one governed correction retry.
         }
 
         ArtifactReadResult reportRead = await ReadAsync(
@@ -1092,6 +1310,11 @@ public sealed class StageRecoveryEvidenceService :
     private static bool IsSha256(string? value) =>
         value is { Length: 64 } && value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static string HashContent(string content) =>
+        Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(content)))
+        .ToLowerInvariant();
 
     private async Task<StageRecoveryResult> CheckReviewerArtifactsAsync(
         StageRecoveryRequest request,

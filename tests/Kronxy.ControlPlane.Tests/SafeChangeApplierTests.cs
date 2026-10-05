@@ -85,7 +85,9 @@ public sealed class SafeChangeApplierTests
                 Hash("new"),
                 "corrected")) with
             {
-                IsBuildCorrection = true
+                IsBuildCorrection = true,
+                ProposalLineageId =
+                    "build-correction:test-correlation"
             };
 
         SafeChangeApplicationResult result =
@@ -98,6 +100,114 @@ public sealed class SafeChangeApplierTests
         Assert.True(File.Exists(originalReceipt));
         Assert.True(File.Exists(correctionReceipt));
         Assert.Equal("corrected", fixture.Read("src/New.cs"));
+    }
+
+    [Fact]
+    public async Task Governed_replacement_after_legacy_original_uses_independent_receipt()
+    {
+        using var fixture = new Fixture();
+        SafeChangeApplicationRequest original = fixture.Request(
+            Change(
+                DeveloperChangeOperationType.CreateFile,
+                "src/New.cs",
+                string.Empty,
+                "new"));
+
+        Assert.True((await fixture.Applier.ApplyAsync(original)).IsSuccess);
+        string originalVersionedReceipt =
+            SafeChangeCompletionReceipt.GetPath(original);
+        string legacyReceipt =
+            SafeChangeProposalLineage.GetLegacyCompletionReceiptPath(original);
+        File.Move(originalVersionedReceipt, legacyReceipt);
+
+        SafeChangeApplicationRequest governed = fixture.Request(
+            Change(
+                DeveloperChangeOperationType.ReplaceFile,
+                "src/New.cs",
+                Hash("new"),
+                "corrected")) with
+            {
+                CorrelationId = "governed-human-1",
+                ProposalLineageId =
+                    "governed-human-correction:governed-human-1",
+                IsGovernedHumanCorrection = true
+            };
+
+        SafeChangeApplicationResult result =
+            await fixture.Applier.ApplyAsync(governed);
+
+        string governedReceipt =
+            SafeChangeCompletionReceipt.GetPath(governed);
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        Assert.NotEqual(legacyReceipt, governedReceipt);
+        Assert.True(File.Exists(legacyReceipt));
+        Assert.True(File.Exists(governedReceipt));
+        Assert.Equal("corrected", fixture.Read("src/New.cs"));
+    }
+
+    [Fact]
+    public async Task Matching_legacy_singleton_receipt_remains_idempotent()
+    {
+        using var fixture = new Fixture();
+        SafeChangeApplicationRequest request = fixture.Request(
+            Change(
+                DeveloperChangeOperationType.CreateFile,
+                "src/New.cs",
+                string.Empty,
+                "new"));
+
+        Assert.True((await fixture.Applier.ApplyAsync(request)).IsSuccess);
+        string versionedReceipt =
+            SafeChangeCompletionReceipt.GetPath(request);
+        string legacyReceipt =
+            SafeChangeProposalLineage.GetLegacyCompletionReceiptPath(request);
+        File.Move(versionedReceipt, legacyReceipt);
+
+        SafeChangeApplicationResult result =
+            await fixture.Applier.ApplyAsync(request);
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        Assert.True(File.Exists(legacyReceipt));
+        Assert.False(File.Exists(versionedReceipt));
+        Assert.Equal("new", fixture.Read("src/New.cs"));
+    }
+
+    [Fact]
+    public async Task Human_review_correction_uses_independent_lineage_receipt()
+    {
+        using var fixture = new Fixture();
+        SafeChangeApplicationRequest original = fixture.Request(
+            Change(
+                DeveloperChangeOperationType.CreateFile,
+                "src/New.cs",
+                string.Empty,
+                "new"));
+        Assert.True((await fixture.Applier.ApplyAsync(original)).IsSuccess);
+
+        SafeChangeApplicationRequest correction = fixture.Request(
+            Change(
+                DeveloperChangeOperationType.ReplaceFile,
+                "src/New.cs",
+                Hash("new"),
+                "human-reviewed")) with
+            {
+                CorrelationId = "human-review-1",
+                ProposalLineageId =
+                    "human-review-correction:human-review-1",
+                IsHumanReviewCorrection = true
+            };
+
+        SafeChangeApplicationResult result =
+            await fixture.Applier.ApplyAsync(correction);
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        Assert.NotEqual(
+            SafeChangeCompletionReceipt.GetPath(original),
+            SafeChangeCompletionReceipt.GetPath(correction));
+        Assert.True(File.Exists(
+            SafeChangeCompletionReceipt.GetPath(original)));
+        Assert.True(File.Exists(
+            SafeChangeCompletionReceipt.GetPath(correction)));
     }
 
     [Fact]
@@ -727,11 +837,12 @@ public sealed class SafeChangeApplierTests
                     "placeholder")));
 
         public string TransactionPath =>
-            Path.Combine(
-                WorkspacePath,
-                ".kronxy",
-                "change-transactions",
-                $"{JobId:N}-{RunId:N}");
+            SafeChangeProposalLineage.GetTransactionPath(
+                Request(Change(
+                    DeveloperChangeOperationType.CreateFile,
+                    "placeholder.cs",
+                    string.Empty,
+                    "placeholder")));
 
         public SafeChangeApplicationRequest Request(
             params ValidatedDeveloperChange[] changes)
@@ -749,6 +860,8 @@ public sealed class SafeChangeApplierTests
                 RunId =
                     RunId,
 
+                AttemptCount = 1,
+
                 Repository =
                     Repository,
 
@@ -762,7 +875,10 @@ public sealed class SafeChangeApplierTests
                         total),
 
                 CorrelationId =
-                    "test-correlation"
+                    "test-correlation",
+
+                ProposalLineageId =
+                    "developer:test-correlation"
             };
         }
 

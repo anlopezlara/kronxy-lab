@@ -244,6 +244,118 @@ public sealed class PersistingArtifactStoreTests :
     }
 
     [Fact]
+    public async Task Planning_rejections_from_distinct_invocations_are_preserved()
+    {
+        var repository = new RecordingMetadataRepository();
+        PersistingArtifactStore store = CreateStore(repository);
+        ArtifactWriteRequest firstRequest = Request() with
+        {
+            ArtifactType = ArtifactType.PlanningRejectedResponse,
+            Content = "first-rejection"u8.ToArray(),
+            CorrelationId = "planning-rejection-001"
+        };
+        ArtifactWriteRequest secondRequest = firstRequest with
+        {
+            Content = "second-rejection"u8.ToArray(),
+            CorrelationId = "planning-rejection-002"
+        };
+
+        ArtifactWriteResult first = await store.WriteAsync(firstRequest);
+        ArtifactWriteResult second = await store.WriteAsync(secondRequest);
+
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsSuccess);
+        Assert.NotEqual(
+            first.Artifact!.RelativePath,
+            second.Artifact!.RelativePath);
+        Assert.Equal(2, repository.Added.Count);
+        Assert.Equal(0, reader.CallCount);
+    }
+
+    [Fact]
+    public async Task Developer_corrections_from_distinct_invocations_are_preserved()
+    {
+        var repository = new RecordingMetadataRepository();
+        PersistingArtifactStore store = CreateStore(repository);
+        ArtifactWriteRequest firstRequest = Request() with
+        {
+            ArtifactType = ArtifactType.DeveloperBuildCorrectionRetryProposal,
+            Content = "first-correction"u8.ToArray(),
+            CorrelationId = "build-correction-001"
+        };
+        ArtifactWriteRequest secondRequest = firstRequest with
+        {
+            Content = "second-correction"u8.ToArray(),
+            CorrelationId = "build-correction-002"
+        };
+
+        ArtifactWriteResult first = await store.WriteAsync(firstRequest);
+        ArtifactWriteResult second = await store.WriteAsync(secondRequest);
+
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsSuccess);
+        Assert.NotEqual(first.Artifact!.RelativePath, second.Artifact!.RelativePath);
+        Assert.Equal(2, repository.Added.Count);
+        Assert.Equal(0, reader.CallCount);
+    }
+
+    [Fact]
+    public async Task Same_developer_correction_is_idempotent_and_conflict_fails_closed()
+    {
+        var repository = new RecordingMetadataRepository();
+        PersistingArtifactStore store = CreateStore(repository);
+        ArtifactWriteRequest request = Request() with
+        {
+            ArtifactType = ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse,
+            Content = "same-correction"u8.ToArray(),
+            CorrelationId = "build-correction-idempotent"
+        };
+
+        ArtifactWriteResult first = await store.WriteAsync(request);
+        Assert.True(first.IsSuccess);
+        reader.Result = ArtifactReadResult.Success(
+            first.Artifact!, request.Content.ToArray());
+
+        ArtifactWriteResult retry = await store.WriteAsync(request);
+        ArtifactWriteResult conflict = await store.WriteAsync(
+            request with { Content = "different"u8.ToArray() });
+
+        Assert.True(retry.IsSuccess);
+        Assert.Equal(first.Artifact!.ArtifactId, retry.Artifact!.ArtifactId);
+        Assert.Equal(ArtifactStoreFailureKind.IntegrityFailure, conflict.FailureKind);
+        Assert.Equal("ARTIFACT_EXISTING_CONTENT_CONFLICT", conflict.ErrorCode);
+        Assert.Single(repository.Added);
+    }
+
+    [Fact]
+    public async Task Same_planning_invocation_is_idempotent()
+    {
+        var repository = new RecordingMetadataRepository();
+        PersistingArtifactStore store = CreateStore(repository);
+        ArtifactWriteRequest request = Request() with
+        {
+            ArtifactType = ArtifactType.PlanningRejectedResponse,
+            Content = "same-rejection"u8.ToArray(),
+            CorrelationId = "planning-rejection-idempotent"
+        };
+
+        ArtifactWriteResult first = await store.WriteAsync(request);
+        Assert.True(first.IsSuccess);
+        reader.Result = ArtifactReadResult.Success(
+            first.Artifact!,
+            request.Content.ToArray());
+
+        ArtifactWriteResult retry = await store.WriteAsync(request);
+
+        Assert.True(retry.IsSuccess);
+        Assert.Equal(
+            first.Artifact!.ArtifactId,
+            retry.Artifact!.ArtifactId);
+        Assert.Single(repository.Added);
+        Assert.Equal(1, reader.CallCount);
+    }
+
+    [Fact]
     public async Task Physical_orphan_without_metadata_fails_closed()
     {
         var repository =

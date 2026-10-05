@@ -30,7 +30,8 @@ internal sealed record SafeChangeCompletionReceiptResult(
 
 internal static class SafeChangeCompletionReceipt
 {
-    private const int CurrentVersion = 1;
+    private const int CurrentVersion = 2;
+    private const int LegacyVersion = 1;
     private const int MaximumReceiptBytes = 1_048_576;
     private const string TemporaryPrefix = ".kronxy-receipt-";
     private const string TemporarySuffix = ".tmp";
@@ -48,17 +49,7 @@ internal static class SafeChangeCompletionReceipt
 
     public static string GetPath(
         SafeChangeApplicationRequest request) =>
-        Path.Combine(
-            request.Repository.WorkspacePath,
-            ".kronxy",
-            "change-completions",
-            $"{request.JobId:N}-{request.RunId:N}" +
-            (request.IsHumanReviewCorrection
-                ? "-human-review-correction"
-                : request.IsBuildCorrection
-                    ? "-build-correction"
-                    : string.Empty) +
-            ".json");
+        SafeChangeProposalLineage.GetCompletionReceiptPath(request);
 
     public static async Task<SafeChangeCompletionReceiptResult>
         InspectAsync(
@@ -72,6 +63,20 @@ internal static class SafeChangeCompletionReceipt
                 return Failure("SAFE_CHANGE_RECEIPT_REQUEST_INVALID");
 
             string receiptPath = GetPath(request);
+            bool legacyFallback = false;
+
+            if (!PathEntryExists(receiptPath) &&
+                SafeChangeProposalLineage.HasVersionedIdentity(request))
+            {
+                string legacyPath =
+                    SafeChangeProposalLineage
+                        .GetLegacyCompletionReceiptPath(request);
+                if (PathEntryExists(legacyPath))
+                {
+                    receiptPath = legacyPath;
+                    legacyFallback = true;
+                }
+            }
 
             if (!IsExpectedReceiptPath(request, receiptPath) ||
                 HasLinkInExistingPath(
@@ -97,14 +102,20 @@ internal static class SafeChangeCompletionReceipt
                 JsonSerializer.Deserialize<ReceiptDocument>(
                     bytes, JsonOptions);
 
-            if (!ValidateIdentity(request, document))
+            if (!ValidateIdentity(request, document, legacyFallback))
                 return Failure("SAFE_CHANGE_RECEIPT_IDENTITY_INVALID");
 
-            string fingerprint = Fingerprint(request.Proposal);
+            string fingerprint = SafeChangeProposalIdentity.Fingerprint(
+                request.Proposal,
+                document!.Version);
             if (!FixedTimeHashEquals(
-                    document!.ProposalFingerprintSha256,
+                    document.ProposalFingerprintSha256,
                     fingerprint))
+            {
+                if (legacyFallback)
+                    return SafeChangeCompletionReceiptResult.Missing();
                 return Failure("SAFE_CHANGE_RECEIPT_PROPOSAL_MISMATCH");
+            }
 
             if (document.Targets is null ||
                 document.Targets.Count != request.Proposal.Changes.Count)
@@ -243,11 +254,15 @@ internal static class SafeChangeCompletionReceipt
                 CurrentVersion,
                 request.JobId,
                 request.RunId,
+                request.AttemptCount,
+                SafeChangeProposalLineage.GetLineageId(request),
                 request.Repository.JobExternalId,
                 request.Repository.Branch,
                 request.Repository.Head.ToLowerInvariant(),
                 WorkspaceIdentity(request),
-                Fingerprint(request.Proposal),
+                SafeChangeProposalIdentity.Fingerprint(
+                    request.Proposal,
+                    CurrentVersion),
                 targets);
 
             byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(
@@ -319,11 +334,19 @@ internal static class SafeChangeCompletionReceipt
 
     private static bool ValidateIdentity(
         SafeChangeApplicationRequest request,
-        ReceiptDocument? document) =>
+        ReceiptDocument? document,
+        bool legacyFallback) =>
         document is not null &&
-        document.Version == CurrentVersion &&
+        (document.Version == CurrentVersion ||
+         legacyFallback && document.Version == LegacyVersion) &&
         document.JobId == request.JobId &&
         document.RunId == request.RunId &&
+        (document.Version == LegacyVersion ||
+         document.AttemptCount == request.AttemptCount &&
+         string.Equals(
+             document.ProposalLineageId,
+             SafeChangeProposalLineage.GetLineageId(request),
+             StringComparison.Ordinal)) &&
         string.Equals(document.JobExternalId,
             request.Repository.JobExternalId,
             StringComparison.Ordinal) &&
@@ -337,50 +360,6 @@ internal static class SafeChangeCompletionReceipt
         FixedTimeHashEquals(document.WorkspaceIdentitySha256,
             WorkspaceIdentity(request)) &&
         IsSha256(document.ProposalFingerprintSha256);
-
-    private static string Fingerprint(
-        ValidatedDeveloperProposal proposal)
-    {
-        using var memory = new MemoryStream();
-        using (var writer = new BinaryWriter(
-            memory, StrictUtf8, leaveOpen: true))
-        {
-            writer.Write(CurrentVersion);
-            WriteString(writer, proposal.Summary);
-            writer.Write(proposal.Changes.Count);
-            foreach (ValidatedDeveloperChange change in proposal.Changes)
-            {
-                writer.Write((int)change.Operation);
-                WriteString(writer, change.RelativePath);
-                WriteString(writer, change.Intent);
-                WriteString(writer, change.Content);
-                WriteString(writer,
-                    change.ExpectedContentSha256.ToLowerInvariant());
-            }
-            WriteStrings(writer, proposal.Assumptions);
-            WriteStrings(writer, proposal.Risks);
-            writer.Flush();
-        }
-        return HashBytes(memory.ToArray());
-    }
-
-    private static void WriteStrings(
-        BinaryWriter writer,
-        IReadOnlyList<string> values)
-    {
-        writer.Write(values.Count);
-        foreach (string value in values)
-            WriteString(writer, value);
-    }
-
-    private static void WriteString(
-        BinaryWriter writer,
-        string value)
-    {
-        byte[] bytes = StrictUtf8.GetBytes(value);
-        writer.Write(bytes.Length);
-        writer.Write(bytes);
-    }
 
     private static string WorkspaceIdentity(
         SafeChangeApplicationRequest request)
@@ -420,19 +399,13 @@ internal static class SafeChangeCompletionReceipt
     {
         try
         {
-            string expected = Path.GetFullPath(Path.Combine(
-                request.Repository.WorkspacePath,
-                ".kronxy",
-                "change-completions",
-                $"{request.JobId:N}-{request.RunId:N}" +
-                (request.IsHumanReviewCorrection
-                    ? "-human-review-correction"
-                    : request.IsBuildCorrection
-                        ? "-build-correction"
-                        : string.Empty) +
-                ".json"));
-            return string.Equals(expected,
-                Path.GetFullPath(receiptPath), PathComparison);
+            string fullPath = Path.GetFullPath(receiptPath);
+            string expected = Path.GetFullPath(GetPath(request));
+            string legacy = Path.GetFullPath(
+                SafeChangeProposalLineage
+                    .GetLegacyCompletionReceiptPath(request));
+            return string.Equals(expected, fullPath, PathComparison) ||
+                string.Equals(legacy, fullPath, PathComparison);
         }
         catch
         {
@@ -605,6 +578,8 @@ internal static class SafeChangeCompletionReceipt
         int Version,
         Guid JobId,
         Guid RunId,
+        int AttemptCount,
+        string? ProposalLineageId,
         string JobExternalId,
         string Branch,
         string Head,

@@ -65,6 +65,124 @@ public sealed class ObservedChangeEvidenceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Governed_human_observation_records_only_human_delta()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(repositoryRoot, "human.txt"),
+            "corrected");
+        var repository = new FakeRepository(
+        [
+            new(ObservedRepositoryChangeKind.Modified, "human.txt"),
+            new(ObservedRepositoryChangeKind.Modified, "existing.txt")
+        ]);
+        var artifacts = new FakeArtifactStore();
+
+        ObservedChangeEvidenceResult result =
+            await new ObservedChangeEvidenceService(repository, artifacts)
+                .CaptureAsync(
+                    Request(
+                        DeveloperChangeOperationType.ReplaceFile,
+                        "human.txt") with
+                    {
+                        IsGovernedHumanCorrection = true,
+                        AllowedPaths = ["human.txt", "existing.txt"]
+                    });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            "human.txt",
+            Assert.Single(result.Manifest!.Entries).RelativePath);
+        Assert.Equal(
+            ArtifactType.ObservedGovernedHumanCorrectionManifest,
+            artifacts.Request!.ArtifactType);
+    }
+
+    [Fact]
+    public async Task Governed_human_observation_rejects_any_path_outside_allowlist()
+    {
+        var result = await new ObservedChangeEvidenceService(
+            new FakeRepository(
+            [
+                new(ObservedRepositoryChangeKind.Modified, "human.txt"),
+                new(ObservedRepositoryChangeKind.Modified, "outside.txt")
+            ]),
+            new FakeArtifactStore())
+            .CaptureAsync(
+                Request(
+                    DeveloperChangeOperationType.ReplaceFile,
+                    "human.txt") with
+                {
+                    IsGovernedHumanCorrection = true,
+                    AllowedPaths = ["human.txt"]
+                });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            "OBSERVED_CHANGE_OUTSIDE_HUMAN_CORRECTION_SCOPE",
+            result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Proposal_scoped_replace_remains_modified_when_git_reports_untracked()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(repositoryRoot, "human.txt"),
+            "corrected");
+        ObservedChangeEvidenceRequest request =
+            ProposalScopedRequest("human.txt", "before", "corrected");
+
+        ObservedChangeEvidenceResult result =
+            await new ObservedChangeEvidenceService(
+                new FakeRepository(
+                [
+                    new(ObservedRepositoryChangeKind.Created, "human.txt"),
+                    new(ObservedRepositoryChangeKind.Created, "earlier.txt")
+                ]),
+                new FakeArtifactStore())
+            .CaptureAsync(request);
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        ObservedChangeManifestEntry entry =
+            Assert.Single(result.Manifest!.Entries);
+        Assert.Equal(
+            ObservedRepositoryChangeKind.Modified,
+            entry.ChangeKind);
+        Assert.Equal(
+            ObservedRepositoryChangeKind.Created,
+            entry.GitChangeKind);
+        Assert.Equal(
+            DeveloperChangeOperationType.ReplaceFile,
+            entry.ProposalOperation);
+        Assert.Equal(Hash("before"), entry.BeforeSha256);
+        Assert.Equal("PASS", entry.ValidationResult);
+    }
+
+    [Fact]
+    public async Task Proposal_scoped_observation_requires_matching_receipt_lineage()
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(repositoryRoot, "human.txt"),
+            "corrected");
+        ObservedChangeEvidenceRequest request =
+            ProposalScopedRequest("human.txt", "before", "corrected") with
+            {
+                ProposalFingerprintSha256 = new string('f', 64)
+            };
+
+        ObservedChangeEvidenceResult result =
+            await new ObservedChangeEvidenceService(
+                new FakeRepository(
+                [new(ObservedRepositoryChangeKind.Created, "human.txt")]),
+                new FakeArtifactStore())
+            .CaptureAsync(request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            "OBSERVED_CHANGE_SAFECHANGE_LINEAGE_INVALID",
+            result.ErrorCode);
+    }
+
+    [Fact]
     public async Task Resolves_observed_files_against_repository_path_not_workspace_path()
     {
         const string relativePath =
@@ -151,6 +269,54 @@ public sealed class ObservedChangeEvidenceServiceTests : IDisposable
                 [new(operation, path, "intent", "ignored", new string('b', 64), 7)],
                 [], [], 7, 100)
         };
+
+    private ObservedChangeEvidenceRequest ProposalScopedRequest(
+        string path,
+        string before,
+        string after)
+    {
+        var proposal = new ValidatedDeveloperProposal(
+            "governed replacement",
+            [new(
+                DeveloperChangeOperationType.ReplaceFile,
+                path,
+                "authorized replacement",
+                after,
+                Hash(before),
+                System.Text.Encoding.UTF8.GetByteCount(after))],
+            [],
+            [],
+            System.Text.Encoding.UTF8.GetByteCount(after),
+            System.Text.Encoding.UTF8.GetByteCount(after));
+        return Request(
+            DeveloperChangeOperationType.ReplaceFile,
+            path) with
+        {
+            Proposal = proposal,
+            AttemptCount = 1,
+            ProposalLineageId = "governed-human:test",
+            ProposalFingerprintSha256 =
+                SafeChangeProposalIdentity.Fingerprint(proposal),
+            SafeChangeReceiptReference = "receipt-test.json",
+            SafeChangeChanges =
+            [
+                new(
+                    DeveloperChangeOperationType.ReplaceFile,
+                    path,
+                    Hash(before),
+                    Hash(after),
+                    System.Text.Encoding.UTF8.GetByteCount(after))
+            ],
+            IsGovernedHumanCorrection = true,
+            AllowedPaths = [path, "earlier.txt"]
+        };
+    }
+
+    private static string Hash(string content) =>
+        Convert.ToHexString(
+            SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(content)))
+        .ToLowerInvariant();
 
     public void Dispose()
     {

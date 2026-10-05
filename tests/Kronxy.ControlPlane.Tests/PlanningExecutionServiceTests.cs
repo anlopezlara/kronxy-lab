@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Context;
@@ -383,6 +384,194 @@ public sealed class PlanningExecutionServiceTests
             result.Plan);
     }
 
+    [Fact]
+    public async Task Accepted_plan_after_multiple_rejections_continues_normally()
+    {
+        Fixture fixture = CreateFixture();
+        PlanningExecutionRequest request = Request();
+        fixture.PriorityPaths.Result = ["src/unrelated.cs"];
+
+        PlanningExecutionResult first =
+            await fixture.Service.ExecuteAsync(
+                request with
+                {
+                    CorrelationId = "planning-rejected-001"
+                });
+        PlanningExecutionResult second =
+            await fixture.Service.ExecuteAsync(
+                request with
+                {
+                    CorrelationId = "planning-rejected-002"
+                });
+
+        fixture.PriorityPaths.Result = ["src/a.cs"];
+        PlanningExecutionResult accepted =
+            await fixture.Service.ExecuteAsync(
+                request with
+                {
+                    CorrelationId = "planning-accepted-003"
+                });
+
+        Assert.False(first.IsSuccess);
+        Assert.False(second.IsSuccess);
+        Assert.True(accepted.IsSuccess);
+        Assert.Equal(3, fixture.Gateway.CallCount);
+        Assert.Collection(
+            fixture.Store.Requests,
+            item => Assert.Equal(
+                ArtifactType.PlanningRejectedResponse,
+                item.ArtifactType),
+            item => Assert.Equal(
+                ArtifactType.PlanningRejectedResponse,
+                item.ArtifactType),
+            item => Assert.Equal(
+                ArtifactType.PlanningPlan,
+                item.ArtifactType),
+            item => Assert.Equal(
+                ArtifactType.AiResponse,
+                item.ArtifactType));
+        Assert.Equal(
+            "planning-rejected-001",
+            fixture.Store.Requests[0].CorrelationId);
+        Assert.Equal(
+            "planning-rejected-002",
+            fixture.Store.Requests[1].CorrelationId);
+    }
+
+    [Fact]
+    public async Task Coherence_retry_adds_deterministic_authorized_path_feedback()
+    {
+        Fixture fixture = CreateFixture();
+        const string jobRequest =
+            "Implement Widget Domain-only. Candidate src/New/Widget.cs";
+
+        fixture.PriorityPaths.Result = ["src/a.cs"];
+        fixture.Context.Result = ContextAiInputResult.Success(
+            "===== FILE: src/a.cs =====\nclass A {}\n");
+        fixture.Reader.RejectedResult = RejectedArtifact(
+            PlanResponse(
+                "Implement Widget safely.",
+                ["src/wrong.cs"],
+                ["src/New/Widget.cs"]));
+        fixture.Gateway.Response = PlanResponse(
+            "Implement Widget safely.",
+            ["src/a.cs"],
+            ["src/New/Widget.cs"]);
+
+        PlanningExecutionResult result =
+            await fixture.Service.ExecuteAsync(
+                Request() with { JobRequest = jobRequest });
+
+        Assert.True(result.IsSuccess);
+        string prompt = fixture.Gateway.LastRequest!.UserContent;
+        Assert.Contains("PLANNING RETRY FEEDBACK", prompt);
+        Assert.Contains(
+            "previous response failed PLANNING_PATH_COHERENCE_INVALID",
+            prompt);
+        Assert.Contains("- src/a.cs", prompt);
+        Assert.Contains("- src/New/Widget.cs", prompt);
+        Assert.True(
+            prompt.IndexOf("- src/a.cs", StringComparison.Ordinal) <
+            prompt.IndexOf(
+                "New requested paths absent",
+                StringComparison.Ordinal));
+        Assert.True(
+            prompt.IndexOf("- src/New/Widget.cs", StringComparison.Ordinal) >
+            prompt.IndexOf(
+                "New requested paths absent",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Non_coherence_rejection_does_not_add_retry_feedback()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.RejectedResult = RejectedArtifact(
+            PlanResponse(
+                "Unrelated objective with no grounding.",
+                ["src/wrong.cs"],
+                ["src/new.cs"]));
+
+        PlanningExecutionResult result =
+            await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess);
+        Assert.DoesNotContain(
+            "PLANNING RETRY FEEDBACK",
+            fixture.Gateway.LastRequest!.UserContent);
+    }
+
+    [Fact]
+    public async Task Retry_feedback_never_bypasses_input_limit()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.RejectedResult = RejectedArtifact(
+            PlanResponse(
+                "Implement feature safely.",
+                ["src/wrong.cs"],
+                ["src/new.cs"]));
+        fixture.Context.Result = ContextAiInputResult.Success(
+            "===== FILE: src/a.cs =====\n" +
+            new string('x', 65_000));
+
+        PlanningExecutionResult result =
+            await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            PlanningExecutionFailureKind.ContextTooLarge,
+            result.FailureKind);
+        Assert.Equal("PLANNING_INPUT_LIMIT_EXCEEDED", result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    private static ArtifactReadResult RejectedArtifact(
+        AiResponse response)
+    {
+        byte[] content = JsonSerializer.SerializeToUtf8Bytes(response);
+
+        return ArtifactReadResult.Success(
+            new ArtifactRecord
+            {
+                ArtifactId = Guid.NewGuid(),
+                JobId = Guid.NewGuid(),
+                RunId = Guid.NewGuid(),
+                ArtifactType = ArtifactType.PlanningRejectedResponse,
+                RelativePath = "planner/rejected-response.json",
+                Sha256 = new string('a', 64),
+                SizeBytes = content.Length,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                CorrelationId = "prior-rejection"
+            },
+            content);
+    }
+
+    private static AiResponse PlanResponse(
+        string objective,
+        IReadOnlyList<string> filesToInspect,
+        IReadOnlyList<string> candidateFiles) =>
+        new()
+        {
+            Status = AiOperationStatus.Success,
+            Content = JsonSerializer.Serialize(
+                new PlannerPlan
+                {
+                    Objective = objective,
+                    FilesToInspect = filesToInspect,
+                    CandidateFilesToModify = candidateFiles,
+                    Strategy = "Apply the authorized plan.",
+                    AcceptanceCriteria = ["Build succeeds."],
+                    Risks = [],
+                    ExpectedTests = ["Run tests."],
+                    Assumptions = [],
+                    Uncertainties = []
+                }),
+            Provider = "Ollama",
+            LogicalModel = "CodingQuality",
+            PhysicalModel = "quality",
+            TerminationReason = AiTerminationReason.Stop
+        };
+
     private static Fixture CreateFixture(int planningContextCharacters = 48_000)
     {
         var reader = new FakeReader();
@@ -499,12 +688,21 @@ public sealed class PlanningExecutionServiceTests
                 },
                 new byte[] { 1, 2, 3 });
 
+        public ArtifactReadResult RejectedResult { get; set; } =
+            ArtifactReadResult.Failure(
+                ArtifactReadFailureKind.NotFound,
+                "ARTIFACT_READ_NOT_FOUND");
+
         public Task<ArtifactReadResult> ReadAsync(
             ArtifactReadRequest request,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
-            return Task.FromResult(Result);
+            return Task.FromResult(
+                request.ArtifactType ==
+                    ArtifactType.PlanningRejectedResponse
+                    ? RejectedResult
+                    : Result);
         }
     }
 

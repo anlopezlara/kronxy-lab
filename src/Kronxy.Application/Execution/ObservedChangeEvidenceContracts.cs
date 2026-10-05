@@ -7,13 +7,21 @@ public sealed record ObservedChangeManifestEntry(
     string RelativePath,
     ObservedRepositoryChangeKind ChangeKind,
     string? FinalSha256,
-    long? FinalSizeBytes);
+    long? FinalSizeBytes,
+    DeveloperChangeOperationType? ProposalOperation = null,
+    ObservedRepositoryChangeKind? GitChangeKind = null,
+    string? BeforeSha256 = null,
+    string ValidationResult = "");
 
 public sealed record ObservedChangeManifest(
     Guid JobId,
     Guid RunId,
     string BaseRepositoryHead,
-    IReadOnlyList<ObservedChangeManifestEntry> Entries);
+    IReadOnlyList<ObservedChangeManifestEntry> Entries,
+    int AttemptCount = 0,
+    string ProposalLineageId = "",
+    string ProposalFingerprintSha256 = "",
+    string SafeChangeReceiptReference = "");
 
 public sealed record ObservedChangeEvidenceRequest
 {
@@ -22,9 +30,17 @@ public sealed record ObservedChangeEvidenceRequest
     public required RepositoryWorktreeHandle Repository { get; init; }
     public required ValidatedDeveloperProposal Proposal { get; init; }
     public string CorrelationId { get; init; } = string.Empty;
+    public int AttemptCount { get; init; }
+    public string ProposalLineageId { get; init; } = string.Empty;
+    public string ProposalFingerprintSha256 { get; init; } = string.Empty;
+    public string SafeChangeReceiptReference { get; init; } = string.Empty;
+    public IReadOnlyList<AppliedFileChange> SafeChangeChanges { get; init; } = [];
 
     public bool IsBuildCorrection { get; init; }
+    public bool IsBuildCorrectionRetry { get; init; }
     public bool IsHumanReviewCorrection { get; init; }
+    public bool IsGovernedHumanCorrection { get; init; }
+    public IReadOnlyList<string> AllowedPaths { get; init; } = [];
 }
 
 public enum ObservedChangeEvidenceFailureKind

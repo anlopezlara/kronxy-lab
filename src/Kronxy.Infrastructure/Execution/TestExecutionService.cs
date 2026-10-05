@@ -92,7 +92,8 @@ public sealed class TestExecutionService :
             ArtifactWriteResult stdoutWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.TestHumanReviewCorrectionStandardOutput
                             : ArtifactType.TestStandardOutput,
                         Encoding.UTF8.GetBytes(
@@ -103,7 +104,8 @@ public sealed class TestExecutionService :
             ArtifactWriteResult stderrWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.TestHumanReviewCorrectionStandardError
                             : ArtifactType.TestStandardError,
                         Encoding.UTF8.GetBytes(
@@ -119,7 +121,8 @@ public sealed class TestExecutionService :
             ArtifactWriteResult reportWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.TestHumanReviewCorrectionReport
                             : ArtifactType.TestReport,
                         reportBytes,
@@ -198,7 +201,8 @@ public sealed class TestExecutionService :
             ArtifactWriteResult resultsWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection
+                        request.IsHumanReviewCorrection ||
+                        request.IsGovernedHumanCorrection
                             ? ArtifactType.TestHumanReviewCorrectionResults
                             : ArtifactType.TestResults,
                         trx.Content!,

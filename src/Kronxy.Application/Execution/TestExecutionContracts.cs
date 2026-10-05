@@ -31,6 +31,7 @@ public sealed record TestExecutionRequest
 
     public string CorrelationId { get; init; } = string.Empty;
     public bool IsHumanReviewCorrection { get; init; }
+    public bool IsGovernedHumanCorrection { get; init; }
 }
 
 public sealed record TestExecutionReport(

@@ -22,6 +22,14 @@ public enum ArtifactType
     BuildCorrectionStandardError = 75,
     DeveloperBuildCorrectionRejectedResponse = 76,
     DeveloperBuildCorrectionRejectedStructuredResponse = 77,
+    DeveloperBuildCorrectionRetryResponse = 78,
+    DeveloperBuildCorrectionRetryProposal = 79,
+    DeveloperBuildCorrectionRetryRejectedResponse = 105,
+    DeveloperBuildCorrectionRetryRejectedStructuredResponse = 106,
+    ObservedBuildCorrectionRetryManifest = 107,
+    BuildCorrectionRetryReport = 108,
+    BuildCorrectionRetryStandardOutput = 109,
+    BuildCorrectionRetryStandardError = 110,
 
     HumanReviewCorrectionEvidence = 80,
     DeveloperHumanReviewCorrectionResponse = 81,
@@ -48,6 +56,9 @@ public enum ArtifactType
     ReviewerHumanReviewCorrectionDeterministicSupersedingReview = 102,
     ReviewerHumanReviewCorrectionDeterministicSupersessionEvidence = 103,
     HumanReviewApprovalEvidence = 104,
+    GovernedHumanCorrectionRequest = 111,
+    GovernedHumanCorrectionReceipt = 112,
+    ObservedGovernedHumanCorrectionManifest = 113,
 
     RestoreReport = 30,
     RestoreStandardOutput = 31,
@@ -63,6 +74,32 @@ public enum ArtifactType
     TestStandardError = 53,
 
     GeneralReport = 60
+}
+
+public static class ArtifactTypeClassification
+{
+    public static bool IsVersionedDeveloperCorrection(
+        this ArtifactType artifactType) =>
+        artifactType is
+            ArtifactType.DeveloperBuildCorrectionResponse or
+            ArtifactType.DeveloperBuildCorrectionProposal or
+            ArtifactType.DeveloperBuildCorrectionRejectedResponse or
+            ArtifactType.DeveloperBuildCorrectionRejectedStructuredResponse or
+            ArtifactType.DeveloperBuildCorrectionRetryResponse or
+            ArtifactType.DeveloperBuildCorrectionRetryProposal or
+            ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse or
+            ArtifactType.DeveloperBuildCorrectionRetryRejectedStructuredResponse or
+            ArtifactType.DeveloperHumanReviewCorrectionResponse or
+            ArtifactType.DeveloperHumanReviewCorrectionProposal or
+            ArtifactType.DeveloperHumanReviewCorrectionRejectedResponse or
+            ArtifactType.DeveloperHumanReviewCorrectionRejectedStructuredResponse;
+
+    public static bool IsVersionedHumanCorrection(
+        this ArtifactType artifactType) =>
+        artifactType is
+            ArtifactType.GovernedHumanCorrectionRequest or
+            ArtifactType.GovernedHumanCorrectionReceipt or
+            ArtifactType.ObservedGovernedHumanCorrectionManifest;
 }
 
 public enum ArtifactStoreFailureKind

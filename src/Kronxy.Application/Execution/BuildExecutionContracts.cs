@@ -35,7 +35,9 @@ public sealed record BuildExecutionRequest
         string.Empty;
 
     public bool IsBuildCorrection { get; init; }
+    public bool IsBuildCorrectionRetry { get; init; }
     public bool IsHumanReviewCorrection { get; init; }
+    public bool IsGovernedHumanCorrection { get; init; }
 }
 
 public sealed record BuildExecutionReport(

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Kronxy.Application.Repositories;
 
 namespace Kronxy.Application.Execution;
@@ -46,8 +48,15 @@ public sealed record SafeChangeApplicationRequest
     public string CorrelationId { get; init; } =
         string.Empty;
 
+    public int AttemptCount { get; init; }
+
+    public string ProposalLineageId { get; init; } =
+        string.Empty;
+
     public bool IsBuildCorrection { get; init; }
+    public bool IsBuildCorrectionRetry { get; init; }
     public bool IsHumanReviewCorrection { get; init; }
+    public bool IsGovernedHumanCorrection { get; init; }
 }
 
 public sealed record SafeChangeApplicationReport(
@@ -103,4 +112,63 @@ public interface ISafeChangeApplier
     Task<SafeChangeApplicationResult> ApplyAsync(
         SafeChangeApplicationRequest request,
         CancellationToken cancellationToken = default);
+}
+
+public static class SafeChangeProposalIdentity
+{
+    public const int CurrentVersion = 2;
+
+    private static readonly UTF8Encoding StrictUtf8 =
+        new(false, true);
+
+    public static string Fingerprint(
+        ValidatedDeveloperProposal proposal,
+        int schemaVersion = CurrentVersion)
+    {
+        using var memory = new MemoryStream();
+        using (var writer = new BinaryWriter(
+            memory,
+            StrictUtf8,
+            leaveOpen: true))
+        {
+            writer.Write(schemaVersion);
+            WriteString(writer, proposal.Summary);
+            writer.Write(proposal.Changes.Count);
+            foreach (ValidatedDeveloperChange change in proposal.Changes)
+            {
+                writer.Write((int)change.Operation);
+                WriteString(writer, change.RelativePath);
+                WriteString(writer, change.Intent);
+                WriteString(writer, change.Content);
+                WriteString(
+                    writer,
+                    change.ExpectedContentSha256.ToLowerInvariant());
+            }
+            WriteStrings(writer, proposal.Assumptions);
+            WriteStrings(writer, proposal.Risks);
+            writer.Flush();
+        }
+
+        return Convert.ToHexString(
+                SHA256.HashData(memory.ToArray()))
+            .ToLowerInvariant();
+    }
+
+    private static void WriteStrings(
+        BinaryWriter writer,
+        IReadOnlyList<string> values)
+    {
+        writer.Write(values.Count);
+        foreach (string value in values)
+            WriteString(writer, value);
+    }
+
+    private static void WriteString(
+        BinaryWriter writer,
+        string value)
+    {
+        byte[] bytes = StrictUtf8.GetBytes(value);
+        writer.Write(bytes.Length);
+        writer.Write(bytes);
+    }
 }

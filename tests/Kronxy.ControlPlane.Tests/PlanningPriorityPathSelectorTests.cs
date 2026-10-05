@@ -130,6 +130,94 @@ public sealed class PlanningPriorityPathSelectorTests
     }
 
     [Fact]
+    public void Explicit_pattern_reference_strongly_prioritizes_matching_files()
+    {
+        byte[] package = CreatePackage(
+            [
+                "src/Kronxy.Domain/Projects/Project.cs",
+                "src/Kronxy.Domain/ProjectModules/ProjectModule.cs",
+                "src/Kronxy.Domain/ProjectModules/ProjectModuleErrors.cs",
+                "src/Kronxy.Domain/ProjectTasks/ProjectTask.cs"
+            ],
+            new Dictionary<string, int>
+            {
+                ["src/Kronxy.Domain/Projects/Project.cs"] = 10,
+                ["src/Kronxy.Domain/ProjectModules/ProjectModule.cs"] = 4_000,
+                ["src/Kronxy.Domain/ProjectModules/ProjectModuleErrors.cs"] = 2_000,
+                ["src/Kronxy.Domain/ProjectTasks/ProjectTask.cs"] = 20
+            });
+
+        var selector = new PlanningPriorityPathSelector();
+
+        IReadOnlyList<string> result = selector.Select(
+            package,
+            "Implement ProjectArea Domain-only. Use ProjectModule as the primary implementation pattern.");
+
+        Assert.StartsWith(
+            "src/Kronxy.Domain/ProjectModules/",
+            result[0],
+            StringComparison.Ordinal);
+        Assert.StartsWith(
+            "src/Kronxy.Domain/ProjectModules/",
+            result[1],
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Request_without_explicit_reference_preserves_normal_ranking()
+    {
+        byte[] package = CreatePackage(
+            [
+                "src/Kronxy.Domain/Projects/Project.cs",
+                "src/Kronxy.Domain/ProjectModules/ProjectModule.cs"
+            ],
+            new Dictionary<string, int>
+            {
+                ["src/Kronxy.Domain/Projects/Project.cs"] = 10,
+                ["src/Kronxy.Domain/ProjectModules/ProjectModule.cs"] = 4_000
+            });
+
+        var selector = new PlanningPriorityPathSelector();
+
+        IReadOnlyList<string> result = selector.Select(
+            package,
+            "Implement project hierarchy domain behavior.");
+
+        Assert.Empty(
+            PlanningPriorityPathSelector
+                .ExtractExplicitReferenceTerms(
+                    "Implement project hierarchy domain behavior."));
+        Assert.Equal(
+            "src/Kronxy.Domain/Projects/Project.cs",
+            result[0]);
+    }
+
+    [Fact]
+    public void Explicit_reference_priority_is_not_domain_name_hardcoded()
+    {
+        byte[] package = CreatePackage(
+            [
+                "src/Records/Record.cs",
+                "src/Records/CustomerRecord.cs"
+            ],
+            new Dictionary<string, int>
+            {
+                ["src/Records/Record.cs"] = 10,
+                ["src/Records/CustomerRecord.cs"] = 3_000
+            });
+
+        var selector = new PlanningPriorityPathSelector();
+
+        IReadOnlyList<string> result = selector.Select(
+            package,
+            "Implement a record feature. Use CustomerRecord as the implementation pattern.");
+
+        Assert.Equal(
+            "src/Records/CustomerRecord.cs",
+            result[0]);
+    }
+
+    [Fact]
     public void Selection_is_deterministic()
     {
         byte[] package =
