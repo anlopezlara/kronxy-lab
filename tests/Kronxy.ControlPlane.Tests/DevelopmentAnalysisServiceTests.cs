@@ -118,9 +118,114 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
         Assert.Equal(3, result.TargetSymbols.Count);
         Assert.Equal(DevelopmentChangeClassification.NewComponent, result.PrimaryClassification);
         Assert.Equal("Domain-only", result.RequestedScope);
-        Assert.Equal("Domain", result.RequiredScope);
+        Assert.Equal("Domain-only", result.RequiredScope);
         Assert.True(result.ScopeCompatible);
         Assert.False(result.ArchitectureDecisionRequired);
+        Assert.True(result.DeveloperExecutionAllowed);
+    }
+
+    [Fact]
+    public async Task Domain_only_target_has_domain_only_required_scope()
+    {
+        DevelopmentAnalysis result = await Analyze(
+            "Domain-only src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Equal(["Domain"], result.ImpactedLayers);
+        Assert.Equal("Domain-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+    }
+
+    [Fact]
+    public async Task Test_impact_remains_visible_without_expanding_domain_scope()
+    {
+        Write(
+            "tests/Kronxy.Domain.Tests/WidgetTests.cs",
+            "public sealed class WidgetTests { private Widget? value; }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Domain-only src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Equal(["Domain", "Tests"], result.ImpactedLayers);
+        Assert.Equal("Domain-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+        Assert.Contains(
+            result.Evidence,
+            item => item.Kind == "Reference" &&
+                    item.Path == "tests/Kronxy.Domain.Tests/WidgetTests.cs");
+    }
+
+    [Theory]
+    [InlineData("src/Kronxy.Application/Widgets/UseWidget.cs")]
+    [InlineData("src/Kronxy.Infrastructure/Widgets/UseWidget.cs")]
+    [InlineData("src/Kronxy.Infrastructure/Migrations/UseWidget.cs")]
+    [InlineData("src/Kronxy.Api/Widgets/UseWidget.cs")]
+    public async Task Additional_functional_layer_requires_cross_layer_scope(
+        string consumerPath)
+    {
+        Write(
+            consumerPath,
+            "public sealed class UseWidget { private Widget? value; }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Domain-only src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Equal("Cross-layer", result.RequiredScope);
+        Assert.False(result.ScopeCompatible);
+    }
+
+    [Fact]
+    public async Task Tests_do_not_change_cross_layer_scope_from_functional_layers()
+    {
+        Write(
+            "src/Kronxy.Application/Widgets/UseWidget.cs",
+            "public sealed class UseWidget { private Widget? value; }");
+        Write(
+            "tests/Kronxy.Application.Tests/WidgetTests.cs",
+            "public sealed class WidgetTests { private Widget? value; }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Domain-only src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Equal(["Application", "Domain", "Tests"], result.ImpactedLayers);
+        Assert.Equal("Cross-layer", result.RequiredScope);
+        Assert.False(result.ScopeCompatible);
+    }
+
+    [Fact]
+    public async Task Application_and_tests_remain_application_only_scope()
+    {
+        Write(
+            "tests/Kronxy.Application.Tests/HandlerTests.cs",
+            "public sealed class HandlerTests { private NewHandler? value; }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Application-only src/Kronxy.Application/Handlers/NewHandler.cs");
+
+        Assert.Equal(["Application", "Tests"], result.ImpactedLayers);
+        Assert.Equal("Application-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+    }
+
+    [Fact]
+    public async Task Greenfield_inline_request_with_test_references_remains_allowed()
+    {
+        Write(
+            "tests/Kronxy.Domain.Tests/DevelopmentNoteTests.cs",
+            "public sealed class DevelopmentNoteTests { " +
+            "private DevelopmentNote? note; " +
+            "private DevelopmentNoteErrors? errors; " +
+            "private IDevelopmentNoteRepository? repository; }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Create a greenfield Domain-only component in " +
+            "src/Kronxy.Domain/DevelopmentNotes/DevelopmentNote.cs, " +
+            "src/Kronxy.Domain/DevelopmentNotes/DevelopmentNoteErrors.cs, and " +
+            "src/Kronxy.Domain/DevelopmentNotes/IDevelopmentNoteRepository.cs.");
+
+        Assert.Equal(DevelopmentChangeClassification.NewComponent, result.PrimaryClassification);
+        Assert.Equal(["Domain", "Tests"], result.ImpactedLayers);
+        Assert.Equal("Domain-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
         Assert.True(result.DeveloperExecutionAllowed);
     }
 

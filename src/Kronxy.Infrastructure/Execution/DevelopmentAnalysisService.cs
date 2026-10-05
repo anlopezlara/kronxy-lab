@@ -98,10 +98,18 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         }
 
         string requestedScope = RequestedScope(request.JobRequest);
-        string requiredScope = impactedLayers.Count <= 1 ? impactedLayers.FirstOrDefault() ?? "Unknown" : "Cross-layer";
+        string[] scopeDefiningLayers = impactedLayers
+            .Where(layer => !layer.Equals("Tests", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        string requiredScope = scopeDefiningLayers.Length switch
+        {
+            0 => "Unknown",
+            1 => $"{scopeDefiningLayers[0]}-only",
+            _ => "Cross-layer"
+        };
         bool hasExisting = existingCandidates.Count > 0;
         bool allExisting = existingCandidates.Count == candidates.Length;
-        bool crossLayer = impactedLayers.Count(layer => layer != "Tests") > 1;
+        bool crossLayer = scopeDefiningLayers.Length > 1;
         bool replacementIntent = Regex.IsMatch(request.JobRequest, @"(?i)replace|rename|remove|parent|belongs\s+to|exactly|only\s*:");
         bool extensionIntent = Regex.IsMatch(request.JobRequest, @"(?i)\b(add|extend|additional|new member)\b");
         bool refactorIntent = Regex.IsMatch(request.JobRequest, @"(?i)\brefactor\b");
@@ -109,7 +117,9 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         bool requirementsSatisfied = allExisting && requiredIdentifiers.Length > 0 && requiredIdentifiers.All(identifier =>
             candidates.Where(existingCandidates.Contains).Any(path => File.ReadAllText(Path.Combine(root, path)).Contains(identifier, StringComparison.Ordinal)));
         bool? compatible = truncated ? null : requestedScope == "Unspecified" || requestedScope == "Cross-layer" ||
-            (!crossLayer && impactedLayers.Contains(requestedScope.Replace("-only", string.Empty)));
+            (!crossLayer && scopeDefiningLayers.Contains(
+                requestedScope.Replace("-only", string.Empty),
+                StringComparer.OrdinalIgnoreCase));
 
         DevelopmentChangeClassification classification;
         if (truncated) classification = DevelopmentChangeClassification.Unknown;
