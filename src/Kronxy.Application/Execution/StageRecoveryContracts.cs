@@ -3,6 +3,7 @@ namespace Kronxy.Application.Execution;
 public enum RecoveryStage
 {
     Context = 10,
+    DevelopmentAnalysis = 15,
     Planning = 20,
     Developer = 25,
     DeveloperOriginal = 26,
@@ -80,7 +81,8 @@ public sealed record StageRecoveryResult(
     HumanReviewCorrectionEvidence? HumanReviewCorrection = null,
     DeveloperProposalLineage? DeveloperProposalLineage = null,
     GovernedHumanCorrectionEvidence? GovernedHumanCorrection = null,
-    GovernedHumanCorrectionReceipt? GovernedHumanCorrectionReceipt = null)
+    GovernedHumanCorrectionReceipt? GovernedHumanCorrectionReceipt = null,
+    DevelopmentAnalysis? DevelopmentAnalysis = null)
 {
     public bool IsCompleted =>
         Status == StageRecoveryStatus.Completed;
@@ -96,7 +98,8 @@ public sealed record StageRecoveryResult(
         HumanReviewCorrectionEvidence? humanReviewCorrection = null,
         DeveloperProposalLineage? developerProposalLineage = null,
         GovernedHumanCorrectionEvidence? governedHumanCorrection = null,
-        GovernedHumanCorrectionReceipt? governedHumanCorrectionReceipt = null) =>
+        GovernedHumanCorrectionReceipt? governedHumanCorrectionReceipt = null,
+        DevelopmentAnalysis? developmentAnalysis = null) =>
         new(
             StageRecoveryStatus.Completed,
             string.Empty,
@@ -110,7 +113,8 @@ public sealed record StageRecoveryResult(
             humanReviewCorrection,
             developerProposalLineage,
             governedHumanCorrection,
-            governedHumanCorrectionReceipt);
+            governedHumanCorrectionReceipt,
+            developmentAnalysis);
 
     public static StageRecoveryResult FailedBuild(
         BuildExecutionReport report,

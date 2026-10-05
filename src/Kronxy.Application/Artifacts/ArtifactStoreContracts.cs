@@ -59,6 +59,7 @@ public enum ArtifactType
     GovernedHumanCorrectionRequest = 111,
     GovernedHumanCorrectionReceipt = 112,
     ObservedGovernedHumanCorrectionManifest = 113,
+    DevelopmentAnalysis = 114,
 
     RestoreReport = 30,
     RestoreStandardOutput = 31,

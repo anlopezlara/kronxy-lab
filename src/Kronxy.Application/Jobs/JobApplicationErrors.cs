@@ -44,6 +44,11 @@ public static class JobApplicationErrors
                         "Job.ContextGenerationFailed",
                         "The context package could not be generated.");
 
+        public static readonly Error DevelopmentAnalysisFailed =
+                new Error(
+                        "Job.DevelopmentAnalysisFailed",
+                        "Development analysis could not be completed or persisted.");
+
         public static readonly Error PlanningExecutionFailed =
                 new Error(
                         "Job.PlanningExecutionFailed",

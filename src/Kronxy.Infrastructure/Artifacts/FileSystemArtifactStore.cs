@@ -627,6 +627,9 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             ArtifactType.ContextPackage =>
                 new("context", "context.zip"),
 
+            ArtifactType.DevelopmentAnalysis =>
+                new("development-analysis", "analysis.json"),
+
             ArtifactType.AiResponse =>
                 new("ai", "response.json"),
 

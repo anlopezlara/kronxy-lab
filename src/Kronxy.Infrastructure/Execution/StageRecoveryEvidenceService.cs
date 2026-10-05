@@ -76,6 +76,25 @@ public sealed class StageRecoveryEvidenceService :
                         artifactOptions.MaxArtifactBytes,
                         cancellationToken),
 
+                RecoveryStage.DevelopmentAnalysis =>
+                    await CheckReportAsync<DevelopmentAnalysis>(
+                        request,
+                        ArtifactType.DevelopmentAnalysis,
+                        analysis => analysis.JobId == request.JobId &&
+                            analysis.RunId == request.RunId &&
+                            analysis.AttemptCount == request.AttemptCount &&
+                            !string.IsNullOrWhiteSpace(analysis.RequestIdentity) &&
+                            !string.IsNullOrWhiteSpace(analysis.AnalysisVersion) &&
+                            analysis.TargetSymbols is not null &&
+                            analysis.ExistingDeclarations is not null &&
+                            analysis.ImpactedLayers is not null &&
+                            analysis.BreakingContracts is not null &&
+                            analysis.Evidence is not null &&
+                            analysis.FilesInspected is not null,
+                        cancellationToken,
+                        analysis => StageRecoveryResult.Completed(
+                            developmentAnalysis: analysis)),
+
                 RecoveryStage.Planning =>
                     await CheckPlanningAsync(
                         request,

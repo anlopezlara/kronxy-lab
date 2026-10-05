@@ -103,7 +103,11 @@ public sealed class ExecutionPlaneEndToEndTests
 
                 var created =
                     await jobService.CreateAsync(
-                        "Execution Plane E2E pinned revision test");
+                        """
+                        Domain-only
+                        src/Kronxy.Domain/TestFixtures/RestartProbe.cs
+                        Create the new RestartProbe component.
+                        """);
 
                 Assert.True(
                     created.IsSuccess);
@@ -148,6 +152,27 @@ public sealed class ExecutionPlaneEndToEndTests
                 Assert.Equal(
                     JobState.Planning,
                     created.Value.State);
+
+                IJobRunIdProvider runIds = scope.ServiceProvider
+                    .GetRequiredService<IJobRunIdProvider>();
+                IStageRecoveryEvidenceService analysisRecovery = scope.ServiceProvider
+                    .GetRequiredService<IStageRecoveryEvidenceService>();
+                StageRecoveryResult recoveredAnalysis = await analysisRecovery.CheckAsync(
+                    new StageRecoveryRequest
+                    {
+                        JobId = jobId,
+                        RunId = runIds.Create(jobId, created.Value.AttemptCount),
+                        Stage = RecoveryStage.DevelopmentAnalysis,
+                        JobRequest = created.Value.Request,
+                        CorrelationId = "e2e-greenfield-analysis",
+                        AttemptCount = created.Value.AttemptCount
+                    });
+                Assert.True(recoveredAnalysis.IsCompleted);
+                Assert.Equal(DevelopmentChangeClassification.NewComponent,
+                    recoveredAnalysis.DevelopmentAnalysis!.PrimaryClassification);
+                Assert.True(recoveredAnalysis.DevelopmentAnalysis.ScopeCompatible);
+                Assert.False(recoveredAnalysis.DevelopmentAnalysis.ArchitectureDecisionRequired);
+                Assert.True(recoveredAnalysis.DevelopmentAnalysis.DeveloperExecutionAllowed);
 
                 JobOperationResult third =
                     await orchestrator.AdvanceAsync(
@@ -411,6 +436,100 @@ public sealed class ExecutionPlaneEndToEndTests
         }
     }
 
+    [Fact]
+    public async Task
+        Restart_recovers_blocked_development_analysis_without_regeneration()
+    {
+        string container = Path.Combine(
+            Path.GetTempPath(),
+            "kronxy-e2e-blocked-development-analysis",
+            Guid.NewGuid().ToString("N"));
+        string repository = Path.Combine(container, "repository");
+        string workspaceRoot = Path.Combine(container, "workspaces");
+        Guid jobId = Guid.Empty;
+        string? externalId = null;
+
+        try
+        {
+            Directory.CreateDirectory(repository);
+            Directory.CreateDirectory(workspaceRoot);
+            InitializeRepository(repository);
+
+            await using (ServiceProvider provider = BuildProvider(repository, workspaceRoot))
+            {
+                await using AsyncServiceScope scope = provider.CreateAsyncScope();
+                IJobService jobService = scope.ServiceProvider.GetRequiredService<IJobService>();
+                IJobOrchestrator orchestrator = scope.ServiceProvider.GetRequiredService<IJobOrchestrator>();
+
+                var created = await jobService.CreateAsync(
+                    "Ambiguous restart analysis request without a candidate target");
+                Assert.True(created.IsSuccess);
+                jobId = created.Value.Id;
+                externalId = created.Value.ExternalId;
+
+                Assert.True((await orchestrator.AdvanceAsync(
+                    jobId, "e2e-test", "e2e-blocked-created-context")).IsSuccess);
+                Assert.True((await orchestrator.AdvanceAsync(
+                    jobId, "e2e-test", "e2e-blocked-context-analysis")).IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+            }
+
+            await using (ServiceProvider provider = BuildProvider(repository, workspaceRoot))
+            {
+                await using AsyncServiceScope scope = provider.CreateAsyncScope();
+                IJobService jobService = scope.ServiceProvider.GetRequiredService<IJobService>();
+                IJobRunIdProvider runIds = scope.ServiceProvider.GetRequiredService<IJobRunIdProvider>();
+                IStageRecoveryEvidenceService recovery = scope.ServiceProvider.GetRequiredService<IStageRecoveryEvidenceService>();
+
+                var rehydrated = await jobService.GetAsync(jobId);
+                Assert.True(rehydrated.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, rehydrated.Value.State);
+                Guid runId = runIds.Create(jobId, rehydrated.Value.AttemptCount);
+                var request = new StageRecoveryRequest
+                {
+                    JobId = jobId,
+                    RunId = runId,
+                    Stage = RecoveryStage.DevelopmentAnalysis,
+                    JobRequest = rehydrated.Value.Request,
+                    CorrelationId = "e2e-blocked-recovery",
+                    AttemptCount = rehydrated.Value.AttemptCount
+                };
+
+                StageRecoveryResult first = await recovery.CheckAsync(request);
+                StageRecoveryResult second = await recovery.CheckAsync(request);
+
+                Assert.True(first.IsCompleted);
+                Assert.True(second.IsCompleted);
+                Assert.NotNull(first.DevelopmentAnalysis);
+                Assert.Equal(DevelopmentChangeClassification.Unknown,
+                    first.DevelopmentAnalysis!.PrimaryClassification);
+                Assert.True(first.DevelopmentAnalysis.ArchitectureDecisionRequired);
+                Assert.False(first.DevelopmentAnalysis.DeveloperExecutionAllowed);
+                Assert.Equal(first.DevelopmentAnalysis.RequestIdentity,
+                    second.DevelopmentAnalysis!.RequestIdentity);
+                Assert.Equal(first.DevelopmentAnalysis.PrimaryClassification,
+                    second.DevelopmentAnalysis.PrimaryClassification);
+                Assert.Equal(first.DevelopmentAnalysis.AnalysisVersion,
+                    second.DevelopmentAnalysis.AnalysisVersion);
+                Assert.Equal(JobState.WaitingHuman, rehydrated.Value.State);
+
+                string runArtifacts = Path.Combine(
+                    workspaceRoot, "artifacts", jobId.ToString("N"), runId.ToString("N"));
+                Assert.Single(Directory.EnumerateFiles(
+                    runArtifacts, "analysis.json", SearchOption.AllDirectories));
+                Assert.False(Directory.Exists(Path.Combine(runArtifacts, "planner")));
+                Assert.False(Directory.Exists(Path.Combine(runArtifacts, "developer")));
+            }
+        }
+        finally
+        {
+            if (jobId != Guid.Empty)
+                await DeleteJobAsync(jobId, repository, workspaceRoot);
+            TryCleanupExecutionPlane(jobId, externalId, repository, workspaceRoot);
+            if (Directory.Exists(container)) Directory.Delete(container, recursive: true);
+        }
+    }
+
     private static ServiceProvider BuildProvider(
         string repository,
         string workspaceRoot)
@@ -544,6 +663,16 @@ public sealed class ExecutionPlaneEndToEndTests
                 "revision.txt"),
             "commit A");
 
+        string domainFixtureDirectory = Path.Combine(
+            repository,
+            "src",
+            "Kronxy.Domain",
+            "TestFixtures");
+        Directory.CreateDirectory(domainFixtureDirectory);
+        File.WriteAllText(
+            Path.Combine(domainFixtureDirectory, "DomainMarker.cs"),
+            "namespace TestFixtures; public sealed class DomainMarker { }");
+
         Git(
             repository,
             "add",
@@ -650,9 +779,9 @@ public sealed class ExecutionPlaneEndToEndTests
                     Content =
                         """
                         {
-                          "objective": "Execution Plane E2E pinned revision test",
-                          "filesToInspect": ["revision.txt"],
-                          "candidateFilesToModify": [],
+                          "objective": "Domain-only creation of src/Kronxy.Domain/TestFixtures/RestartProbe.cs.",
+                          "filesToInspect": ["src/Kronxy.Domain/TestFixtures/DomainMarker.cs"],
+                          "candidateFilesToModify": ["src/Kronxy.Domain/TestFixtures/RestartProbe.cs"],
                           "strategy": "Preserve the pinned source revision through restart.",
                           "acceptanceCriteria": [
                             "The pinned commit remains unchanged.",

@@ -42,6 +42,36 @@ public sealed class JobApplicationTests
                 FakeReviewDecisionPolicy ReviewPolicy,
                 FakeArtifactStore Artifacts);
 
+        private sealed class FakeDevelopmentAnalysisService(
+                DevelopmentChangeClassification classification) : IDevelopmentAnalysisService
+        {
+                public Task<DevelopmentAnalysisResult> AnalyzeAsync(
+                        DevelopmentAnalysisRequest request,
+                        CancellationToken cancellationToken = default)
+                {
+                        bool alreadySatisfied = classification == DevelopmentChangeClassification.AlreadySatisfied;
+                        bool decisionRequired = classification is DevelopmentChangeClassification.ArchitectureConflict or DevelopmentChangeClassification.Unknown;
+                        var analysis = new DevelopmentAnalysis
+                        {
+                                JobId = request.JobId, RunId = request.RunId, AttemptCount = request.AttemptCount,
+                                RequestIdentity = "test", TargetSymbols = [], ExistingDeclarations = [],
+                                PrimaryClassification = classification, ImpactedLayers = ["Domain"],
+                                RequestedScope = "Domain-only", RequiredScope = decisionRequired ? "Cross-layer" : "Domain",
+                                ScopeCompatible = !decisionRequired, BreakingContracts = [],
+                                ArchitectureDecisionRequired = decisionRequired,
+                                DeveloperExecutionAllowed = !decisionRequired && !alreadySatisfied,
+                                Evidence = [], FilesInspected = [], AnalysisVersion = "test"
+                        };
+                        return Task.FromResult(DevelopmentAnalysisResult.Success(analysis, new ArtifactRecord
+                        {
+                                ArtifactId = Guid.NewGuid(), JobId = request.JobId, RunId = request.RunId,
+                                ArtifactType = ArtifactType.DevelopmentAnalysis,
+                                RelativePath = "development-analysis/analysis.json", Sha256 = new string('a', 64),
+                                SizeBytes = 1, CreatedAtUtc = DateTimeOffset.UtcNow, CorrelationId = request.CorrelationId
+                        }));
+                }
+        }
+
         private sealed class FakeArtifactStore : IArtifactStore
         {
                 public List<ArtifactWriteRequest> Writes { get; } = [];
@@ -3566,7 +3596,45 @@ public sealed class JobApplicationTests
                 }
         }
 
-	private static Fixture CreateFixture(int maxAttempts = 3, TimeSpan? maxDuration = null)
+        [Theory]
+        [InlineData(DevelopmentChangeClassification.ArchitectureConflict)]
+        [InlineData(DevelopmentChangeClassification.Unknown)]
+        public async Task ContextBuilding_BlockedAnalysis_StopsBeforePlanning(
+                DevelopmentChangeClassification classification)
+        {
+                Fixture fixture = CreateFixture(developmentClassification: classification);
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-ANALYSIS-BLOCK");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "created");
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "analysis");
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+                Assert.Equal(0, fixture.Planning.CallCount);
+                Assert.Equal(0, fixture.Developer.CallCount);
+                Assert.Equal(0, fixture.SafeChange.CallCount);
+        }
+
+        [Fact]
+        public async Task ContextBuilding_AlreadySatisfied_CompletesBeforePlanning()
+        {
+                Fixture fixture = CreateFixture(developmentClassification: DevelopmentChangeClassification.AlreadySatisfied);
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-ANALYSIS-DONE");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "orchestrator", "created");
+
+                JobOperationResult result = await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "analysis");
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.Completed, created.Value.State);
+                Assert.Equal(0, fixture.Planning.CallCount);
+                Assert.Equal(0, fixture.Developer.CallCount);
+                Assert.Equal(0, fixture.SafeChange.CallCount);
+        }
+
+	private static Fixture CreateFixture(int maxAttempts = 3, TimeSpan? maxDuration = null,
+                DevelopmentChangeClassification? developmentClassification = null)
 	{
 		FakeJobRepository fakeJobRepository = new FakeJobRepository();
 		FakeUnitOfWork unitOfWork = new FakeUnitOfWork();
@@ -3646,7 +3714,10 @@ public sealed class JobApplicationTests
                                 effectiveSource,
                                 reviewer,
                                 reviewPolicy,
-                                artifacts);
+                                artifacts,
+                                developmentAnalysisService: developmentClassification is null
+                                        ? null
+                                        : new FakeDevelopmentAnalysisService(developmentClassification.Value));
 
 		return new Fixture(
 		        fakeJobRepository,

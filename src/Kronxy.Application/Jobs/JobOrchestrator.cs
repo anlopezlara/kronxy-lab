@@ -59,6 +59,7 @@ public sealed class JobOrchestrator : IJobOrchestrator
         private readonly IArtifactStore? _artifactStore;
         private readonly IArtifactMetadataRepository? _artifactMetadataRepository;
         private readonly IDeveloperProposalPolicy? _developerProposalPolicy;
+        private readonly IDevelopmentAnalysisService? _developmentAnalysisService;
 
         public JobOrchestrator(
                 IJobRepository jobRepository,
@@ -83,7 +84,8 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 IReviewDecisionPolicy reviewDecisionPolicy,
                 IArtifactStore? artifactStore = null,
                 IArtifactMetadataRepository? artifactMetadataRepository = null,
-                IDeveloperProposalPolicy? developerProposalPolicy = null)
+                IDeveloperProposalPolicy? developerProposalPolicy = null,
+                IDevelopmentAnalysisService? developmentAnalysisService = null)
         {
                 _jobRepository =
                         jobRepository ??
@@ -180,6 +182,7 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 _artifactStore = artifactStore;
                 _artifactMetadataRepository = artifactMetadataRepository;
                 _developerProposalPolicy = developerProposalPolicy;
+                _developmentAnalysisService = developmentAnalysisService;
         }
 
         public async Task<JobOperationResult> RequestHumanReviewCorrectionAsync(
@@ -1408,12 +1411,8 @@ public sealed class JobOrchestrator : IJobOrchestrator
 
                 if (recoveredContext.IsCompleted)
                 {
-                        return await TransitionAndSaveAsync(
-                                job,
-                                JobState.Planning,
-                                "Context evidence recovered; generation was not repeated.",
-                                actor,
-                                correlationId,
+                        return await RunDevelopmentAnalysisAsync(
+                                job, runId, repository, actor, correlationId,
                                 cancellationToken);
                 }
 
@@ -1478,13 +1477,91 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                         .ContextGenerationFailed);
                 }
 
-                return await TransitionAndSaveAsync(
-                        job,
-                        JobState.Planning,
-                        "Context package generated from the pinned repository revision.",
-                        actor,
-                        correlationId,
+                return await RunDevelopmentAnalysisAsync(
+                        job, runId, repository, actor, correlationId,
                         cancellationToken);
+        }
+
+        private async Task<JobOperationResult> RunDevelopmentAnalysisAsync(
+                Job job,
+                Guid runId,
+                RepositoryWorktreeHandle repository,
+                string actor,
+                string correlationId,
+                CancellationToken cancellationToken)
+        {
+                if (_developmentAnalysisService is null)
+                {
+                        return await TransitionAndSaveAsync(
+                                job, JobState.Planning,
+                                "Context package generated from the pinned repository revision.",
+                                actor, correlationId, cancellationToken);
+                }
+
+                StageRecoveryResult recovered = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.DevelopmentAnalysis,
+                        correlationId, cancellationToken);
+                DevelopmentAnalysisResult? result = null;
+                DevelopmentAnalysis? analysis = recovered.DevelopmentAnalysis;
+                if (!recovered.IsCompleted)
+                {
+                        JobOperationResult? recoveryFailure = RecoveryFailure(recovered);
+                        if (recoveryFailure is not null) return recoveryFailure;
+                }
+
+                try
+                {
+                        if (analysis is null) result = await _developmentAnalysisService.AnalyzeAsync(
+                                new DevelopmentAnalysisRequest
+                                {
+                                        JobId = job.Id,
+                                        RunId = runId,
+                                        AttemptCount = job.AttemptCount,
+                                        JobRequest = job.Request,
+                                        Repository = repository,
+                                        CorrelationId = correlationId
+                                }, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                        throw;
+                }
+                catch
+                {
+                        return JobOperationResult.Failure(
+                                JobOperationKind.RetryableFailure,
+                                JobApplicationErrors.DevelopmentAnalysisFailed);
+                }
+
+                if (analysis is null && (result is null || !result.IsSuccess || result.Analysis is null))
+                {
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.DevelopmentAnalysisFailed);
+                }
+
+                analysis ??= result!.Analysis!;
+                if (analysis.PrimaryClassification ==
+                    DevelopmentChangeClassification.AlreadySatisfied)
+                {
+                        return await TransitionAndSaveAsync(
+                                job, JobState.Completed,
+                                "Development analysis determined the request is already satisfied.",
+                                actor, correlationId, cancellationToken);
+                }
+
+                if (!analysis.DeveloperExecutionAllowed)
+                {
+                        return await TransitionAndSaveAsync(
+                                job, JobState.WaitingHuman,
+                                "Development analysis requires an architecture decision.",
+                                actor, correlationId, cancellationToken);
+                }
+
+                return await TransitionAndSaveAsync(
+                        job, JobState.Planning,
+                        "Context and development analysis completed against the pinned repository revision.",
+                        actor, correlationId, cancellationToken);
         }
 
         private async Task<JobOperationResult>

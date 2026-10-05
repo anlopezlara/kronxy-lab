@@ -56,6 +56,8 @@ public static class JobWorkflow
         {
             (JobState.Created, JobState.ContextBuilding) => true,
             (JobState.ContextBuilding, JobState.Planning) => true,
+            (JobState.ContextBuilding, JobState.WaitingHuman) => true,
+            (JobState.ContextBuilding, JobState.Completed) => true,
             (JobState.Planning, JobState.WorkspacePreparing) => true,
             (JobState.WorkspacePreparing, JobState.Developing) => true,
             (JobState.Developing, JobState.Building) => true,

@@ -200,6 +200,17 @@ public static class DependencyInjection
         services.AddSingleton(
             developerPolicyOptions);
 
+        var developmentAnalysisOptions = new DevelopmentAnalysisOptions
+        {
+            MaxFilesInspected = GetOptionalPositiveInt(configuration, "DevelopmentAnalysis:MaxFilesInspected", 1000),
+            MaxReferenceMatches = GetOptionalPositiveInt(configuration, "DevelopmentAnalysis:MaxReferenceMatches", 200),
+            MaxCandidateTargets = GetOptionalPositiveInt(configuration, "DevelopmentAnalysis:MaxCandidateTargets", 8),
+            MaxEvidenceItems = GetOptionalPositiveInt(configuration, "DevelopmentAnalysis:MaxEvidenceItems", 300)
+        };
+        developmentAnalysisOptions.Validate();
+        services.AddSingleton(developmentAnalysisOptions);
+        services.AddScoped<IDevelopmentAnalysisService, DevelopmentAnalysisService>();
+
         services.AddSingleton<
             IPlanningPriorityPathSelector,
             PlanningPriorityPathSelector>();
