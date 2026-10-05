@@ -60,6 +60,7 @@ public enum ArtifactType
     GovernedHumanCorrectionReceipt = 112,
     ObservedGovernedHumanCorrectionManifest = 113,
     DevelopmentAnalysis = 114,
+    ArchitectureDecision = 115,
 
     RestoreReport = 30,
     RestoreStandardOutput = 31,
@@ -101,6 +102,10 @@ public static class ArtifactTypeClassification
             ArtifactType.GovernedHumanCorrectionRequest or
             ArtifactType.GovernedHumanCorrectionReceipt or
             ArtifactType.ObservedGovernedHumanCorrectionManifest;
+
+    public static bool IsVersionedGovernedDecision(
+        this ArtifactType artifactType) =>
+        artifactType == ArtifactType.ArchitectureDecision;
 }
 
 public enum ArtifactStoreFailureKind

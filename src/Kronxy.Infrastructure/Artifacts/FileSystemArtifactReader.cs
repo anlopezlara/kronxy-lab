@@ -94,6 +94,12 @@ public sealed class FileSystemArtifactReader :
                     matching,
                     request.CorrelationId);
             }
+            else if (request.ArtifactType.IsVersionedGovernedDecision())
+            {
+                matching = SelectVersionedDeveloperCorrection(
+                    matching,
+                    request.CorrelationId);
+            }
 
             if (matching.Length == 0)
             {

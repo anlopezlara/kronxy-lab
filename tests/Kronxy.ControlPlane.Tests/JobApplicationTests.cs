@@ -3633,6 +3633,171 @@ public sealed class JobApplicationTests
                 Assert.Equal(0, fixture.SafeChange.CallCount);
         }
 
+        [Theory]
+        [InlineData(ArchitectureDecisionKind.PreserveExistingArchitecture)]
+        [InlineData(ArchitectureDecisionKind.SupersedeRequest)]
+        [InlineData(ArchitectureDecisionKind.NoCodeChangeRequired)]
+        public async Task ArchitectureDecision_TerminatingNoCodeDecision_Completes(
+                ArchitectureDecisionKind decision)
+        {
+                (Fixture fixture, Job job) = await ArchitectureDecisionJob();
+                ArchitectureDecisionRequest request = DecisionRequest(decision);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ResolveArchitectureDecisionAsync(job.Id, request);
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.Completed, job.State);
+                ArtifactWriteRequest write = Assert.Single(fixture.Artifacts.Writes,
+                        value => value.ArtifactType == ArtifactType.ArchitectureDecision);
+                ArchitectureDecisionEvidence evidence = JsonSerializer.Deserialize<ArchitectureDecisionEvidence>(write.Content.Span)!;
+                Assert.Equal(decision, evidence.Decision);
+                Assert.False(evidence.SourceMutation);
+                Assert.Equal(DevelopmentChangeClassification.ArchitectureConflict, evidence.Classification);
+                Assert.Equal(0, fixture.Planning.CallCount);
+                Assert.Equal(0, fixture.Developer.CallCount);
+                Assert.Equal(0, fixture.SafeChange.CallCount);
+                Assert.DoesNotContain(fixture.Artifacts.Writes, value => value.ArtifactType is
+                        ArtifactType.BuildReport or ArtifactType.TestReport or ArtifactType.ReviewerReview);
+        }
+
+        [Fact]
+        public async Task ArchitectureDecision_SamePayloadIsIdempotent_DifferentPayloadFailsClosed()
+        {
+                (Fixture fixture, Job job) = await ArchitectureDecisionJob();
+                ArchitectureDecisionRequest request = DecisionRequest(ArchitectureDecisionKind.PreserveExistingArchitecture);
+
+                Assert.True((await fixture.Orchestrator.ResolveArchitectureDecisionAsync(job.Id, request)).IsSuccess);
+                Assert.True((await fixture.Orchestrator.ResolveArchitectureDecisionAsync(job.Id, request)).IsSuccess);
+                Assert.Single(fixture.Artifacts.Writes,
+                        value => value.ArtifactType == ArtifactType.ArchitectureDecision);
+
+                JobOperationResult conflict = await fixture.Orchestrator.ResolveArchitectureDecisionAsync(
+                        job.Id, request with { Reason = "Different reason." });
+                Assert.False(conflict.IsSuccess);
+                Assert.Equal(JobState.Completed, job.State);
+        }
+
+        [Fact]
+        public async Task ArchitectureDecision_NonWaitingHumanFailsClosed()
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync("request", "KRX-ARCH-NONWAITING");
+
+                JobOperationResult result = await fixture.Orchestrator.ResolveArchitectureDecisionAsync(
+                        created.Value.Id, DecisionRequest(ArchitectureDecisionKind.NoCodeChangeRequired));
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.Created, created.Value.State);
+                Assert.DoesNotContain(fixture.Artifacts.Writes,
+                        value => value.ArtifactType == ArtifactType.ArchitectureDecision);
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, true)]
+        public async Task ArchitectureDecision_IneligibleAnalysisFailsClosed(
+                bool decisionRequired,
+                bool developerAllowed)
+        {
+                (Fixture fixture, Job job) = await ArchitectureDecisionJob();
+                ConfigureArchitectureRecovery(fixture, job, decisionRequired, developerAllowed);
+
+                JobOperationResult result = await fixture.Orchestrator.ResolveArchitectureDecisionAsync(
+                        job.Id, DecisionRequest(ArchitectureDecisionKind.NoCodeChangeRequired));
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+        }
+
+        [Fact]
+        public async Task ArchitectureDecision_MismatchedAnalysisIdentityFailsClosed()
+        {
+                (Fixture fixture, Job job) = await ArchitectureDecisionJob();
+                ConfigureArchitectureRecovery(fixture, job, true, false, analysisJobId: Guid.NewGuid());
+
+                JobOperationResult result = await fixture.Orchestrator.ResolveArchitectureDecisionAsync(
+                        job.Id, DecisionRequest(ArchitectureDecisionKind.PreserveExistingArchitecture));
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+        }
+
+        [Fact]
+        public async Task ArchitectureDecision_AuthorizeScopeExpansionFailsClosed()
+        {
+                (Fixture fixture, Job job) = await ArchitectureDecisionJob();
+                JobOperationResult result = await fixture.Orchestrator.ResolveArchitectureDecisionAsync(
+                        job.Id, DecisionRequest(ArchitectureDecisionKind.AuthorizeScopeExpansion));
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+        }
+
+        private static async Task<(Fixture Fixture, Job Job)> ArchitectureDecisionJob()
+        {
+                Fixture fixture = CreateFixture(developmentClassification: DevelopmentChangeClassification.ArchitectureConflict);
+                Result<Job> created = await fixture.Service.CreateAsync("request", $"KRX-ARCH-{Guid.NewGuid():N}"[..15]);
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "test", "created");
+                await fixture.Orchestrator.AdvanceAsync(created.Value.Id, "test", "analysis");
+                Assert.Equal(JobState.WaitingHuman, created.Value.State);
+                ConfigureArchitectureRecovery(fixture, created.Value, true, false);
+                return (fixture, created.Value);
+        }
+
+        private static void ConfigureArchitectureRecovery(
+                Fixture fixture,
+                Job job,
+                bool decisionRequired,
+                bool developerAllowed,
+                Guid? analysisJobId = null)
+        {
+                Guid runId = new DeterministicJobRunIdProvider().Create(job.Id, job.AttemptCount);
+                fixture.RecoveryEvidence.Handler = request =>
+                {
+                        if (request.Stage == RecoveryStage.ArchitectureDecision)
+                        {
+                                ArtifactWriteRequest? write = fixture.Artifacts.Writes.LastOrDefault(value =>
+                                        value.ArtifactType == ArtifactType.ArchitectureDecision &&
+                                        value.CorrelationId == request.CorrelationId);
+                                return write is null
+                                        ? StageRecoveryResult.NotCompleted()
+                                        : StageRecoveryResult.Completed(architectureDecision:
+                                                JsonSerializer.Deserialize<ArchitectureDecisionEvidence>(write.Content.Span));
+                        }
+                        if (request.Stage != RecoveryStage.DevelopmentAnalysis)
+                                return StageRecoveryResult.NotCompleted();
+                        var analysis = new DevelopmentAnalysis
+                        {
+                                JobId = analysisJobId ?? job.Id, RunId = runId, AttemptCount = job.AttemptCount,
+                                RequestIdentity = "request", TargetSymbols = ["Target"],
+                                ExistingDeclarations = ["Target@src/Kronxy.Domain/Target.cs"],
+                                PrimaryClassification = DevelopmentChangeClassification.ArchitectureConflict,
+                                ImpactedLayers = ["Domain", "Application"], RequestedScope = "Domain-only",
+                                RequiredScope = "Cross-layer", ScopeCompatible = false, BreakingContracts = [],
+                                ArchitectureDecisionRequired = decisionRequired,
+                                DeveloperExecutionAllowed = developerAllowed, Evidence = [], FilesInspected = [],
+                                AnalysisVersion = "test"
+                        };
+                        return StageRecoveryResult.Completed(
+                                developmentAnalysis: analysis,
+                                developmentAnalysisArtifact: new ArtifactRecord
+                                {
+                                        ArtifactId = Guid.NewGuid(), JobId = job.Id, RunId = runId,
+                                        ArtifactType = ArtifactType.DevelopmentAnalysis,
+                                        RelativePath = "development-analysis/analysis.json",
+                                        Sha256 = new string('a', 64), SizeBytes = 1,
+                                        CreatedAtUtc = DateTimeOffset.UtcNow, CorrelationId = "analysis"
+                                });
+                };
+        }
+
+        private static ArchitectureDecisionRequest DecisionRequest(ArchitectureDecisionKind decision) => new()
+        {
+                Actor = "architect", CorrelationId = "architecture-decision-test",
+                Decision = decision, Reason = "Preserve the existing architecture.",
+                FollowUpRequired = true, FollowUpDescription = "SEPARATE_ARCHITECTURE_DECISION"
+        };
+
 	private static Fixture CreateFixture(int maxAttempts = 3, TimeSpan? maxDuration = null,
                 DevelopmentChangeClassification? developmentClassification = null)
 	{

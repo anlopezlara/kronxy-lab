@@ -433,6 +433,132 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 return JobOperationResult.Success();
         }
 
+        public async Task<JobOperationResult> ResolveArchitectureDecisionAsync(
+                Guid jobId,
+                ArchitectureDecisionRequest request,
+                CancellationToken cancellationToken = default)
+        {
+                if (jobId == Guid.Empty || request is null ||
+                    string.IsNullOrWhiteSpace(request.Actor) || request.Actor.Length > 200 ||
+                    string.IsNullOrWhiteSpace(request.CorrelationId) || request.CorrelationId.Length > 200 ||
+                    string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 4000 ||
+                    request.Actor.IndexOfAny(['\0', '\r', '\n']) >= 0 ||
+                    request.CorrelationId.IndexOfAny(['\0', '\r', '\n']) >= 0 ||
+                    request.Reason.IndexOf('\0') >= 0 ||
+                    request.FollowUpDescription?.IndexOf('\0') >= 0 ||
+                    request.FollowUpDescription?.Length > 1000 ||
+                    !Enum.IsDefined(request.Decision) ||
+                    request.Decision == ArchitectureDecisionKind.AuthorizeScopeExpansion ||
+                    (request.FollowUpRequired && string.IsNullOrWhiteSpace(request.FollowUpDescription)))
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+
+                Job? job = await _jobRepository.GetByIdAsync(jobId, cancellationToken);
+                if (job is null)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure, JobApplicationErrors.NotFound);
+                if (_artifactStore is null)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+
+                Guid runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount);
+                StageRecoveryResult existing = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.ArchitectureDecision,
+                        request.CorrelationId, cancellationToken);
+                JobOperationResult? existingFailure = RecoveryFailure(existing);
+                if (existingFailure is not null) return existingFailure;
+                if (existing.IsCompleted)
+                {
+                        if (existing.ArchitectureDecision is null ||
+                            !ArchitectureDecisionMatches(existing.ArchitectureDecision, request))
+                                return JobOperationResult.Failure(JobOperationKind.PermanentFailure,
+                                        JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+                        return job.State == JobState.Completed
+                                ? JobOperationResult.Success()
+                                : JobOperationResult.Failure(JobOperationKind.InvalidTransition,
+                                        JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+                }
+
+                if (job.State != JobState.WaitingHuman)
+                        return JobOperationResult.Failure(JobOperationKind.InvalidTransition,
+                                JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+
+                StageRecoveryResult analysisResult = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.DevelopmentAnalysis,
+                        request.CorrelationId, cancellationToken);
+                JobOperationResult? analysisFailure = RecoveryFailure(analysisResult);
+                if (analysisFailure is not null) return analysisFailure;
+                DevelopmentAnalysis? analysis = analysisResult.DevelopmentAnalysis;
+                ArtifactRecord? analysisArtifact = analysisResult.DevelopmentAnalysisArtifact;
+                if (!analysisResult.IsCompleted || analysis is null || analysisArtifact is null ||
+                    !analysis.ArchitectureDecisionRequired || analysis.DeveloperExecutionAllowed ||
+                    analysis.JobId != job.Id || analysis.RunId != runId ||
+                    analysis.AttemptCount != job.AttemptCount)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+
+                StageRecoveryResult planning = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.Planning, request.CorrelationId, cancellationToken);
+                StageRecoveryResult developer = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.Developer, request.CorrelationId, cancellationToken);
+                StageRecoveryResult observed = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.ObservedChanges, request.CorrelationId, cancellationToken);
+                JobOperationResult? mutationEvidenceFailure = RecoveryFailure(planning) ??
+                        RecoveryFailure(developer) ?? RecoveryFailure(observed);
+                if (mutationEvidenceFailure is not null) return mutationEvidenceFailure;
+                if (planning.IsCompleted || developer.IsCompleted || observed.IsCompleted)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+
+                var evidence = new ArchitectureDecisionEvidence
+                {
+                        JobId = job.Id, RunId = runId, AttemptCount = job.AttemptCount,
+                        Actor = request.Actor, CorrelationId = request.CorrelationId,
+                        Decision = request.Decision, Reason = request.Reason.Trim(),
+                        DevelopmentAnalysisArtifactReference = analysisArtifact.RelativePath,
+                        DevelopmentAnalysisSha256 = analysisArtifact.Sha256,
+                        Classification = analysis.PrimaryClassification,
+                        RequestedScope = analysis.RequestedScope,
+                        RequiredScope = analysis.RequiredScope,
+                        ImpactedLayers = analysis.ImpactedLayers,
+                        SourceMutation = false,
+                        FollowUpRequired = request.FollowUpRequired,
+                        FollowUpDescription = request.FollowUpDescription?.Trim(),
+                        RecordedAtUtc = _clock.UtcNow
+                };
+                ArtifactWriteResult write = await _artifactStore.WriteAsync(
+                        new ArtifactWriteRequest
+                        {
+                                JobId = job.Id, RunId = runId,
+                                ArtifactType = ArtifactType.ArchitectureDecision,
+                                Content = JsonSerializer.SerializeToUtf8Bytes(evidence),
+                                CorrelationId = request.CorrelationId
+                        }, cancellationToken);
+                if (!write.IsSuccess)
+                        return JobOperationResult.Failure(JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.ArchitectureDecisionResolutionFailed);
+
+                Result transition = job.TransitionTo(
+                        JobState.Completed, _clock.UtcNow,
+                        $"Architecture decision resolved without source mutation: {request.Decision}.",
+                        request.Actor, request.CorrelationId);
+                if (transition.IsFailure)
+                        return JobOperationResult.Failure(JobOperationKind.InvalidTransition, transition.Error);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                return JobOperationResult.Success();
+        }
+
+        private static bool ArchitectureDecisionMatches(
+                ArchitectureDecisionEvidence evidence,
+                ArchitectureDecisionRequest request) =>
+                evidence.Actor == request.Actor &&
+                evidence.CorrelationId == request.CorrelationId &&
+                evidence.Decision == request.Decision &&
+                evidence.Reason == request.Reason.Trim() &&
+                evidence.FollowUpRequired == request.FollowUpRequired &&
+                evidence.FollowUpDescription == request.FollowUpDescription?.Trim() &&
+                !evidence.SourceMutation;
+
         public async Task<JobOperationResult> ApplyGovernedHumanCorrectionAsync(
                 Guid jobId,
                 GovernedHumanCorrectionRequest request,

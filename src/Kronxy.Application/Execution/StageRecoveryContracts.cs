@@ -1,9 +1,12 @@
+using Kronxy.Application.Artifacts;
+
 namespace Kronxy.Application.Execution;
 
 public enum RecoveryStage
 {
     Context = 10,
     DevelopmentAnalysis = 15,
+    ArchitectureDecision = 16,
     Planning = 20,
     Developer = 25,
     DeveloperOriginal = 26,
@@ -82,7 +85,9 @@ public sealed record StageRecoveryResult(
     DeveloperProposalLineage? DeveloperProposalLineage = null,
     GovernedHumanCorrectionEvidence? GovernedHumanCorrection = null,
     GovernedHumanCorrectionReceipt? GovernedHumanCorrectionReceipt = null,
-    DevelopmentAnalysis? DevelopmentAnalysis = null)
+    DevelopmentAnalysis? DevelopmentAnalysis = null,
+    ArtifactRecord? DevelopmentAnalysisArtifact = null,
+    ArchitectureDecisionEvidence? ArchitectureDecision = null)
 {
     public bool IsCompleted =>
         Status == StageRecoveryStatus.Completed;
@@ -99,7 +104,9 @@ public sealed record StageRecoveryResult(
         DeveloperProposalLineage? developerProposalLineage = null,
         GovernedHumanCorrectionEvidence? governedHumanCorrection = null,
         GovernedHumanCorrectionReceipt? governedHumanCorrectionReceipt = null,
-        DevelopmentAnalysis? developmentAnalysis = null) =>
+        DevelopmentAnalysis? developmentAnalysis = null,
+        ArtifactRecord? developmentAnalysisArtifact = null,
+        ArchitectureDecisionEvidence? architectureDecision = null) =>
         new(
             StageRecoveryStatus.Completed,
             string.Empty,
@@ -114,7 +121,9 @@ public sealed record StageRecoveryResult(
             developerProposalLineage,
             governedHumanCorrection,
             governedHumanCorrectionReceipt,
-            developmentAnalysis);
+            developmentAnalysis,
+            developmentAnalysisArtifact,
+            architectureDecision);
 
     public static StageRecoveryResult FailedBuild(
         BuildExecutionReport report,

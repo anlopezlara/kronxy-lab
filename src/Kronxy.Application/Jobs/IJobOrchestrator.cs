@@ -22,5 +22,7 @@ public interface IJobOrchestrator
 
 	Task<JobOperationResult> ApproveHumanReviewAsync(Guid jobId, string actor, string correlationId, CancellationToken cancellationToken = default(CancellationToken));
 
+	Task<JobOperationResult> ResolveArchitectureDecisionAsync(Guid jobId, ArchitectureDecisionRequest request, CancellationToken cancellationToken = default(CancellationToken));
+
 	JobState? DetermineNextState(JobState currentState);
 }

@@ -630,6 +630,10 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             ArtifactType.DevelopmentAnalysis =>
                 new("development-analysis", "analysis.json"),
 
+            ArtifactType.ArchitectureDecision =>
+                new("architecture-decision", VersionedFileName(
+                    "decision.json", correlationId)),
+
             ArtifactType.AiResponse =>
                 new("ai", "response.json"),
 

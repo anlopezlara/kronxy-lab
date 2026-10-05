@@ -83,6 +83,7 @@ public sealed class ArtifactStoreTests
     [InlineData(ArtifactType.ReviewerReview, "review/review.json")]
     [InlineData(ArtifactType.ReviewerResponse, "review/response.json")]
     [InlineData(ArtifactType.HumanReviewCorrectionEvidence, "human-review/changes-required.json")]
+    [InlineData(ArtifactType.ArchitectureDecision, "architecture-decision/decision-0ba9899d2106d7fe7f5838b22ddc71007a5de6ba83916333fcd84c8e21b5ecfa.json")]
     [InlineData(ArtifactType.ObservedHumanReviewCorrectionManifest, "changes/human-review-correction-manifest.json")]
     [InlineData(ArtifactType.BuildHumanReviewCorrectionReport, "build/human-review-correction-report.json")]
     [InlineData(ArtifactType.TestHumanReviewCorrectionReport, "tests/human-review-correction-report.json")]

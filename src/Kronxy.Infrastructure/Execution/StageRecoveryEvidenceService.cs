@@ -77,23 +77,24 @@ public sealed class StageRecoveryEvidenceService :
                         cancellationToken),
 
                 RecoveryStage.DevelopmentAnalysis =>
-                    await CheckReportAsync<DevelopmentAnalysis>(
-                        request,
-                        ArtifactType.DevelopmentAnalysis,
-                        analysis => analysis.JobId == request.JobId &&
-                            analysis.RunId == request.RunId &&
-                            analysis.AttemptCount == request.AttemptCount &&
-                            !string.IsNullOrWhiteSpace(analysis.RequestIdentity) &&
-                            !string.IsNullOrWhiteSpace(analysis.AnalysisVersion) &&
-                            analysis.TargetSymbols is not null &&
-                            analysis.ExistingDeclarations is not null &&
-                            analysis.ImpactedLayers is not null &&
-                            analysis.BreakingContracts is not null &&
-                            analysis.Evidence is not null &&
-                            analysis.FilesInspected is not null,
+                    await CheckDevelopmentAnalysisAsync(request, cancellationToken),
+
+                RecoveryStage.ArchitectureDecision =>
+                    await CheckReportAsync<ArchitectureDecisionEvidence>(
+                        request, ArtifactType.ArchitectureDecision,
+                        evidence => evidence.JobId == request.JobId &&
+                            evidence.RunId == request.RunId &&
+                            evidence.AttemptCount == request.AttemptCount &&
+                            evidence.CorrelationId == request.CorrelationId &&
+                            !string.IsNullOrWhiteSpace(evidence.Actor) &&
+                            !string.IsNullOrWhiteSpace(evidence.Reason) &&
+                            !string.IsNullOrWhiteSpace(evidence.DevelopmentAnalysisArtifactReference) &&
+                            IsSha256(evidence.DevelopmentAnalysisSha256) &&
+                            evidence.ImpactedLayers is not null &&
+                            !evidence.SourceMutation,
                         cancellationToken,
-                        analysis => StageRecoveryResult.Completed(
-                            developmentAnalysis: analysis)),
+                        evidence => StageRecoveryResult.Completed(
+                            architectureDecision: evidence)),
 
                 RecoveryStage.Planning =>
                     await CheckPlanningAsync(
@@ -319,6 +320,33 @@ public sealed class StageRecoveryEvidenceService :
         }
 
         return StageRecoveryResult.Completed();
+    }
+
+    private async Task<StageRecoveryResult> CheckDevelopmentAnalysisAsync(
+        StageRecoveryRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArtifactReadResult read = await ReadAsync(
+            request, ArtifactType.DevelopmentAnalysis, MaxReportBytes, cancellationToken);
+        if (read.FailureKind == ArtifactReadFailureKind.NotFound)
+            return StageRecoveryResult.NotCompleted();
+        if (!read.IsSuccess) return MapReadFailure(read);
+
+        DevelopmentAnalysis? analysis;
+        try { analysis = JsonSerializer.Deserialize<DevelopmentAnalysis>(read.Content.Span); }
+        catch (JsonException) { return StageRecoveryResult.InvalidEvidence("STAGE_RECOVERY_REPORT_INVALID_JSON"); }
+        if (analysis is null || analysis.JobId != request.JobId ||
+            analysis.RunId != request.RunId || analysis.AttemptCount != request.AttemptCount ||
+            string.IsNullOrWhiteSpace(analysis.RequestIdentity) ||
+            string.IsNullOrWhiteSpace(analysis.AnalysisVersion) ||
+            analysis.TargetSymbols is null || analysis.ExistingDeclarations is null ||
+            analysis.ImpactedLayers is null || analysis.BreakingContracts is null ||
+            analysis.Evidence is null || analysis.FilesInspected is null)
+            return StageRecoveryResult.InvalidEvidence("STAGE_RECOVERY_REPORT_NOT_SUCCESSFUL");
+
+        return StageRecoveryResult.Completed(
+            developmentAnalysis: analysis,
+            developmentAnalysisArtifact: read.Artifact);
     }
 
     private async Task<StageRecoveryResult>

@@ -144,6 +144,17 @@ public sealed class JobsController : ControllerBase
         return ToOperationResponse(result);
     }
 
+    [HttpPost("{jobId:guid}/architecture-decision")]
+    public async Task<IActionResult> ResolveArchitectureDecision(
+        Guid jobId,
+        ArchitectureDecisionRequest request,
+        CancellationToken cancellationToken)
+    {
+        JobOperationResult result = await _jobOrchestrator
+            .ResolveArchitectureDecisionAsync(jobId, request, cancellationToken);
+        return ToOperationResponse(result);
+    }
+
     [HttpPost("{jobId:guid}/human-correction")]
     public async Task<IActionResult> ApplyGovernedHumanCorrection(
         Guid jobId,

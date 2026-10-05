@@ -49,6 +49,11 @@ public static class JobApplicationErrors
                         "Job.DevelopmentAnalysisFailed",
                         "Development analysis could not be completed or persisted.");
 
+        public static readonly Error ArchitectureDecisionResolutionFailed =
+                new(
+                        "Job.ArchitectureDecisionResolutionFailed",
+                        "The governed architecture decision could not be validated or persisted.");
+
         public static readonly Error PlanningExecutionFailed =
                 new Error(
                         "Job.PlanningExecutionFailed",
