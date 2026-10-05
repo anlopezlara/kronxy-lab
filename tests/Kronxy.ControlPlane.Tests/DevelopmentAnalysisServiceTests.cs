@@ -26,6 +26,104 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
         Assert.Equal(ArtifactType.DevelopmentAnalysis, store.Requests[0].ArtifactType);
     }
 
+    [Theory]
+    [InlineData("Domain-only\nsrc/Kronxy.Domain/Widgets/Widget.cs")]
+    [InlineData("Create the Domain-only target src/Kronxy.Domain/Widgets/Widget.cs inside prose.")]
+    [InlineData("Create the Domain-only target `src/Kronxy.Domain/Widgets/Widget.cs`.")]
+    [InlineData("Create Domain-only targets: src/Kronxy.Domain/Widgets/Widget.cs, src/Kronxy.Domain/Widgets/WidgetErrors.cs; src/Kronxy.Domain/Widgets/IWidgetRepository.cs.")]
+    public async Task Candidate_paths_are_extracted_from_supported_prose(string request)
+    {
+        DevelopmentAnalysis result = await Analyze(request);
+
+        Assert.Equal(DevelopmentChangeClassification.NewComponent, result.PrimaryClassification);
+        Assert.True(result.ScopeCompatible);
+        Assert.True(result.DeveloperExecutionAllowed);
+    }
+
+    [Fact]
+    public async Task Three_inline_candidate_paths_are_all_extracted()
+    {
+        DevelopmentAnalysis result = await Analyze(
+            "Create Domain-only files src/Kronxy.Domain/Notes/Note.cs, " +
+            "src/Kronxy.Domain/Notes/NoteErrors.cs and " +
+            "src/Kronxy.Domain/Notes/INoteRepository.cs.");
+
+        Assert.Equal(
+            ["INoteRepository", "Note", "NoteErrors"],
+            result.TargetSymbols);
+        Assert.Equal(3, result.Evidence.Count(item => item.Kind == "TargetAbsent"));
+    }
+
+    [Fact]
+    public async Task Duplicate_candidate_path_is_deduplicated()
+    {
+        DevelopmentAnalysis result = await Analyze(
+            "Domain-only src/Kronxy.Domain/Widgets/Widget.cs, " +
+            "src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Single(result.TargetSymbols);
+        Assert.Single(result.Evidence, item => item.Kind == "TargetAbsent");
+    }
+
+    [Theory]
+    [InlineData("Domain-only /src/Kronxy.Domain/Widgets/Widget.cs")]
+    [InlineData("Domain-only ../src/Kronxy.Domain/Widgets/Widget.cs")]
+    [InlineData("Domain-only https://example.test/src/Kronxy.Domain/Widgets/Widget.cs")]
+    public async Task Unsafe_or_non_repository_candidate_paths_are_rejected(string request)
+    {
+        DevelopmentAnalysis result = await Analyze(request);
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.TargetSymbols);
+        Assert.True(result.ArchitectureDecisionRequired);
+        Assert.False(result.DeveloperExecutionAllowed);
+    }
+
+    [Fact]
+    public async Task Candidate_limit_exceeded_fails_closed_without_dropping_targets()
+    {
+        Directory.CreateDirectory(root);
+        var service = new DevelopmentAnalysisService(
+            store,
+            new DevelopmentAnalysisOptions { MaxCandidateTargets = 2 });
+
+        DevelopmentAnalysisResult result = await service.AnalyzeAsync(
+            Request(
+                "Domain-only src/Kronxy.Domain/Notes/One.cs, " +
+                "src/Kronxy.Domain/Notes/Two.cs, " +
+                "src/Kronxy.Domain/Notes/Three.cs"));
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        Assert.Equal(
+            DevelopmentChangeClassification.Unknown,
+            result.Analysis!.PrimaryClassification);
+        Assert.True(result.Analysis.ArchitectureDecisionRequired);
+        Assert.False(result.Analysis.DeveloperExecutionAllowed);
+        Assert.Contains(
+            result.Analysis.Evidence,
+            item => item.Kind == "Ambiguity" &&
+                    item.Detail.Contains("configured limit", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Greenfield_inline_request_is_allowed_as_domain_only_new_component()
+    {
+        DevelopmentAnalysis result = await Analyze(
+            "Create a greenfield Domain-only component. Create exactly these three files and no others: " +
+            "src/Kronxy.Domain/DevelopmentNotes/DevelopmentNote.cs, " +
+            "src/Kronxy.Domain/DevelopmentNotes/DevelopmentNoteErrors.cs, " +
+            "src/Kronxy.Domain/DevelopmentNotes/IDevelopmentNoteRepository.cs. " +
+            "No persistence, API, EF, or migrations.");
+
+        Assert.Equal(3, result.TargetSymbols.Count);
+        Assert.Equal(DevelopmentChangeClassification.NewComponent, result.PrimaryClassification);
+        Assert.Equal("Domain-only", result.RequestedScope);
+        Assert.Equal("Domain", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+        Assert.False(result.ArchitectureDecisionRequired);
+        Assert.True(result.DeveloperExecutionAllowed);
+    }
+
     [Fact]
     public async Task Existing_local_target_distinguishes_extension_refactor_and_ambiguity()
     {

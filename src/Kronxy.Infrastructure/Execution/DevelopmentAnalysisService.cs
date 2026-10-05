@@ -10,7 +10,9 @@ namespace Kronxy.Infrastructure.Execution;
 public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 {
     private const string Version = "development-analysis-v1";
-    private static readonly Regex CandidatePath = new(@"(?im)^\s*(src|tests)/[^\r\n]+\.cs\s*$", RegexOptions.Compiled);
+    private static readonly Regex CandidatePath = new(
+        @"(?<![A-Za-z0-9_./:\\-])(?<path>(?:src|tests|tools)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.cs)(?=$|[\s`'\""()\[\]{},;:!?\.])",
+        RegexOptions.Compiled);
     private static readonly Regex Declaration = new(@"\b(?:class|record|struct|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
     private readonly IArtifactStore artifactStore;
     private readonly DevelopmentAnalysisOptions options;
@@ -30,7 +32,7 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 
         string root = Path.GetFullPath(request.Repository.RepositoryPath);
         string[] candidates = CandidatePath.Matches(request.JobRequest)
-            .Select(match => match.Value.Trim().Replace('\\', '/'))
+            .Select(match => match.Groups["path"].Value)
             .Distinct(StringComparer.OrdinalIgnoreCase).Take(options.MaxCandidateTargets + 1).ToArray();
         if (candidates.Length == 0 || candidates.Length > options.MaxCandidateTargets)
             return await PersistUnknownAsync(request, candidates.Take(options.MaxCandidateTargets).ToArray(), "Candidate targets are missing or exceed the configured limit.", cancellationToken);
