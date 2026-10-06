@@ -101,6 +101,21 @@ public sealed class PlanningExecutionServiceTests
             "Every filesToInspect path must exactly match a FILE header",
             sent.SystemInstructions);
         Assert.Contains(
+            "filesToInspect MUST contain at least one relevant existing authorized FILE-header path",
+            sent.SystemInstructions);
+        Assert.Contains(
+            "Use filesToInspect for existing repository files that must be studied for conventions and grounding",
+            sent.SystemInstructions);
+        Assert.Contains(
+            "At least one path used by the plan must overlap the high-priority authorized reference files",
+            sent.SystemInstructions);
+        Assert.Contains(
+            "Use candidateFilesToModify for files expected to be created or modified",
+            sent.SystemInstructions);
+        Assert.Contains(
+            "a greenfield candidate that does not yet exist cannot satisfy the existing-reference grounding requirement",
+            sent.SystemInstructions);
+        Assert.Contains(
             "candidateFilesToModify may include a new path only when the JOB REQUEST explicitly asks",
             sent.SystemInstructions);
         Assert.Contains(
