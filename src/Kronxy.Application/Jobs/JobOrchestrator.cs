@@ -2485,17 +2485,17 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 job.Id,
                                 job.AttemptCount);
 
-                StageRecoveryResult governedCorrection =
-                        await CheckRecoveryEvidenceAsync(
-                                job, runId,
-                                RecoveryStage.GovernedHumanCorrection,
-                                correlationId, cancellationToken);
-                JobOperationResult? governedCorrectionFailure =
-                        RecoveryFailure(governedCorrection);
-                if (governedCorrectionFailure is not null)
-                        return governedCorrectionFailure;
+                EffectiveGovernedCorrectionResolution governedResolution =
+                        await ResolveEffectiveGovernedCorrectionAsync(
+                                job,
+                                runId,
+                                cancellationToken);
+                if (!governedResolution.IsValid)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
                 bool isGovernedHumanCorrection =
-                        governedCorrection.IsCompleted;
+                        governedResolution.CorrelationId is not null;
 
                 StageRecoveryResult humanCorrection = await CheckRecoveryEvidenceAsync(
                         job, runId, RecoveryStage.HumanReviewCorrection,
@@ -3029,17 +3029,17 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 JobOperationKind.PermanentFailure,
                                 JobApplicationErrors.StageRecoveryFailed);
 
-                StageRecoveryResult governedCorrection =
-                        await CheckRecoveryEvidenceAsync(
-                                job, runId,
-                                RecoveryStage.GovernedHumanCorrection,
-                                correlationId, cancellationToken);
-                JobOperationResult? governedCorrectionFailure =
-                        RecoveryFailure(governedCorrection);
-                if (governedCorrectionFailure is not null)
-                        return governedCorrectionFailure;
+                EffectiveGovernedCorrectionResolution governedResolution =
+                        await ResolveEffectiveGovernedCorrectionAsync(
+                                job,
+                                runId,
+                                cancellationToken);
+                if (!governedResolution.IsValid)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
                 bool isGovernedHumanCorrection =
-                        governedCorrection.IsCompleted;
+                        governedResolution.CorrelationId is not null;
 
                 StageRecoveryResult recoveredTest =
                         await CheckRecoveryEvidenceAsync(
@@ -3144,17 +3144,19 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 Job job, string actor, string correlationId, CancellationToken cancellationToken)
         {
                 Guid runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount);
-                StageRecoveryResult governedCorrection =
-                        await CheckRecoveryEvidenceAsync(
-                                job, runId,
-                                RecoveryStage.GovernedHumanCorrection,
-                                correlationId, cancellationToken);
-                JobOperationResult? governedCorrectionFailure =
-                        RecoveryFailure(governedCorrection);
-                if (governedCorrectionFailure is not null)
-                        return governedCorrectionFailure;
+                EffectiveGovernedCorrectionResolution governedResolution =
+                        await ResolveEffectiveGovernedCorrectionAsync(
+                                job,
+                                runId,
+                                cancellationToken);
+                if (!governedResolution.IsValid)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
                 bool isGovernedHumanCorrection =
-                        governedCorrection.IsCompleted;
+                        governedResolution.CorrelationId is not null;
+                string evidenceCorrelationId =
+                        governedResolution.CorrelationId ?? correlationId;
                 StageRecoveryResult humanCorrection = await CheckRecoveryEvidenceAsync(
                         job, runId, RecoveryStage.HumanReviewCorrection,
                         correlationId, cancellationToken);
@@ -3171,7 +3173,7 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 StageRecoveryResult plan = await CheckRecoveryEvidenceAsync(job, planningRunId, RecoveryStage.Planning, correlationId, cancellationToken);
                 StageRecoveryResult developer = await CheckRecoveryEvidenceAsync(
                         job, runId, RecoveryStage.EffectiveDeveloperProposal,
-                        correlationId, cancellationToken);
+                        evidenceCorrelationId, cancellationToken);
                 DeveloperProposalLineage expectedLineage =
                         isHumanReviewCorrection
                                 ? DeveloperProposalLineage.HumanReviewCorrection
@@ -3188,13 +3190,19 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 JobApplicationErrors.ReviewerEvidenceInvalid);
                 StageRecoveryResult observed = await CheckRecoveryEvidenceAsync(
                         job, runId, selection.ObservedStage,
-                        correlationId, cancellationToken);
+                        evidenceCorrelationId, cancellationToken);
                 StageRecoveryResult build = await CheckRecoveryEvidenceAsync(
                         job, runId, selection.BuildStage,
-                        correlationId, cancellationToken);
-                StageRecoveryResult test = await CheckRecoveryEvidenceAsync(
-                        job, runId, selection.TestStage,
-                        correlationId, cancellationToken);
+                        evidenceCorrelationId, cancellationToken);
+                StageRecoveryResult test = isGovernedHumanCorrection
+                        ? await RecoverEffectiveGovernedTestAsync(
+                                job,
+                                runId,
+                                evidenceCorrelationId,
+                                cancellationToken)
+                        : await CheckRecoveryEvidenceAsync(
+                                job, runId, selection.TestStage,
+                                correlationId, cancellationToken);
                 foreach (StageRecoveryResult evidence in new[] { plan, developer, observed, build, test })
                 {
                         JobOperationResult? failure = RecoveryFailure(evidence);
@@ -3270,6 +3278,155 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 RecoveryStage ObservedStage,
                 RecoveryStage BuildStage,
                 RecoveryStage TestStage);
+
+        private sealed record EffectiveGovernedCorrectionResolution(
+                bool IsValid,
+                string? CorrelationId)
+        {
+                public static EffectiveGovernedCorrectionResolution None() =>
+                        new(true, null);
+
+                public static EffectiveGovernedCorrectionResolution Valid(
+                        string correlationId) =>
+                        new(true, correlationId);
+
+                public static EffectiveGovernedCorrectionResolution Invalid() =>
+                        new(false, null);
+        }
+
+        private async Task<EffectiveGovernedCorrectionResolution>
+                ResolveEffectiveGovernedCorrectionAsync(
+                        Job job,
+                        Guid runId,
+                        CancellationToken cancellationToken)
+        {
+                if (_artifactMetadataRepository is null)
+                        return EffectiveGovernedCorrectionResolution.None();
+
+                IReadOnlyList<ArtifactRecord> artifacts =
+                        await _artifactMetadataRepository.GetByJobAndRunAsync(
+                                job.Id,
+                                runId,
+                                cancellationToken);
+                ArtifactRecord? latestRequest = artifacts
+                        .Where(artifact => artifact.ArtifactType ==
+                                ArtifactType.GovernedHumanCorrectionRequest)
+                        .OrderByDescending(artifact => artifact.CreatedAtUtc)
+                        .ThenByDescending(artifact => artifact.ArtifactId)
+                        .FirstOrDefault();
+                if (latestRequest is null)
+                        return EffectiveGovernedCorrectionResolution.None();
+
+                string sourceCorrelationId = latestRequest.CorrelationId;
+                StageRecoveryResult correction =
+                        await CheckRecoveryEvidenceAsync(
+                                job,
+                                runId,
+                                RecoveryStage.GovernedHumanCorrection,
+                                sourceCorrelationId,
+                                cancellationToken);
+                StageRecoveryResult observed =
+                        await CheckRecoveryEvidenceAsync(
+                                job,
+                                runId,
+                                RecoveryStage.ObservedGovernedHumanCorrection,
+                                sourceCorrelationId,
+                                cancellationToken);
+                StageRecoveryResult build =
+                        await CheckRecoveryEvidenceAsync(
+                                job,
+                                runId,
+                                RecoveryStage.BuildGovernedHumanCorrection,
+                                sourceCorrelationId,
+                                cancellationToken);
+
+                return correction.IsCompleted &&
+                       observed.IsCompleted &&
+                       build.IsCompleted
+                        ? EffectiveGovernedCorrectionResolution.Valid(
+                                sourceCorrelationId)
+                        : EffectiveGovernedCorrectionResolution.Invalid();
+        }
+
+        private async Task<StageRecoveryResult>
+                RecoverEffectiveGovernedTestAsync(
+                        Job job,
+                        Guid runId,
+                        string sourceCorrelationId,
+                        CancellationToken cancellationToken)
+        {
+                string? testCorrelationId = job.Transitions
+                        .Where(transition =>
+                                transition.FromState == JobState.Testing &&
+                                transition.ToState == JobState.Reviewing)
+                        .OrderByDescending(transition => transition.OccurredOnUtc)
+                        .Select(transition => transition.CorrelationId)
+                        .FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(testCorrelationId))
+                        return StageRecoveryResult.NotCompleted();
+
+                StageRecoveryResult governedTest =
+                        await CheckRecoveryEvidenceAsync(
+                                job,
+                                runId,
+                                RecoveryStage.TestGovernedHumanCorrection,
+                                testCorrelationId,
+                                cancellationToken);
+                if (governedTest.IsCompleted &&
+                    await IsTestAfterEffectiveGovernedBuildAsync(
+                            job.Id,
+                            runId,
+                            sourceCorrelationId,
+                            testCorrelationId,
+                            ArtifactType.TestGovernedHumanCorrectionReport,
+                            cancellationToken))
+                        return governedTest;
+                if (governedTest.Status != StageRecoveryStatus.NotCompleted)
+                        return governedTest;
+
+                StageRecoveryResult legacyTest =
+                        await CheckRecoveryEvidenceAsync(
+                                job,
+                                runId,
+                                RecoveryStage.Test,
+                                testCorrelationId,
+                                cancellationToken);
+                return legacyTest.IsCompleted &&
+                       await IsTestAfterEffectiveGovernedBuildAsync(
+                               job.Id,
+                               runId,
+                               sourceCorrelationId,
+                               testCorrelationId,
+                               ArtifactType.TestReport,
+                               cancellationToken)
+                        ? legacyTest
+                        : StageRecoveryResult.InvalidEvidence(
+                                "STAGE_RECOVERY_EFFECTIVE_LINEAGE_MISMATCH");
+        }
+
+        private async Task<bool> IsTestAfterEffectiveGovernedBuildAsync(
+                Guid jobId,
+                Guid runId,
+                string sourceCorrelationId,
+                string testCorrelationId,
+                ArtifactType testReportType,
+                CancellationToken cancellationToken)
+        {
+                if (_artifactMetadataRepository is null)
+                        return false;
+
+                IReadOnlyList<ArtifactRecord> artifacts =
+                        await _artifactMetadataRepository.GetByJobAndRunAsync(
+                                jobId,
+                                runId,
+                                cancellationToken);
+                return GovernedHumanCorrectionPolicy
+                        .IsTestBoundToLatestCorrection(
+                                artifacts,
+                                sourceCorrelationId,
+                                testCorrelationId,
+                                testReportType);
+        }
 
         private static EffectiveEvidenceSelection?
                 ResolveEffectiveEvidenceSelection(

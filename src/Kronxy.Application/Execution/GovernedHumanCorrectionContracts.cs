@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Kronxy.Application.Artifacts;
 using Kronxy.Domain.Jobs;
 
 namespace Kronxy.Application.Execution;
@@ -52,6 +53,49 @@ public sealed record GovernedHumanCorrectionReceipt
 
 public static class GovernedHumanCorrectionPolicy
 {
+    public static bool IsTestBoundToLatestCorrection(
+        IReadOnlyList<ArtifactRecord> artifacts,
+        string sourceCorrelationId,
+        string testCorrelationId,
+        ArtifactType testReportType)
+    {
+        ArtifactRecord? latestCorrection = artifacts
+            .Where(artifact => artifact.ArtifactType ==
+                ArtifactType.GovernedHumanCorrectionRequest)
+            .OrderByDescending(artifact => artifact.CreatedAtUtc)
+            .ThenByDescending(artifact => artifact.ArtifactId)
+            .FirstOrDefault();
+        ArtifactRecord? observed = artifacts
+            .Where(artifact => artifact.ArtifactType ==
+                ArtifactType.ObservedGovernedHumanCorrectionManifest &&
+                artifact.CorrelationId == sourceCorrelationId)
+            .OrderByDescending(artifact => artifact.CreatedAtUtc)
+            .FirstOrDefault();
+        ArtifactRecord? build = artifacts
+            .Where(artifact => artifact.ArtifactType is
+                ArtifactType.BuildGovernedHumanCorrectionReport or
+                ArtifactType.BuildHumanReviewCorrectionReport)
+            .Where(artifact => artifact.CorrelationId == sourceCorrelationId)
+            .OrderByDescending(artifact => artifact.CreatedAtUtc)
+            .FirstOrDefault();
+        ArtifactRecord? test = artifacts
+            .Where(artifact => artifact.ArtifactType == testReportType)
+            .Where(artifact => testReportType == ArtifactType.TestReport ||
+                artifact.CorrelationId == testCorrelationId)
+            .OrderByDescending(artifact => artifact.CreatedAtUtc)
+            .ThenByDescending(artifact => artifact.ArtifactId)
+            .FirstOrDefault();
+
+        return latestCorrection is not null &&
+            latestCorrection.CorrelationId == sourceCorrelationId &&
+            observed is not null &&
+            build is not null &&
+            test is not null &&
+            observed.CreatedAtUtc >= latestCorrection.CreatedAtUtc &&
+            build.CreatedAtUtc >= observed.CreatedAtUtc &&
+            test.CreatedAtUtc >= build.CreatedAtUtc;
+    }
+
     public static bool IsEligible(
         JobState state,
         bool isTerminal,

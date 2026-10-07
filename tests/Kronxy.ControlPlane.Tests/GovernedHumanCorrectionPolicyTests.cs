@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
 using Kronxy.Domain.Jobs;
 using Xunit;
@@ -275,6 +276,99 @@ public sealed class GovernedHumanCorrectionPolicyTests
         Assert.Equal(1, restored.AttemptCount);
     }
 
+    [Theory]
+    [InlineData(ArtifactType.TestGovernedHumanCorrectionReport)]
+    [InlineData(ArtifactType.TestReport)]
+    public void Test_stage_correlation_does_not_replace_effective_source_lineage(
+        ArtifactType testType)
+    {
+        Assert.True(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            EffectiveLineageArtifacts(testType),
+            "source-2",
+            "test-stage",
+            testType));
+    }
+
+    [Fact]
+    public void Sequential_correction_supersedes_prior_correction()
+    {
+        List<ArtifactRecord> artifacts = EffectiveLineageArtifacts(
+            ArtifactType.TestGovernedHumanCorrectionReport).ToList();
+        artifacts.Insert(0, Artifact(
+            ArtifactType.GovernedHumanCorrectionRequest, "source-1", 0));
+
+        Assert.True(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            artifacts, "source-2", "test-stage",
+            ArtifactType.TestGovernedHumanCorrectionReport));
+    }
+
+    [Fact]
+    public void Newer_correction_after_tests_fails_closed()
+    {
+        List<ArtifactRecord> artifacts = EffectiveLineageArtifacts(
+            ArtifactType.TestGovernedHumanCorrectionReport).ToList();
+        artifacts.Add(Artifact(
+            ArtifactType.GovernedHumanCorrectionRequest, "source-3", 5));
+
+        Assert.False(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            artifacts, "source-2", "test-stage",
+            ArtifactType.TestGovernedHumanCorrectionReport));
+    }
+
+    [Fact]
+    public void Test_from_stale_stage_correlation_fails_closed()
+    {
+        Assert.False(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            EffectiveLineageArtifacts(
+                ArtifactType.TestGovernedHumanCorrectionReport),
+            "source-2", "other-test-stage",
+            ArtifactType.TestGovernedHumanCorrectionReport));
+    }
+
+    [Fact]
+    public void Test_before_effective_build_fails_closed()
+    {
+        List<ArtifactRecord> artifacts = EffectiveLineageArtifacts(
+            ArtifactType.TestGovernedHumanCorrectionReport).ToList();
+        artifacts.RemoveAll(artifact => artifact.ArtifactType ==
+            ArtifactType.TestGovernedHumanCorrectionReport);
+        artifacts.Add(Artifact(
+            ArtifactType.TestGovernedHumanCorrectionReport, "test-stage", 2));
+
+        Assert.False(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            artifacts, "source-2", "test-stage",
+            ArtifactType.TestGovernedHumanCorrectionReport));
+    }
+
+    [Fact]
+    public void Build_from_stale_source_lineage_fails_closed()
+    {
+        List<ArtifactRecord> artifacts = EffectiveLineageArtifacts(
+            ArtifactType.TestGovernedHumanCorrectionReport).ToList();
+        artifacts.RemoveAll(artifact => artifact.ArtifactType ==
+            ArtifactType.BuildGovernedHumanCorrectionReport);
+        artifacts.Add(Artifact(
+            ArtifactType.BuildGovernedHumanCorrectionReport, "source-1", 3));
+
+        Assert.False(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            artifacts, "source-2", "test-stage",
+            ArtifactType.TestGovernedHumanCorrectionReport));
+    }
+
+    [Fact]
+    public void Missing_observed_source_lineage_fails_closed()
+    {
+        ArtifactRecord[] artifacts = EffectiveLineageArtifacts(
+                ArtifactType.TestGovernedHumanCorrectionReport)
+            .Where(artifact => artifact.ArtifactType !=
+                ArtifactType.ObservedGovernedHumanCorrectionManifest)
+            .ToArray();
+
+        Assert.False(GovernedHumanCorrectionPolicy.IsTestBoundToLatestCorrection(
+            artifacts, "source-2", "test-stage",
+            ArtifactType.TestGovernedHumanCorrectionReport));
+    }
+
     private static GovernedHumanCorrectionRequest Request(
         params GovernedHumanFileReplacement[] changes) =>
         new()
@@ -283,6 +377,35 @@ public sealed class GovernedHumanCorrectionPolicyTests
             CorrelationId = "governed-human-correction",
             Reason = "AI corrections exhausted.",
             Changes = changes
+        };
+
+    private static IReadOnlyList<ArtifactRecord> EffectiveLineageArtifacts(
+        ArtifactType testType) =>
+        [
+            Artifact(ArtifactType.GovernedHumanCorrectionRequest,
+                "source-2", 1),
+            Artifact(ArtifactType.ObservedGovernedHumanCorrectionManifest,
+                "source-2", 2),
+            Artifact(ArtifactType.BuildGovernedHumanCorrectionReport,
+                "source-2", 3),
+            Artifact(testType, "test-stage", 4)
+        ];
+
+    private static ArtifactRecord Artifact(
+        ArtifactType type,
+        string correlationId,
+        int seconds) =>
+        new()
+        {
+            ArtifactId = Guid.NewGuid(),
+            JobId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            RunId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            ArtifactType = type,
+            RelativePath = $"test/{type}-{seconds}",
+            Sha256 = new string('a', 64),
+            SizeBytes = 1,
+            CreatedAtUtc = DateTimeOffset.UnixEpoch.AddSeconds(seconds),
+            CorrelationId = correlationId
         };
 
     private static GovernedHumanFileReplacement Change(
