@@ -107,6 +107,35 @@ public sealed class ArtifactStoreTests
             result.Artifact!.RelativePath);
     }
 
+    [Theory]
+    [InlineData(ArtifactType.BuildGovernedHumanCorrectionReport, "build-report")]
+    [InlineData(ArtifactType.BuildGovernedHumanCorrectionStandardOutput, "build-stdout")]
+    [InlineData(ArtifactType.BuildGovernedHumanCorrectionStandardError, "build-stderr")]
+    [InlineData(ArtifactType.TestGovernedHumanCorrectionReport, "test-report")]
+    [InlineData(ArtifactType.TestGovernedHumanCorrectionResults, "test-results")]
+    public async Task Governed_human_execution_artifacts_are_versioned(
+        ArtifactType artifactType,
+        string stem)
+    {
+        using var fixture = new ArtifactStoreFixture();
+        var store = fixture.CreateStore();
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+        const string correlation = "human-correction-2";
+
+        ArtifactWriteResult result = await store.WriteAsync(
+            Request(jobId, runId, artifactType, "evidence"u8.ToArray()) with
+            {
+                CorrelationId = correlation
+            });
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(
+            $"human-correction/{stem}-{CorrelationHash(correlation)}.",
+            result.Artifact!.RelativePath,
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Planning_rejected_response_uses_canonical_layout()
     {

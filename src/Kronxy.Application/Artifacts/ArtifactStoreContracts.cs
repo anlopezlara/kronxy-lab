@@ -61,6 +61,13 @@ public enum ArtifactType
     ObservedGovernedHumanCorrectionManifest = 113,
     DevelopmentAnalysis = 114,
     ArchitectureDecision = 115,
+    BuildGovernedHumanCorrectionReport = 116,
+    BuildGovernedHumanCorrectionStandardOutput = 117,
+    BuildGovernedHumanCorrectionStandardError = 118,
+    TestGovernedHumanCorrectionReport = 119,
+    TestGovernedHumanCorrectionStandardOutput = 120,
+    TestGovernedHumanCorrectionStandardError = 121,
+    TestGovernedHumanCorrectionResults = 122,
 
     RestoreReport = 30,
     RestoreStandardOutput = 31,
@@ -101,7 +108,14 @@ public static class ArtifactTypeClassification
         artifactType is
             ArtifactType.GovernedHumanCorrectionRequest or
             ArtifactType.GovernedHumanCorrectionReceipt or
-            ArtifactType.ObservedGovernedHumanCorrectionManifest;
+            ArtifactType.ObservedGovernedHumanCorrectionManifest or
+            ArtifactType.BuildGovernedHumanCorrectionReport or
+            ArtifactType.BuildGovernedHumanCorrectionStandardOutput or
+            ArtifactType.BuildGovernedHumanCorrectionStandardError or
+            ArtifactType.TestGovernedHumanCorrectionReport or
+            ArtifactType.TestGovernedHumanCorrectionStandardOutput or
+            ArtifactType.TestGovernedHumanCorrectionStandardError or
+            ArtifactType.TestGovernedHumanCorrectionResults;
 
     public static bool IsVersionedGovernedDecision(
         this ArtifactType artifactType) =>

@@ -640,6 +640,13 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 ArtifactType.DeveloperBuildCorrectionRetryRejectedStructuredResponse)
                         .ToArray();
 
+                ArtifactRecord? latestHumanCorrection = artifacts
+                        .Where(artifact => artifact.ArtifactType ==
+                                ArtifactType.GovernedHumanCorrectionRequest)
+                        .OrderByDescending(artifact => artifact.CreatedAtUtc)
+                        .ThenByDescending(artifact => artifact.ArtifactId)
+                        .FirstOrDefault();
+
                 StageRecoveryResult appliedCorrection =
                         await CheckRecoveryEvidenceAsync(
                                 job, runId,
@@ -665,15 +672,55 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                         appliedCorrection.DeveloperProposal,
                                         observedCorrection.ObservedChangeManifest,
                                         failedCorrectedBuild.BuildReport);
-                if (!GovernedHumanCorrectionPolicy.IsEligible(
-                        job.State,
-                        job.IsTerminal,
-                        hasValidFailureEvidence:
-                                failedBuild.Status ==
-                                StageRecoveryStatus.FailedExecution,
-                        rejectedAiCorrectionExhausted: exhausted.Length > 0,
-                        failedCorrectedRebuildExhausted,
-                        plan.PlannerPlan.CandidateFilesToModify))
+
+                bool sequentialCorrectionEligible = false;
+                if (latestHumanCorrection is not null)
+                {
+                        string latestCorrelationId =
+                                latestHumanCorrection.CorrelationId;
+                        StageRecoveryResult latestCorrection =
+                                await CheckRecoveryEvidenceAsync(
+                                        job, runId,
+                                        RecoveryStage.GovernedHumanCorrection,
+                                        latestCorrelationId,
+                                        cancellationToken);
+                        StageRecoveryResult latestObserved =
+                                await CheckRecoveryEvidenceAsync(
+                                        job, runId,
+                                        RecoveryStage.ObservedGovernedHumanCorrection,
+                                        latestCorrelationId,
+                                        cancellationToken);
+                        StageRecoveryResult latestFailedBuild =
+                                await CheckRecoveryEvidenceAsync(
+                                        job, runId,
+                                        RecoveryStage.BuildGovernedHumanCorrectionFailure,
+                                        latestCorrelationId,
+                                        cancellationToken);
+                        sequentialCorrectionEligible =
+                                GovernedHumanCorrectionPolicy
+                                        .IsSequentialCorrectionEligible(
+                                                job.State,
+                                                job.IsTerminal,
+                                                latestCorrection.IsCompleted,
+                                                latestObserved.IsCompleted,
+                                                latestFailedBuild.Status ==
+                                                        StageRecoveryStatus.FailedExecution);
+                }
+
+                bool firstCorrectionEligible =
+                        GovernedHumanCorrectionPolicy.IsEligible(
+                                job.State,
+                                job.IsTerminal,
+                                hasValidFailureEvidence:
+                                        failedBuild.Status ==
+                                        StageRecoveryStatus.FailedExecution,
+                                rejectedAiCorrectionExhausted:
+                                        exhausted.Length > 0,
+                                failedCorrectedRebuildExhausted,
+                                plan.PlannerPlan.CandidateFilesToModify);
+                if (latestHumanCorrection is null
+                        ? !firstCorrectionEligible
+                        : !sequentialCorrectionEligible)
                         return JobOperationResult.Failure(
                                 JobOperationKind.InvalidTransition,
                                 JobApplicationErrors.StageRecoveryFailed);
@@ -743,7 +790,9 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 artifact.ArtifactType is
                                         ArtifactType.BuildReport or
                                         ArtifactType.BuildCorrectionReport or
-                                        ArtifactType.BuildCorrectionRetryReport)
+                                        ArtifactType.BuildCorrectionRetryReport or
+                                        ArtifactType.BuildHumanReviewCorrectionReport or
+                                        ArtifactType.BuildGovernedHumanCorrectionReport)
                                 .Select(artifact => artifact.RelativePath)
                                 .ToArray(),
                         ExhaustedAiCorrectionEvidence = exhausted

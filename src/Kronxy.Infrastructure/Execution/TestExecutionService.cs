@@ -92,8 +92,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult stdoutWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.TestGovernedHumanCorrectionStandardOutput
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.TestHumanReviewCorrectionStandardOutput
                             : ArtifactType.TestStandardOutput,
                         Encoding.UTF8.GetBytes(
@@ -104,8 +105,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult stderrWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.TestGovernedHumanCorrectionStandardError
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.TestHumanReviewCorrectionStandardError
                             : ArtifactType.TestStandardError,
                         Encoding.UTF8.GetBytes(
@@ -121,8 +123,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult reportWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.TestGovernedHumanCorrectionReport
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.TestHumanReviewCorrectionReport
                             : ArtifactType.TestReport,
                         reportBytes,
@@ -201,8 +204,9 @@ public sealed class TestExecutionService :
             ArtifactWriteResult resultsWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.TestGovernedHumanCorrectionResults
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.TestHumanReviewCorrectionResults
                             : ArtifactType.TestResults,
                         trx.Content!,

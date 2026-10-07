@@ -35,7 +35,8 @@ public enum RecoveryStage
     GovernedHumanCorrection = 65,
     ObservedGovernedHumanCorrection = 66,
     BuildGovernedHumanCorrection = 67,
-    TestGovernedHumanCorrection = 68
+    TestGovernedHumanCorrection = 68,
+    BuildGovernedHumanCorrectionFailure = 69
 }
 
 public enum DeveloperProposalLineage

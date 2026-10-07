@@ -93,6 +93,18 @@ public static class GovernedHumanCorrectionPolicy
                     StringComparison.Ordinal)));
     }
 
+    public static bool IsSequentialCorrectionEligible(
+        JobState state,
+        bool isTerminal,
+        bool latestCorrectionApplied,
+        bool latestObservedChangesValid,
+        bool latestBuildFailed) =>
+        state == JobState.Building &&
+        !isTerminal &&
+        latestCorrectionApplied &&
+        latestObservedChangesValid &&
+        latestBuildFailed;
+
     public static bool IsValidRequest(
         GovernedHumanCorrectionRequest? request,
         IReadOnlyList<string> allowedPaths)

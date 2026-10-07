@@ -87,16 +87,16 @@ public sealed class FileSystemArtifactReader :
                     request.CorrelationId);
             }
             else if (request.ArtifactType
-                .IsVersionedDeveloperCorrection() ||
-                request.ArtifactType.IsVersionedHumanCorrection())
+                .IsVersionedDeveloperCorrection())
             {
                 matching = SelectVersionedDeveloperCorrection(
                     matching,
                     request.CorrelationId);
             }
-            else if (request.ArtifactType.IsVersionedGovernedDecision())
+            else if (request.ArtifactType.IsVersionedHumanCorrection() ||
+                request.ArtifactType.IsVersionedGovernedDecision())
             {
-                matching = SelectVersionedDeveloperCorrection(
+                matching = SelectExactVersionedArtifact(
                     matching,
                     request.CorrelationId);
             }
@@ -359,6 +359,22 @@ public sealed class FileSystemArtifactReader :
             .Take(1)
             .ToArray();
     }
+
+    private static ArtifactRecord[] SelectExactVersionedArtifact(
+        IReadOnlyList<ArtifactRecord> artifacts,
+        string correlationId) =>
+        string.IsNullOrWhiteSpace(correlationId)
+            ? artifacts
+                .OrderByDescending(artifact => artifact.CreatedAtUtc)
+                .ThenByDescending(artifact => artifact.ArtifactId)
+                .Take(1)
+                .ToArray()
+            : artifacts
+                .Where(artifact => string.Equals(
+                    artifact.CorrelationId,
+                    correlationId,
+                    StringComparison.Ordinal))
+                .ToArray();
 
     private static bool IsValidRequest(
         ArtifactReadRequest? request)

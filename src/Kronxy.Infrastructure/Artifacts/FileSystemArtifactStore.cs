@@ -775,6 +775,34 @@ public sealed class FileSystemArtifactStore : IArtifactStore
                 new("human-correction", VersionedFileName(
                     "observed-changes.json", correlationId)),
 
+            ArtifactType.BuildGovernedHumanCorrectionReport =>
+                new("human-correction", VersionedFileName(
+                    "build-report.json", correlationId)),
+
+            ArtifactType.BuildGovernedHumanCorrectionStandardOutput =>
+                new("human-correction", VersionedFileName(
+                    "build-stdout.txt", correlationId)),
+
+            ArtifactType.BuildGovernedHumanCorrectionStandardError =>
+                new("human-correction", VersionedFileName(
+                    "build-stderr.txt", correlationId)),
+
+            ArtifactType.TestGovernedHumanCorrectionReport =>
+                new("human-correction", VersionedFileName(
+                    "test-report.json", correlationId)),
+
+            ArtifactType.TestGovernedHumanCorrectionStandardOutput =>
+                new("human-correction", VersionedFileName(
+                    "test-stdout.txt", correlationId)),
+
+            ArtifactType.TestGovernedHumanCorrectionStandardError =>
+                new("human-correction", VersionedFileName(
+                    "test-stderr.txt", correlationId)),
+
+            ArtifactType.TestGovernedHumanCorrectionResults =>
+                new("human-correction", VersionedFileName(
+                    "test-results.zip", correlationId)),
+
             ArtifactType.RestoreReport =>
                 new("restore", "report.json"),
 

@@ -448,6 +448,43 @@ public sealed class FileSystemArtifactReaderTests :
         Assert.Equal(second.ArtifactId, latest.Artifact!.ArtifactId);
     }
 
+    [Fact]
+    public async Task Governed_human_correction_reader_does_not_fall_back_to_older_correlation()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+        byte[] content = "first"u8.ToArray();
+        ArtifactRecord first = CreateArtifact(
+            jobId,
+            runId,
+            ArtifactType.GovernedHumanCorrectionRequest,
+            content) with
+        {
+            RelativePath =
+                $"{jobId:N}/{runId:N}/human-correction/request-first.json",
+            CorrelationId = "first-correction"
+        };
+        WriteArtifact(first.RelativePath, content);
+        FileSystemArtifactReader reader = CreateReader(
+            new FakeArtifactMetadataRepository(first));
+
+        ArtifactReadResult exact = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.GovernedHumanCorrectionRequest) with
+            {
+                CorrelationId = "first-correction"
+            });
+        ArtifactReadResult missing = await reader.ReadAsync(
+            Request(jobId, runId,
+                ArtifactType.GovernedHumanCorrectionRequest) with
+            {
+                CorrelationId = "second-correction"
+            });
+
+        Assert.True(exact.IsSuccess);
+        Assert.Equal(ArtifactReadFailureKind.NotFound, missing.FailureKind);
+    }
+
     private FileSystemArtifactReader CreateReader(
         IArtifactMetadataRepository metadata)
     {
@@ -498,6 +535,9 @@ public sealed class FileSystemArtifactReaderTests :
                 ArtifactType.DeveloperBuildCorrectionRetryProposal =>
                     "developer",
 
+                ArtifactType.GovernedHumanCorrectionRequest =>
+                    "human-correction",
+
                 _ =>
                     throw new ArgumentOutOfRangeException(
                         nameof(artifactType))
@@ -517,6 +557,9 @@ public sealed class FileSystemArtifactReaderTests :
 
                 ArtifactType.DeveloperBuildCorrectionRetryProposal =>
                     "build-correction-retry-proposal.json",
+
+                ArtifactType.GovernedHumanCorrectionRequest =>
+                    "request.json",
 
                 _ =>
                     throw new ArgumentOutOfRangeException(

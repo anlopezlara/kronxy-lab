@@ -53,6 +53,40 @@ public sealed class GovernedHumanCorrectionPolicyTests
     }
 
     [Fact]
+    public void Failed_build_after_applied_human_correction_allows_next_correction()
+    {
+        Assert.True(GovernedHumanCorrectionPolicy
+            .IsSequentialCorrectionEligible(
+                JobState.Building,
+                isTerminal: false,
+                latestCorrectionApplied: true,
+                latestObservedChangesValid: true,
+                latestBuildFailed: true));
+    }
+
+    [Theory]
+    [InlineData(JobState.Testing, false, true, true, true)]
+    [InlineData(JobState.Building, true, true, true, true)]
+    [InlineData(JobState.Building, false, false, true, true)]
+    [InlineData(JobState.Building, false, true, false, true)]
+    [InlineData(JobState.Building, false, true, true, false)]
+    public void Incomplete_or_successful_human_correction_lineage_fails_closed(
+        JobState state,
+        bool terminal,
+        bool applied,
+        bool observed,
+        bool buildFailed)
+    {
+        Assert.False(GovernedHumanCorrectionPolicy
+            .IsSequentialCorrectionEligible(
+                state,
+                terminal,
+                applied,
+                observed,
+                buildFailed));
+    }
+
+    [Fact]
     public void Applied_observed_correction_with_failed_rebuild_is_exhausted()
     {
         (ValidatedDeveloperProposal proposal, ObservedChangeManifest observed,

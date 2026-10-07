@@ -539,6 +539,86 @@ public sealed class StageRecoveryEvidenceServiceTests
     }
 
     [Fact]
+    public async Task Governed_human_build_failure_accepts_matching_legacy_correlation()
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => request.ArtifactType switch
+            {
+                ArtifactType.BuildGovernedHumanCorrectionReport =>
+                    ArtifactReadResult.Failure(
+                        ArtifactReadFailureKind.NotFound,
+                        "TEST_NOT_FOUND"),
+                ArtifactType.BuildHumanReviewCorrectionReport => Success(
+                    request,
+                    JsonSerializer.SerializeToUtf8Bytes(
+                        new BuildExecutionReport(
+                            JobId,
+                            RunId,
+                            "Kronxy.sln",
+                            ToolExecutionOutcome.NonZeroExitCode,
+                            1,
+                            "TOOL_NONZERO_EXIT",
+                            DateTime.UtcNow,
+                            DateTime.UtcNow,
+                            TimeSpan.Zero))),
+                ArtifactType.BuildHumanReviewCorrectionStandardOutput =>
+                    Success(request, "error CS0246"u8.ToArray()),
+                _ => throw new InvalidOperationException(
+                    $"Unexpected artifact {request.ArtifactType}.")
+            }
+        };
+
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(
+            reader, Options()).CheckAsync(
+                Request(RecoveryStage.BuildGovernedHumanCorrectionFailure));
+
+        Assert.Equal(StageRecoveryStatus.FailedExecution, result.Status);
+        Assert.Equal("error CS0246", result.BuildStandardOutput);
+    }
+
+    [Fact]
+    public async Task Governed_human_build_failure_rejects_stale_legacy_correlation()
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => request.ArtifactType switch
+            {
+                ArtifactType.BuildGovernedHumanCorrectionReport =>
+                    ArtifactReadResult.Failure(
+                        ArtifactReadFailureKind.NotFound,
+                        "TEST_NOT_FOUND"),
+                ArtifactType.BuildHumanReviewCorrectionReport => Success(
+                    request,
+                    JsonSerializer.SerializeToUtf8Bytes(
+                        new BuildExecutionReport(
+                            JobId,
+                            RunId,
+                            "Kronxy.sln",
+                            ToolExecutionOutcome.NonZeroExitCode,
+                            1,
+                            "TOOL_NONZERO_EXIT",
+                            DateTime.UtcNow,
+                            DateTime.UtcNow,
+                            TimeSpan.Zero)),
+                    "older-correction"),
+                _ => throw new InvalidOperationException(
+                    $"Unexpected artifact {request.ArtifactType}.")
+            }
+        };
+
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(
+            reader, Options()).CheckAsync(
+                Request(RecoveryStage.BuildGovernedHumanCorrectionFailure));
+
+        Assert.Equal(StageRecoveryStatus.NotCompleted, result.Status);
+        Assert.DoesNotContain(
+            reader.Requests,
+            request => request.ArtifactType ==
+                ArtifactType.BuildHumanReviewCorrectionStandardOutput);
+    }
+
+    [Fact]
     public async Task Successful_correction_build_is_preferred_over_original_failure()
     {
         var reader = new FakeArtifactReader

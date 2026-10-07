@@ -216,9 +216,15 @@ public sealed class StageRecoveryEvidenceService :
                         cancellationToken),
 
                 RecoveryStage.BuildGovernedHumanCorrection =>
-                    await CheckBuildReportAsync(
+                    await CheckGovernedHumanBuildAsync(
                         request,
-                        ArtifactType.BuildHumanReviewCorrectionReport,
+                        allowFailedExecution: false,
+                        cancellationToken),
+
+                RecoveryStage.BuildGovernedHumanCorrectionFailure =>
+                    await CheckGovernedHumanBuildAsync(
+                        request,
+                        allowFailedExecution: true,
                         cancellationToken),
 
                 RecoveryStage.Test =>
@@ -236,8 +242,8 @@ public sealed class StageRecoveryEvidenceService :
                 RecoveryStage.TestGovernedHumanCorrection =>
                     await CheckTestArtifactsAsync(
                         request,
-                        ArtifactType.TestHumanReviewCorrectionReport,
-                        ArtifactType.TestHumanReviewCorrectionResults,
+                        ArtifactType.TestGovernedHumanCorrectionReport,
+                        ArtifactType.TestGovernedHumanCorrectionResults,
                         cancellationToken),
 
                 RecoveryStage.Reviewer =>
@@ -1135,6 +1141,64 @@ public sealed class StageRecoveryEvidenceService :
             reportRead,
             allowFailedExecution: true,
             Encoding.UTF8.GetString(outputRead.Content.Span));
+    }
+
+    private async Task<StageRecoveryResult> CheckGovernedHumanBuildAsync(
+        StageRecoveryRequest request,
+        bool allowFailedExecution,
+        CancellationToken cancellationToken)
+    {
+        ArtifactReadResult reportRead = await ReadAsync(
+            request,
+            ArtifactType.BuildGovernedHumanCorrectionReport,
+            MaxReportBytes,
+            cancellationToken);
+        ArtifactType outputType =
+            ArtifactType.BuildGovernedHumanCorrectionStandardOutput;
+
+        if (reportRead.FailureKind == ArtifactReadFailureKind.NotFound)
+        {
+            reportRead = await ReadAsync(
+                request,
+                ArtifactType.BuildHumanReviewCorrectionReport,
+                MaxReportBytes,
+                cancellationToken);
+            outputType = ArtifactType.BuildHumanReviewCorrectionStandardOutput;
+            if (reportRead.IsSuccess &&
+                !string.Equals(
+                    reportRead.Artifact?.CorrelationId,
+                    request.CorrelationId,
+                    StringComparison.Ordinal))
+                return StageRecoveryResult.NotCompleted();
+        }
+
+        if (reportRead.FailureKind == ArtifactReadFailureKind.NotFound)
+            return StageRecoveryResult.NotCompleted();
+
+        string? output = null;
+        if (allowFailedExecution)
+        {
+            ArtifactReadResult outputRead = await ReadAsync(
+                request,
+                outputType,
+                artifactOptions.MaxArtifactBytes,
+                cancellationToken);
+            if (!outputRead.IsSuccess)
+                return MapReadFailure(outputRead);
+            if (outputType == ArtifactType.BuildHumanReviewCorrectionStandardOutput &&
+                !string.Equals(
+                    outputRead.Artifact?.CorrelationId,
+                    request.CorrelationId,
+                    StringComparison.Ordinal))
+                return StageRecoveryResult.NotCompleted();
+            output = Encoding.UTF8.GetString(outputRead.Content.Span);
+        }
+
+        return ParseBuildReport(
+            request,
+            reportRead,
+            allowFailedExecution,
+            output);
     }
 
     private static StageRecoveryResult ParseBuildReport(

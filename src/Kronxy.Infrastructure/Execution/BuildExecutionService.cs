@@ -82,8 +82,9 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult stdoutWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.BuildGovernedHumanCorrectionStandardOutput
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.BuildHumanReviewCorrectionStandardOutput
                             : request.IsBuildCorrectionRetry
                             ? ArtifactType.BuildCorrectionRetryStandardOutput
@@ -98,8 +99,9 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult stderrWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.BuildGovernedHumanCorrectionStandardError
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.BuildHumanReviewCorrectionStandardError
                             : request.IsBuildCorrectionRetry
                             ? ArtifactType.BuildCorrectionRetryStandardError
@@ -119,8 +121,9 @@ public sealed class BuildExecutionService :
             ArtifactWriteResult reportWrite =
                 await WriteArtifactAsync(
                         request,
-                        request.IsHumanReviewCorrection ||
                         request.IsGovernedHumanCorrection
+                            ? ArtifactType.BuildGovernedHumanCorrectionReport
+                            : request.IsHumanReviewCorrection
                             ? ArtifactType.BuildHumanReviewCorrectionReport
                             : request.IsBuildCorrectionRetry
                             ? ArtifactType.BuildCorrectionRetryReport
