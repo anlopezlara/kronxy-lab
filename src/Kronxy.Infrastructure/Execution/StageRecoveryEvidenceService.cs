@@ -195,6 +195,20 @@ public sealed class StageRecoveryEvidenceService :
                         request,
                         cancellationToken),
 
+                RecoveryStage.BuildOriginalFailure =>
+                    await CheckFailedBuildReportAsync(
+                        request,
+                        ArtifactType.BuildReport,
+                        ArtifactType.BuildStandardOutput,
+                        cancellationToken),
+
+                RecoveryStage.BuildCorrectionFailure =>
+                    await CheckFailedBuildReportAsync(
+                        request,
+                        ArtifactType.BuildCorrectionReport,
+                        ArtifactType.BuildCorrectionStandardOutput,
+                        cancellationToken),
+
                 RecoveryStage.BuildHumanReviewCorrection =>
                     await CheckBuildReportAsync(
                         request,
@@ -1090,6 +1104,37 @@ public sealed class StageRecoveryEvidenceService :
             read,
             allowFailedExecution: false,
             standardOutput: null);
+    }
+
+    private async Task<StageRecoveryResult> CheckFailedBuildReportAsync(
+        StageRecoveryRequest request,
+        ArtifactType reportType,
+        ArtifactType standardOutputType,
+        CancellationToken cancellationToken)
+    {
+        ArtifactReadResult reportRead = await ReadAsync(
+            request,
+            reportType,
+            MaxReportBytes,
+            cancellationToken);
+
+        if (reportRead.FailureKind == ArtifactReadFailureKind.NotFound)
+            return StageRecoveryResult.NotCompleted();
+
+        ArtifactReadResult outputRead = await ReadAsync(
+            request,
+            standardOutputType,
+            artifactOptions.MaxArtifactBytes,
+            cancellationToken);
+
+        if (!outputRead.IsSuccess)
+            return MapReadFailure(outputRead);
+
+        return ParseBuildReport(
+            request,
+            reportRead,
+            allowFailedExecution: true,
+            Encoding.UTF8.GetString(outputRead.Content.Span));
     }
 
     private static StageRecoveryResult ParseBuildReport(

@@ -22,6 +22,8 @@ public enum RecoveryStage
     Restore = 35,
     Build = 40,
     BuildHumanReviewCorrection = 41,
+    BuildOriginalFailure = 42,
+    BuildCorrectionFailure = 43,
     Test = 50,
     TestHumanReviewCorrection = 51,
     ReviewerOriginal = 59,

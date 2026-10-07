@@ -19,23 +19,102 @@ public sealed class GovernedHumanCorrectionPolicyTests
             JobState.Building,
             isTerminal: false,
             hasValidFailureEvidence: true,
-            aiCorrectionExhausted: true,
+            rejectedAiCorrectionExhausted: true,
+            failedCorrectedRebuildExhausted: false,
             [Path]));
     }
 
     [Theory]
-    [InlineData(JobState.Planning, false, true, true)]
-    [InlineData(JobState.Building, true, true, true)]
-    [InlineData(JobState.Building, false, false, true)]
-    [InlineData(JobState.Building, false, true, false)]
+    [InlineData(JobState.Planning, false, true, true, false)]
+    [InlineData(JobState.Building, true, true, true, false)]
+    [InlineData(JobState.Building, false, false, true, false)]
+    [InlineData(JobState.Building, false, true, false, false)]
     public void Ineligible_state_or_evidence_fails_closed(
         JobState state,
         bool terminal,
         bool hasFailure,
-        bool exhausted)
+        bool rejected,
+        bool failedRebuild)
     {
         Assert.False(GovernedHumanCorrectionPolicy.IsEligible(
-            state, terminal, hasFailure, exhausted, [Path]));
+            state, terminal, hasFailure, rejected, failedRebuild, [Path]));
+    }
+
+    [Fact]
+    public void Failed_corrected_rebuild_is_eligible_for_human_correction()
+    {
+        Assert.True(GovernedHumanCorrectionPolicy.IsEligible(
+            JobState.Building,
+            isTerminal: false,
+            hasValidFailureEvidence: true,
+            rejectedAiCorrectionExhausted: false,
+            failedCorrectedRebuildExhausted: true,
+            [Path]));
+    }
+
+    [Fact]
+    public void Applied_observed_correction_with_failed_rebuild_is_exhausted()
+    {
+        (ValidatedDeveloperProposal proposal, ObservedChangeManifest observed,
+            BuildExecutionReport build) = FailedCorrectedRebuild();
+
+        Assert.True(GovernedHumanCorrectionPolicy
+            .IsFailedCorrectedRebuildExhaustion(proposal, observed, build));
+    }
+
+    [Fact]
+    public void Successful_corrected_rebuild_is_not_exhausted()
+    {
+        (ValidatedDeveloperProposal proposal, ObservedChangeManifest observed,
+            BuildExecutionReport build) = FailedCorrectedRebuild();
+
+        Assert.False(GovernedHumanCorrectionPolicy
+            .IsFailedCorrectedRebuildExhaustion(
+                proposal,
+                observed,
+                build with
+                {
+                    Outcome = ToolExecutionOutcome.Completed,
+                    ExitCode = 0
+                }));
+    }
+
+    [Fact]
+    public void Missing_or_mismatched_observed_change_is_not_exhausted()
+    {
+        (ValidatedDeveloperProposal proposal, ObservedChangeManifest observed,
+            BuildExecutionReport build) = FailedCorrectedRebuild();
+
+        Assert.False(GovernedHumanCorrectionPolicy
+            .IsFailedCorrectedRebuildExhaustion(proposal, null, build));
+        Assert.False(GovernedHumanCorrectionPolicy
+            .IsFailedCorrectedRebuildExhaustion(
+                proposal,
+                observed with { RunId = Guid.NewGuid() },
+                build));
+        Assert.False(GovernedHumanCorrectionPolicy
+            .IsFailedCorrectedRebuildExhaustion(
+                proposal,
+                observed with { Entries = [] },
+                build));
+    }
+
+    [Fact]
+    public void No_op_correction_is_not_failed_rebuild_exhaustion()
+    {
+        (ValidatedDeveloperProposal proposal, ObservedChangeManifest observed,
+            BuildExecutionReport build) = FailedCorrectedRebuild();
+        ValidatedDeveloperChange change = proposal.Changes.Single();
+        ValidatedDeveloperProposal noOp = proposal with
+        {
+            Changes = [change with
+            {
+                ExpectedContentSha256 = Sha(change.Content)
+            }]
+        };
+
+        Assert.False(GovernedHumanCorrectionPolicy
+            .IsFailedCorrectedRebuildExhaustion(noOp, observed, build));
     }
 
     [Fact]
@@ -134,6 +213,7 @@ public sealed class GovernedHumanCorrectionPolicyTests
             RequestSha256 = CurrentSha,
             FailureEvidence = ["build/build.json"],
             ExhaustedAiCorrectionEvidence = ["developer/retry-rejected.json"],
+            AutomaticCorrectionExhaustionEvidence = [],
             AllowedPaths = [Path],
             Proposal = new ValidatedDeveloperProposal(
                 "summary",
@@ -180,4 +260,53 @@ public sealed class GovernedHumanCorrectionPolicyTests
             ExpectedContentSha256 = CurrentSha,
             Content = content
         };
+
+    private static (
+        ValidatedDeveloperProposal Proposal,
+        ObservedChangeManifest Observed,
+        BuildExecutionReport Build) FailedCorrectedRebuild()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid runId = Guid.NewGuid();
+        const string content = "public interface IProjectAreaRepository {}";
+        var proposal = new ValidatedDeveloperProposal(
+            "Correct compilation.",
+            [new(
+                DeveloperChangeOperationType.ReplaceFile,
+                Path,
+                "Remove an invalid abstraction.",
+                content,
+                CurrentSha,
+                7)],
+            [],
+            [],
+            7,
+            100);
+        var observed = new ObservedChangeManifest(
+            jobId,
+            runId,
+            "head",
+            [new(
+                Path,
+                Kronxy.Application.Repositories.ObservedRepositoryChangeKind.Modified,
+                Sha(content),
+                content.Length)]);
+        var build = new BuildExecutionReport(
+            jobId,
+            runId,
+            "Kronxy.sln",
+            ToolExecutionOutcome.NonZeroExitCode,
+            1,
+            "TOOL_NONZERO_EXIT",
+            DateTime.UtcNow,
+            DateTime.UtcNow,
+            TimeSpan.Zero);
+        return (proposal, observed, build);
+    }
+
+    private static string Sha(string content) =>
+        Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(content)))
+        .ToLowerInvariant();
 }

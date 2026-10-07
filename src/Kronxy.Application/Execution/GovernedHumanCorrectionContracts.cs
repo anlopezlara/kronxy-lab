@@ -32,6 +32,7 @@ public sealed record GovernedHumanCorrectionEvidence
     public required string RequestSha256 { get; init; }
     public required IReadOnlyList<string> FailureEvidence { get; init; }
     public required IReadOnlyList<string> ExhaustedAiCorrectionEvidence { get; init; }
+    public IReadOnlyList<string> AutomaticCorrectionExhaustionEvidence { get; init; } = [];
     public required IReadOnlyList<string> AllowedPaths { get; init; }
     public required ValidatedDeveloperProposal Proposal { get; init; }
     public required DateTimeOffset RecordedAtUtc { get; init; }
@@ -55,13 +56,42 @@ public static class GovernedHumanCorrectionPolicy
         JobState state,
         bool isTerminal,
         bool hasValidFailureEvidence,
-        bool aiCorrectionExhausted,
+        bool rejectedAiCorrectionExhausted,
+        bool failedCorrectedRebuildExhausted,
         IReadOnlyList<string> allowedPaths) =>
         state == JobState.Building &&
         !isTerminal &&
         hasValidFailureEvidence &&
-        aiCorrectionExhausted &&
+        (rejectedAiCorrectionExhausted ||
+            failedCorrectedRebuildExhausted) &&
         allowedPaths is { Count: > 0 };
+
+    public static bool IsFailedCorrectedRebuildExhaustion(
+        ValidatedDeveloperProposal? correction,
+        ObservedChangeManifest? observedChanges,
+        BuildExecutionReport? correctedBuild)
+    {
+        if (correction is null ||
+            observedChanges is null ||
+            correctedBuild is null ||
+            correctedBuild.IsSuccess ||
+            BuildCorrectionNoOpPolicy.IsEntireNoOp(correction) ||
+            observedChanges.JobId != correctedBuild.JobId ||
+            observedChanges.RunId != correctedBuild.RunId ||
+            observedChanges.Entries is null)
+            return false;
+
+        return correction.Changes.All(change =>
+            observedChanges.Entries.Any(entry =>
+                string.Equals(
+                    entry.RelativePath,
+                    change.RelativePath,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    entry.FinalSha256,
+                    Hash(change.Content),
+                    StringComparison.Ordinal)));
+    }
 
     public static bool IsValidRequest(
         GovernedHumanCorrectionRequest? request,

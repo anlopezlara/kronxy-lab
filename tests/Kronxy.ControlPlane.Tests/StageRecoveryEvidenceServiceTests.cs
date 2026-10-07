@@ -477,6 +477,68 @@ public sealed class StageRecoveryEvidenceServiceTests
     }
 
     [Fact]
+    public async Task Failed_corrected_build_is_recoverable_as_exhaustion_evidence()
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => request.ArtifactType switch
+            {
+                ArtifactType.BuildCorrectionStandardOutput =>
+                    Success(request, "error CS0246"u8.ToArray()),
+                ArtifactType.BuildCorrectionReport => Success(
+                    request,
+                    JsonSerializer.SerializeToUtf8Bytes(
+                        new BuildExecutionReport(
+                            JobId,
+                            RunId,
+                            "Kronxy.sln",
+                            ToolExecutionOutcome.NonZeroExitCode,
+                            1,
+                            "TOOL_NONZERO_EXIT",
+                            DateTime.UtcNow,
+                            DateTime.UtcNow,
+                            TimeSpan.Zero))),
+                _ => throw new InvalidOperationException(
+                    $"Unexpected artifact {request.ArtifactType}.")
+            }
+        };
+        var service = new StageRecoveryEvidenceService(reader, Options());
+
+        StageRecoveryResult result = await service.CheckAsync(
+            Request(RecoveryStage.BuildCorrectionFailure));
+
+        Assert.Equal(StageRecoveryStatus.FailedExecution, result.Status);
+        Assert.Equal("error CS0246", result.BuildStandardOutput);
+        Assert.NotNull(result.BuildReport);
+        Assert.False(result.BuildReport.IsSuccess);
+    }
+
+    [Fact]
+    public async Task Successful_corrected_build_is_not_failure_evidence()
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => request.ArtifactType switch
+            {
+                ArtifactType.BuildCorrectionStandardOutput =>
+                    Success(request, "Build succeeded."u8.ToArray()),
+                ArtifactType.BuildCorrectionReport => Success(
+                    request,
+                    JsonSerializer.SerializeToUtf8Bytes(
+                        SuccessfulBuildReport())),
+                _ => throw new InvalidOperationException(
+                    $"Unexpected artifact {request.ArtifactType}.")
+            }
+        };
+        var service = new StageRecoveryEvidenceService(reader, Options());
+
+        StageRecoveryResult result = await service.CheckAsync(
+            Request(RecoveryStage.BuildCorrectionFailure));
+
+        Assert.True(result.IsCompleted);
+    }
+
+    [Fact]
     public async Task Successful_correction_build_is_preferred_over_original_failure()
     {
         var reader = new FakeArtifactReader

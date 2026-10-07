@@ -618,7 +618,7 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         request.CorrelationId,
                         cancellationToken);
                 StageRecoveryResult failedBuild = await CheckRecoveryEvidenceAsync(
-                        job, runId, RecoveryStage.Build,
+                        job, runId, RecoveryStage.BuildOriginalFailure,
                         request.CorrelationId, cancellationToken);
                 JobOperationResult? recoveryFailure =
                         RecoveryFailure(plan);
@@ -639,13 +639,40 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 ArtifactType.DeveloperBuildCorrectionRetryRejectedResponse or
                                 ArtifactType.DeveloperBuildCorrectionRetryRejectedStructuredResponse)
                         .ToArray();
+
+                StageRecoveryResult appliedCorrection =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.DeveloperBuildCorrection,
+                                request.CorrelationId, cancellationToken);
+                StageRecoveryResult observedCorrection =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.ObservedBuildCorrection,
+                                request.CorrelationId, cancellationToken);
+                StageRecoveryResult failedCorrectedBuild =
+                        await CheckRecoveryEvidenceAsync(
+                                job, runId,
+                                RecoveryStage.BuildCorrectionFailure,
+                                request.CorrelationId, cancellationToken);
+                bool failedCorrectedRebuildExhausted =
+                        appliedCorrection.IsCompleted &&
+                        observedCorrection.IsCompleted &&
+                        failedCorrectedBuild.Status ==
+                                StageRecoveryStatus.FailedExecution &&
+                        GovernedHumanCorrectionPolicy
+                                .IsFailedCorrectedRebuildExhaustion(
+                                        appliedCorrection.DeveloperProposal,
+                                        observedCorrection.ObservedChangeManifest,
+                                        failedCorrectedBuild.BuildReport);
                 if (!GovernedHumanCorrectionPolicy.IsEligible(
                         job.State,
                         job.IsTerminal,
                         hasValidFailureEvidence:
                                 failedBuild.Status ==
                                 StageRecoveryStatus.FailedExecution,
-                        aiCorrectionExhausted: exhausted.Length > 0,
+                        rejectedAiCorrectionExhausted: exhausted.Length > 0,
+                        failedCorrectedRebuildExhausted,
                         plan.PlannerPlan.CandidateFilesToModify))
                         return JobOperationResult.Failure(
                                 JobOperationKind.InvalidTransition,
@@ -722,6 +749,16 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         ExhaustedAiCorrectionEvidence = exhausted
                                 .Select(artifact => artifact.RelativePath)
                                 .ToArray(),
+                        AutomaticCorrectionExhaustionEvidence =
+                                failedCorrectedRebuildExhausted
+                                        ? artifacts.Where(artifact =>
+                                                artifact.ArtifactType is
+                                                        ArtifactType.DeveloperBuildCorrectionProposal or
+                                                        ArtifactType.ObservedBuildCorrectionManifest or
+                                                        ArtifactType.BuildCorrectionReport)
+                                                .Select(artifact => artifact.RelativePath)
+                                                .ToArray()
+                                        : [],
                         AllowedPaths = plan.PlannerPlan.CandidateFilesToModify,
                         Proposal = policy.Proposal,
                         RecordedAtUtc = _clock.UtcNow
