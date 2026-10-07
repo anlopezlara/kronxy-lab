@@ -40,7 +40,36 @@ public sealed class JobApplicationTests
                 FakeStageRecoveryEvidenceService RecoveryEvidence,
                 FakeReviewerExecutionService Reviewer,
                 FakeReviewDecisionPolicy ReviewPolicy,
-                FakeArtifactStore Artifacts);
+                FakeArtifactStore Artifacts,
+                FakeArtifactMetadataRepository ArtifactMetadata);
+
+        private sealed class FakeArtifactMetadataRepository : IArtifactMetadataRepository
+        {
+                public List<ArtifactRecord> Records { get; } = [];
+
+                public Task AddAsync(
+                        ArtifactRecord artifact,
+                        CancellationToken cancellationToken = default)
+                {
+                        Records.Add(artifact);
+                        return Task.CompletedTask;
+                }
+
+                public Task<ArtifactRecord?> GetByIdAsync(
+                        Guid artifactId,
+                        CancellationToken cancellationToken = default) =>
+                        Task.FromResult(Records.SingleOrDefault(
+                                artifact => artifact.ArtifactId == artifactId));
+
+                public Task<IReadOnlyList<ArtifactRecord>> GetByJobAndRunAsync(
+                        Guid jobId,
+                        Guid runId,
+                        CancellationToken cancellationToken = default) =>
+                        Task.FromResult<IReadOnlyList<ArtifactRecord>>(Records
+                                .Where(artifact => artifact.JobId == jobId &&
+                                        artifact.RunId == runId)
+                                .ToArray());
+        }
 
         private sealed class FakeDevelopmentAnalysisService(
                 DevelopmentChangeClassification classification) : IDevelopmentAnalysisService
@@ -2678,6 +2707,80 @@ public sealed class JobApplicationTests
                 }, hash => Assert.Equal(64, hash.Length));
         }
 
+        [Fact]
+        public async Task Human_review_approval_uses_latest_governed_source_independently_of_operation_correlation()
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob(
+                        "KRX-APPROVE-SEQUENTIAL-GOVERNED");
+                ConfigureApprovalEvidence(
+                        fixture,
+                        job,
+                        lineage: DeveloperProposalLineage.GovernedHumanCorrection);
+
+                Guid runId = new DeterministicJobRunIdProvider().Create(
+                        job.Id,
+                        job.AttemptCount);
+                const string sourceCorrelationId = "governed-human-correction-02";
+                const string approvalCorrelationId = "human-review-approval-v1";
+                string testCorrelationId = job.Transitions
+                        .Where(transition =>
+                                transition.FromState == JobState.Testing &&
+                                transition.ToState == JobState.Reviewing)
+                        .OrderByDescending(transition => transition.OccurredOnUtc)
+                        .Select(transition => transition.CorrelationId)
+                        .First();
+                DateTimeOffset recordedAt = DateTimeOffset.UtcNow;
+                AddArtifact(ArtifactType.GovernedHumanCorrectionRequest,
+                        sourceCorrelationId, recordedAt);
+                AddArtifact(ArtifactType.ObservedGovernedHumanCorrectionManifest,
+                        sourceCorrelationId, recordedAt.AddSeconds(1));
+                AddArtifact(ArtifactType.BuildGovernedHumanCorrectionReport,
+                        sourceCorrelationId, recordedAt.AddSeconds(2));
+                AddArtifact(ArtifactType.TestGovernedHumanCorrectionReport,
+                        testCorrelationId, recordedAt.AddSeconds(3));
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(
+                                job.Id,
+                                "human-review",
+                                approvalCorrelationId);
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(JobState.Completed, job.State);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == RecoveryStage.EffectiveDeveloperProposal &&
+                                request.CorrelationId == sourceCorrelationId);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == RecoveryStage.ObservedGovernedHumanCorrection &&
+                                request.CorrelationId == sourceCorrelationId);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == RecoveryStage.BuildGovernedHumanCorrection &&
+                                request.CorrelationId == sourceCorrelationId);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == RecoveryStage.TestGovernedHumanCorrection &&
+                                request.CorrelationId == testCorrelationId);
+                Assert.Contains(fixture.RecoveryEvidence.Requests,
+                        request => request.Stage == RecoveryStage.HumanReviewApproval &&
+                                request.CorrelationId == approvalCorrelationId);
+
+                void AddArtifact(
+                        ArtifactType artifactType,
+                        string correlationId,
+                        DateTimeOffset createdAt) =>
+                        fixture.ArtifactMetadata.Records.Add(new ArtifactRecord
+                        {
+                                ArtifactId = Guid.NewGuid(),
+                                JobId = job.Id,
+                                RunId = runId,
+                                ArtifactType = artifactType,
+                                RelativePath = $"test/{artifactType}.json",
+                                Sha256 = new string('a', 64),
+                                SizeBytes = 1,
+                                CreatedAtUtc = createdAt,
+                                CorrelationId = correlationId
+                        });
+        }
+
         [Theory]
         [InlineData(RecoveryStage.ReviewerOriginal)]
         [InlineData(RecoveryStage.ObservedGovernedHumanCorrection)]
@@ -2968,8 +3071,15 @@ public sealed class JobApplicationTests
                                                         : null,
                                         governedHumanCorrectionReceipt: lineage ==
                                                 DeveloperProposalLineage.GovernedHumanCorrection
-                                                        ? governedReceipt
+                                                ? governedReceipt
                                                         : null);
+                        if (request.Stage == RecoveryStage.GovernedHumanCorrection &&
+                            lineage == DeveloperProposalLineage.GovernedHumanCorrection)
+                                return StageRecoveryResult.Completed(
+                                        developerProposal: proposal,
+                                        developerProposalLineage: lineage,
+                                        governedHumanCorrection: governedEvidence,
+                                        governedHumanCorrectionReceipt: governedReceipt);
                         if (request.Stage == reviewerStage)
                                 return StageRecoveryResult.Completed(reviewerReview: review);
                         if (request.Stage == observedStage)
@@ -3853,6 +3963,7 @@ public sealed class JobApplicationTests
                 FakeReviewerExecutionService reviewer = new();
                 FakeReviewDecisionPolicy reviewPolicy = new();
                 FakeArtifactStore artifacts = new();
+                FakeArtifactMetadataRepository artifactMetadata = new();
 
                 IJobRunIdProvider runIdProvider =
                         new DeterministicJobRunIdProvider();
@@ -3880,6 +3991,7 @@ public sealed class JobApplicationTests
                                 reviewer,
                                 reviewPolicy,
                                 artifacts,
+                                artifactMetadata,
                                 developmentAnalysisService: developmentClassification is null
                                         ? null
                                         : new FakeDevelopmentAnalysisService(developmentClassification.Value));
@@ -3904,6 +4016,7 @@ public sealed class JobApplicationTests
                         recoveryEvidence,
                         reviewer,
                         reviewPolicy,
-                        artifacts);
+                        artifacts,
+                        artifactMetadata);
 	}
 }
