@@ -1,0 +1,39 @@
+@page "/jobs/create"
+@inject IKronxyApiClient Api
+@inject NavigationManager Navigation
+
+<PageTitle>Create Job · KRONXY</PageTitle>
+<div class="page-heading">
+    <div><a class="back" href="/jobs">← Jobs</a><p class="eyebrow">New operation</p><h1>Create Job</h1><p>Submit a request to the governed KRONXY Control Plane.</p></div>
+</div>
+
+@if (_error is not null) { <ApiError Error="_error" /> }
+<section class="panel form-stack">
+    <label>Request<textarea @bind="_request" rows="10" maxlength="20000" placeholder="Describe the requested change or analysis." disabled="@_submitting"></textarea></label>
+    <label>External ID <span class="hint">Optional; KRONXY generates one when empty.</span><input @bind="_externalId" maxlength="64" placeholder="KRX-000001" disabled="@_submitting" /></label>
+    @if (!string.IsNullOrWhiteSpace(_validation)) { <div class="alert error">@_validation</div> }
+    <div class="dialog-actions"><a class="button secondary" href="/jobs">Cancel</a><button class="button" disabled="@_submitting" @onclick="CreateAsync">@(_submitting ? "Creating…" : "Create Job")</button></div>
+</section>
+
+@code {
+    private string _request = string.Empty;
+    private string? _externalId;
+    private string? _validation;
+    private bool _submitting;
+    private KronxyApiException? _error;
+
+    private async Task CreateAsync()
+    {
+        if (_submitting) return;
+        _validation = string.IsNullOrWhiteSpace(_request) ? "Request is required." : null;
+        if (_validation is not null) return;
+        _submitting = true; _error = null;
+        try
+        {
+            JobDetailDto created = await Api.CreateJobAsync(_request.Trim(), string.IsNullOrWhiteSpace(_externalId) ? null : _externalId.Trim());
+            Navigation.NavigateTo($"/jobs/{created.Id}");
+        }
+        catch (KronxyApiException exception) { _error = exception; }
+        finally { _submitting = false; }
+    }
+}

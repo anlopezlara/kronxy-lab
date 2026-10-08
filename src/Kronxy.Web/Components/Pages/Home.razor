@@ -11,6 +11,11 @@ else
         <article class="metric"><span>Total Jobs</span><strong>@_jobs?.TotalItems</strong><small>Server-reported total</small></article>
         <article class="metric"><span>Current view</span><strong>@(_jobs?.Items.Count ?? 0)</strong><small>Most recently updated page</small></article>
     </section>
+    <section class="metric-grid bounded-groups">
+        <article class="metric"><span>Waiting for human</span><strong>@Group("WaitingHuman").Count</strong><small>Within the latest bounded page</small></article>
+        <article class="metric"><span>Active</span><strong>@Active.Count</strong><small>Within the latest bounded page</small></article>
+        <article class="metric"><span>Problems</span><strong>@Problems.Count</strong><small>Within the latest bounded page</small></article>
+    </section>
     <section class="panel"><div class="panel-heading"><h2>Recent jobs</h2><a href="/jobs">View all</a></div>
         @if (_jobs?.Items.Count == 0) { <div class="empty-state">No Jobs found.</div> }
         else { <table><thead><tr><th>External ID</th><th>State</th><th>Attempt</th><th>Updated</th><th></th></tr></thead><tbody>
@@ -19,7 +24,12 @@ else
     </section>
 }
 @code {
+    private static readonly string[] ActiveStates = ["Created","ContextBuilding","Planning","WorkspacePreparing","Developing","Building","Testing","Reviewing","WaitingAi","RetryPending"];
+    private static readonly string[] ProblemStates = ["Failed","Rejected","Cancelled","TimedOut","Interrupted"];
     private bool _loading; private HealthDto? _health; private JobPageDto? _jobs; private KronxyApiException? _error;
+    private IReadOnlyList<JobSummaryDto> Group(string state) => _jobs?.Items.Where(job => job.State == state).ToArray() ?? [];
+    private IReadOnlyList<JobSummaryDto> Active => _jobs?.Items.Where(job => ActiveStates.Contains(job.State)).ToArray() ?? [];
+    private IReadOnlyList<JobSummaryDto> Problems => _jobs?.Items.Where(job => ProblemStates.Contains(job.State)).ToArray() ?? [];
     protected override Task OnInitializedAsync() => LoadAsync();
-    private async Task LoadAsync() { _loading = true; _error = null; try { var health = Api.GetHealthAsync(); var jobs = Api.GetJobsAsync(1, 10); await Task.WhenAll(health, jobs); _health = health.Result; _jobs = jobs.Result; } catch (KronxyApiException ex) { _error = ex; } finally { _loading = false; } }
+    private async Task LoadAsync() { _loading = true; _error = null; try { var health = Api.GetHealthAsync(); var jobs = Api.GetJobsAsync(1, 25); await Task.WhenAll(health, jobs); _health = health.Result; _jobs = jobs.Result; } catch (KronxyApiException ex) { _error = ex; } finally { _loading = false; } }
 }

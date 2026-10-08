@@ -33,6 +33,113 @@ public sealed class KronxyApiClientTests
             request.RequestUri.AbsolutePath.Contains("resume") || request.RequestUri.AbsolutePath.Contains("cancel"));
     }
 
+    [Fact]
+    public async Task Create_job_posts_contract_once()
+    {
+        var handler = new RecordingHandler(JobJson);
+        JobDetailDto created = await Client(handler).CreateJobAsync("Implement UI", "KRX-009999");
+        Assert.Equal("KRX-1", created.ExternalId);
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("/api/jobs", request.RequestUri!.AbsolutePath);
+        Assert.Contains("Implement UI", Assert.Single(handler.Bodies));
+    }
+
+    [Theory]
+    [InlineData("advance", "/api/jobs/10000000-0000-4000-8000-000000000001/advance")]
+    [InlineData("cancel", "/api/jobs/10000000-0000-4000-8000-000000000001/cancel")]
+    [InlineData("approve", "/api/jobs/10000000-0000-4000-8000-000000000001/human-review/approve")]
+    [InlineData("supersede", "/api/jobs/10000000-0000-4000-8000-000000000001/reviewer/human-review-correction/supersede")]
+    public async Task Simple_action_posts_expected_route_once(string action, string route)
+    {
+        var handler = new RecordingHandler("""{"kind":"Success"}""");
+        var client = Client(handler); Guid jobId = Guid.Parse("10000000-0000-4000-8000-000000000001");
+        _ = action switch
+        {
+            "advance" => await client.AdvanceJobAsync(jobId),
+            "cancel" => await client.CancelJobAsync(jobId),
+            "approve" => await client.ApproveHumanReviewAsync(jobId),
+            _ => await client.SupersedeReviewerCorrectionAsync(jobId)
+        };
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method); Assert.Equal(route, request.RequestUri!.AbsolutePath);
+    }
+
+    [Theory]
+    [InlineData("resume", "/api/jobs/10000000-0000-4000-8000-000000000001/resume")]
+    [InlineData("retry", "/api/jobs/10000000-0000-4000-8000-000000000001/retry-pending")]
+    public async Task Reason_action_posts_reason_and_expected_route(string action, string route)
+    {
+        var handler = new RecordingHandler("""{"kind":"Success"}"""); var client = Client(handler);
+        Guid jobId = Guid.Parse("10000000-0000-4000-8000-000000000001");
+        if (action == "resume") await client.ResumeJobAsync(jobId, "operator reason");
+        else await client.RetryPendingAsync(jobId, "operator reason");
+        Assert.Equal(route, Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+        Assert.Contains("operator reason", Assert.Single(handler.Bodies));
+    }
+
+    [Fact]
+    public async Task Architecture_decision_posts_numeric_public_contract()
+    {
+        var handler = new RecordingHandler("""{"kind":"Success"}"""); var client = Client(handler);
+        await client.ResolveArchitectureDecisionAsync(Guid.Parse("10000000-0000-4000-8000-000000000001"),
+            new(ArchitectureDecisionDto.PreserveExistingArchitecture, "Keep boundaries", false, null));
+        string body = Assert.Single(handler.Bodies);
+        Assert.Contains("\"decision\":0", body); Assert.Contains("Keep boundaries", body);
+    }
+
+    [Fact]
+    public async Task Human_review_changes_posts_actual_correction_contract()
+    {
+        var handler = new RecordingHandler("""{"kind":"Success"}"""); var client = Client(handler);
+        await client.RequestHumanReviewChangesAsync(Guid.Parse("10000000-0000-4000-8000-000000000001"),
+            [new("src/Kronxy.Web/Program.cs", "Keep the HTTP boundary")]);
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.EndsWith("/human-review/changes-required", request.RequestUri!.AbsolutePath);
+        string body = Assert.Single(handler.Bodies);
+        Assert.Contains("requiredCorrections", body); Assert.Contains("relativePath", body); Assert.Contains("instruction", body);
+    }
+
+    [Fact]
+    public async Task Human_correction_client_uses_governed_hash_contract()
+    {
+        var handler = new RecordingHandler("""{"kind":"Success"}"""); var client = Client(handler);
+        await client.ApplyHumanCorrectionAsync(Guid.Parse("10000000-0000-4000-8000-000000000001"), "Governed fix",
+            [new("src/a.cs", new string('a', 64), "new content")]);
+        Assert.EndsWith("/human-correction", Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+        string body = Assert.Single(handler.Bodies);
+        Assert.Contains("expectedContentSha256", body); Assert.Contains("Governed fix", body);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "Validation error")]
+    [InlineData(HttpStatusCode.Conflict, "Conflict")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "Service unavailable")]
+    public async Task Governed_error_statuses_are_safe(HttpStatusCode status, string expected)
+    {
+        var client = Client(new RecordingHandler("not-json", status, "text/plain"));
+        KronxyApiException error = await Assert.ThrowsAsync<KronxyApiException>(() => client.GetHealthAsync());
+        Assert.Equal(expected, error.Message);
+    }
+
+    [Fact]
+    public void Local_operator_generates_distinct_visible_correlations()
+    {
+        var identity = new TestIdentity();
+        string first = identity.NewCorrelationId("advance"); string second = identity.NewCorrelationId("advance");
+        Assert.NotEqual(first, second); Assert.StartsWith("web-advance-", first);
+    }
+
+    [Fact]
+    public void Submission_guard_rejects_duplicate_until_operation_completes()
+    {
+        var guard = new OperatorActionGuard();
+        Assert.True(guard.TryBegin()); Assert.True(guard.IsActive);
+        Assert.False(guard.TryBegin());
+        guard.Complete();
+        Assert.True(guard.TryBegin());
+    }
+
     [Theory]
     [InlineData("Completed", "success")]
     [InlineData("WaitingHuman", "warning")]
@@ -77,16 +184,20 @@ public sealed class KronxyApiClientTests
         Assert.DoesNotContain("..", artifact.ApiPath);
     }
 
+    private const string JobJson = """{"id":"10000000-0000-4000-8000-000000000001","externalId":"KRX-1","state":"Created","runId":"10000000-0000-4000-8000-000000000001"}""";
+
     private static KronxyApiClient Client(HttpMessageHandler handler) =>
-        new(new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000") });
+        new(new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000") }, new TestIdentity());
 
     private sealed class RecordingHandler(string body, HttpStatusCode status = HttpStatusCode.OK,
         string mediaType = "application/json") : HttpMessageHandler
     {
         public List<HttpRequestMessage> Requests { get; } = [];
+        public List<string> Bodies { get; } = [];
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Requests.Add(request);
+            if (request.Content is not null) Bodies.Add(request.Content.ReadAsStringAsync(token).GetAwaiter().GetResult());
             return Task.FromResult(new HttpResponseMessage(status)
             { Content = new StringContent(body, Encoding.UTF8, mediaType) });
         }
@@ -110,5 +221,11 @@ public sealed class KronxyApiClientTests
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             { Content = new StringContent(body, Encoding.UTF8, path.Contains("/artifacts/") ? "application/octet-stream" : "application/json") });
         }
+    }
+
+    private sealed class TestIdentity : IOperatorIdentity
+    {
+        public string Actor => "LocalOperator";
+        public string NewCorrelationId(string operation) => $"web-{operation}-{Guid.NewGuid():N}";
     }
 }

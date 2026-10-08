@@ -5,6 +5,14 @@ namespace Kronxy.Web.Presentation;
 
 public static class OperatorPresentation
 {
+    public static string StateLabel(string? state) => state switch
+    {
+        "WaitingHuman" => "Waiting for human decision",
+        "WaitingAi" => "Waiting for AI",
+        "RetryPending" => "Retry pending",
+        _ => state ?? "Unknown"
+    };
+
     public static string StateClass(string? state) => state switch
     {
         "Completed" => "success",

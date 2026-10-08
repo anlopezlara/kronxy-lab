@@ -1,7 +1,7 @@
 @page "/jobs"
 @inject IKronxyApiClient Api
 <PageTitle>Jobs · KRONXY</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Operations</p><h1>Jobs</h1><p>Server-paged job inventory.</p></div><button class="button" @onclick="LoadAsync">Refresh</button></div>
+<div class="page-heading"><div><p class="eyebrow">Operations</p><h1>Jobs</h1><p>Server-paged job inventory.</p></div><div class="heading-actions"><a class="button" href="/jobs/create">Create Job</a><button class="button secondary" @onclick="LoadAsync">Refresh</button></div></div>
 <section class="panel filters">
     <label>External ID<input @bind="_externalId" placeholder="KRX-005771" /></label>
     <label>State<select @bind="_state"><option value="">All states</option>@foreach(var state in States){<option>@state</option>}</select></label>

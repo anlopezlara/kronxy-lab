@@ -3,6 +3,7 @@ using Kronxy.Web.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+builder.Services.AddSingleton<IOperatorIdentity, ConfiguredOperatorIdentity>();
 builder.Services.AddHttpClient<IKronxyApiClient, KronxyApiClient>((services, client) =>
 {
     string baseUrl = services.GetRequiredService<IConfiguration>()["KronxyApi:BaseUrl"]

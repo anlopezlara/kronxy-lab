@@ -12,16 +12,17 @@
     </aside>
     <main>
         <header class="topbar">
-            <div><strong>Operator Console</strong><span class="muted">Read-only</span></div>
+            <div><strong>Operator Console</strong><span class="muted">Trusted local mode</span></div>
             <span class="status-dot @(_healthy ? "healthy" : "unhealthy")">@(_healthy ? "API online" : "API unavailable")</span>
         </header>
-        <div class="content">@Body</div>
+        <div class="content">@if (!_healthy) { <div class="alert error global-banner"><strong>KRONXY API unavailable</strong><span>Read and action operations are temporarily unavailable.</span><button class="button secondary" @onclick="CheckHealthAsync">Retry</button></div> }@Body</div>
     </main>
 </div>
 
 @code {
     private bool _healthy;
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync() => CheckHealthAsync();
+    private async Task CheckHealthAsync()
     {
         try { _healthy = (await Api.GetHealthAsync()).Status.Equals("Healthy", StringComparison.OrdinalIgnoreCase); }
         catch { _healthy = false; }

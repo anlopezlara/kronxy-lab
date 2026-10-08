@@ -1,0 +1,20 @@
+button, input, select, textarea { font: inherit; }
+textarea { resize: vertical; }
+.heading-actions, .dialog-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.compact-field { display: grid; gap: 4px; color: #8295a9; font-size: .72rem; }
+.compact-field select,
+.form-stack input, .form-stack textarea,
+.action-dialog input, .action-dialog textarea, .action-dialog select {
+    background: #081422; border: 1px solid #2b4056; border-radius: 6px;
+    color: #edf5fb; padding: 10px; width: 100%;
+}
+.form-stack, .action-dialog { display: grid; gap: 16px; }
+.form-stack label, .action-dialog label { display: grid; gap: 7px; color: #a9b9c9; font-weight: 650; }
+.action-dialog { border-color: #3c766f; }
+.dialog-actions { justify-content: flex-end; }
+.alert.success { background: #103b32; border: 1px solid #28715d; color: #9aebcd; }
+.alert.warning { background: #4a3514; border: 1px solid #7f5d27; color: #ffe0a3; }
+.action-reason { display: block; color: #8295a9; margin-top: 9px; }
+.check { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
+.check input { width: auto; }
+.form-stack textarea, .action-dialog textarea { min-height: 90px; }

@@ -52,3 +52,22 @@ public sealed record LineageDto(
 public sealed record AllowedActionDto(string Action, bool Allowed, string? ReasonCode);
 
 public sealed record ApiErrorDto(string? Code, string? Message);
+
+public sealed record OperationResultDto(string Kind);
+
+public sealed record HumanReviewCorrectionDto(string RelativePath, string Instruction);
+
+public enum ArchitectureDecisionDto
+{
+    PreserveExistingArchitecture = 0,
+    AuthorizeScopeExpansion = 1,
+    SupersedeRequest = 2,
+    NoCodeChangeRequired = 3
+}
+
+public sealed record ArchitectureDecisionInputDto(
+    ArchitectureDecisionDto Decision, string Reason, bool FollowUpRequired,
+    string? FollowUpDescription);
+
+public sealed record HumanFileReplacementDto(
+    string RelativePath, string ExpectedContentSha256, string Content);
