@@ -1,0 +1,11 @@
+@page "/system"
+@inject IKronxyApiClient Api
+@inject IConfiguration Configuration
+<PageTitle>System · KRONXY</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Runtime</p><h1>System</h1><p>Connectivity and required dependency health.</p></div><button class="button" @onclick="LoadAsync">Refresh</button></div>
+@if (_loading) { <div class="loading">Checking system health…</div> }
+else if (_error is not null) { <ApiError Error="_error" Retry="LoadAsync" /> }
+else if (_health is not null) {
+<section class="metric-grid"><article class="metric"><span>Overall</span><strong>@_health.Status</strong></article><article class="metric"><span>API</span><strong>@_health.Api</strong></article><article class="metric"><span>Database</span><strong>@_health.Database</strong></article></section>
+<section class="panel definition-grid"><div><span>API Base URL</span><strong>@Configuration["KronxyApi:BaseUrl"]</strong></div><div><span>Frontend</span><strong>Kronxy.Web · v1 read-only</strong></div></section> }
+@code { private bool _loading; private HealthDto? _health; private KronxyApiException? _error; protected override Task OnInitializedAsync()=>LoadAsync(); private async Task LoadAsync(){_loading=true;_error=null;try{_health=await Api.GetHealthAsync();}catch(KronxyApiException ex){_error=ex;}finally{_loading=false;}} }

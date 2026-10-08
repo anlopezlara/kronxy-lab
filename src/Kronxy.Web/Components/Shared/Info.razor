@@ -1,0 +1,2 @@
+<div class="info"><span>@Label</span><strong class="@(Value?.Length>30?"mono":"")">@(string.IsNullOrWhiteSpace(Value)?"—":Value)</strong></div>
+@code{[Parameter,EditorRequired]public string Label{get;set;}=string.Empty;[Parameter]public string? Value{get;set;}}

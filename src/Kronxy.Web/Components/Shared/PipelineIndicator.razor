@@ -1,0 +1,18 @@
+@{
+    string[] stages = ["Created", "ContextBuilding", "DevelopmentAnalysis", "Planning", "WorkspacePreparing",
+        "Developing", "SafeChange", "ObservedChanges", "Building", "Testing", "Reviewing", "WaitingHuman", "Completed"];
+}
+<div class="pipeline" aria-label="Presentation-only workflow indicator">
+    @foreach (string stage in stages)
+    {
+        <div class="pipeline-stage @(stage == State ? "current" : "")">
+            <span></span><small>@stage</small>
+        </div>
+    }
+    @if (State is "RetryPending" or "WaitingAi" or "Cancelled")
+    {
+        <div class="pipeline-exception"><StatusBadge Value="@State" /></div>
+    }
+</div>
+<p class="hint">Presentation only. The API state above is authoritative.</p>
+@code { [Parameter, EditorRequired] public string State { get; set; } = string.Empty; }

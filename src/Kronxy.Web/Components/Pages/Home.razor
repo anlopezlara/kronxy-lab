@@ -1,0 +1,25 @@
+@page "/"
+@inject IKronxyApiClient Api
+<PageTitle>Dashboard · KRONXY</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Overview</p><h1>Dashboard</h1><p>Current operational visibility from KRONXY API.</p></div><button class="button" @onclick="LoadAsync">Refresh</button></div>
+@if (_loading) { <div class="loading">Loading operational data…</div> }
+else if (_error is not null) { <ApiError Error="_error" Retry="LoadAsync" /> }
+else
+{
+    <section class="metric-grid">
+        <article class="metric"><span>System</span><strong>@_health?.Status</strong><small>API @_health?.Api · Database @_health?.Database</small></article>
+        <article class="metric"><span>Total Jobs</span><strong>@_jobs?.TotalItems</strong><small>Server-reported total</small></article>
+        <article class="metric"><span>Current view</span><strong>@(_jobs?.Items.Count ?? 0)</strong><small>Most recently updated page</small></article>
+    </section>
+    <section class="panel"><div class="panel-heading"><h2>Recent jobs</h2><a href="/jobs">View all</a></div>
+        @if (_jobs?.Items.Count == 0) { <div class="empty-state">No Jobs found.</div> }
+        else { <table><thead><tr><th>External ID</th><th>State</th><th>Attempt</th><th>Updated</th><th></th></tr></thead><tbody>
+        @foreach (var job in _jobs!.Items) { <tr><td><strong>@job.ExternalId</strong></td><td><StatusBadge Value="@job.State" /></td><td>@job.AttemptCount</td><td>@job.UpdatedOnUtc.ToLocalTime().ToString("g")</td><td><a href="@($"/jobs/{job.JobId}")">Open</a></td></tr> }
+        </tbody></table> }
+    </section>
+}
+@code {
+    private bool _loading; private HealthDto? _health; private JobPageDto? _jobs; private KronxyApiException? _error;
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync() { _loading = true; _error = null; try { var health = Api.GetHealthAsync(); var jobs = Api.GetJobsAsync(1, 10); await Task.WhenAll(health, jobs); _health = health.Result; _jobs = jobs.Result; } catch (KronxyApiException ex) { _error = ex; } finally { _loading = false; } }
+}

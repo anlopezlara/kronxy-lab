@@ -1,0 +1,24 @@
+@page "/jobs"
+@inject IKronxyApiClient Api
+<PageTitle>Jobs · KRONXY</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">Operations</p><h1>Jobs</h1><p>Server-paged job inventory.</p></div><button class="button" @onclick="LoadAsync">Refresh</button></div>
+<section class="panel filters">
+    <label>External ID<input @bind="_externalId" placeholder="KRX-005771" /></label>
+    <label>State<select @bind="_state"><option value="">All states</option>@foreach(var state in States){<option>@state</option>}</select></label>
+    <label>Page size<select @bind="_pageSize">@foreach(var size in PageSizes){<option value="@size">@size</option>}</select></label>
+    <button class="button" @onclick="ApplyFiltersAsync">Apply</button>
+</section>
+@if (_loading) { <div class="loading">Loading Jobs…</div> }
+else if (_error is not null) { <ApiError Error="_error" Retry="LoadAsync" /> }
+else if (_result?.Items.Count == 0) { <div class="empty-state"><h2>No Jobs found</h2><p>Adjust filters and try again.</p></div> }
+else if (_result is not null) {
+<section class="panel table-wrap"><table><thead><tr><th>External ID</th><th>State</th><th>Attempt</th><th>Human review</th><th>Last error</th><th>Updated</th><th></th></tr></thead><tbody>
+@foreach(var job in _result.Items){<tr><td><strong>@job.ExternalId</strong><small class="mono">@job.JobId</small></td><td><StatusBadge Value="@job.State" /></td><td>@job.AttemptCount</td><td>@(job.HumanReviewRequired ? "Required" : "No")</td><td><span class="error-cell">@(job.LastErrorCode ?? "—")</span><small>@job.LastErrorMessage</small></td><td>@job.UpdatedOnUtc.ToLocalTime().ToString("g")</td><td><a class="button secondary" href="@($"/jobs/{job.JobId}")">Open</a></td></tr>}
+</tbody></table>
+<footer class="pagination"><span>Page @_result.Page of @Math.Max(1,_result.TotalPages) · @_result.TotalItems Jobs</span><div><button class="button secondary" disabled="@(_page<=1)" @onclick="PreviousAsync">Previous</button><button class="button secondary" disabled="@(_page>=_result.TotalPages)" @onclick="NextAsync">Next</button></div></footer></section>}
+@code {
+    private static readonly int[] PageSizes=[10,25,50,100]; private static readonly string[] States=["Created","ContextBuilding","Planning","WorkspacePreparing","Developing","Building","Testing","Reviewing","WaitingHuman","WaitingAi","RetryPending","Completed","Failed","Rejected","Cancelled","TimedOut","Interrupted"];
+    private int _page=1,_pageSize=25; private string? _externalId,_state; private bool _loading; private JobPageDto? _result; private KronxyApiException? _error;
+    protected override Task OnInitializedAsync()=>LoadAsync(); private async Task LoadAsync(){_loading=true;_error=null;try{_result=await Api.GetJobsAsync(_page,_pageSize,_externalId,_state);}catch(KronxyApiException ex){_error=ex;}finally{_loading=false;}}
+    private Task ApplyFiltersAsync(){_page=1;return LoadAsync();} private Task PreviousAsync(){_page=Math.Max(1,_page-1);return LoadAsync();} private Task NextAsync(){_page++;return LoadAsync();}
+}

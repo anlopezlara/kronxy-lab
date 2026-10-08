@@ -1,0 +1,29 @@
+@inherits LayoutComponentBase
+@inject IKronxyApiClient Api
+
+<div class="shell">
+    <aside class="sidebar">
+        <a class="brand" href="/"><span>KRONXY</span><small>Development Agent</small></a>
+        <nav>
+            <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
+            <NavLink href="/jobs">Jobs</NavLink>
+            <NavLink href="/system">System</NavLink>
+        </nav>
+    </aside>
+    <main>
+        <header class="topbar">
+            <div><strong>Operator Console</strong><span class="muted">Read-only</span></div>
+            <span class="status-dot @(_healthy ? "healthy" : "unhealthy")">@(_healthy ? "API online" : "API unavailable")</span>
+        </header>
+        <div class="content">@Body</div>
+    </main>
+</div>
+
+@code {
+    private bool _healthy;
+    protected override async Task OnInitializedAsync()
+    {
+        try { _healthy = (await Api.GetHealthAsync()).Status.Equals("Healthy", StringComparison.OrdinalIgnoreCase); }
+        catch { _healthy = false; }
+    }
+}

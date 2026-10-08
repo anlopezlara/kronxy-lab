@@ -1,0 +1,14 @@
+@if (Error is not null)
+{
+    <div class="alert error" role="alert">
+        <strong>@KronxyApiException.Category(Error.StatusCode)</strong>
+        <span>@Error.Message</span>
+        <code>@Error.Code@if (Error.StatusCode is not null) { <text> · HTTP @((int)Error.StatusCode)</text> }</code>
+        @if (Retry.HasDelegate) { <button class="button secondary" @onclick="Retry">Retry</button> }
+    </div>
+}
+
+@code {
+    [Parameter] public KronxyApiException? Error { get; set; }
+    [Parameter] public EventCallback Retry { get; set; }
+}
