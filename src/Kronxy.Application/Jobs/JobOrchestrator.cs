@@ -4001,6 +4001,11 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         CancellationToken cancellationToken =
                                 default(CancellationToken))
         {
+                if (!ValidGovernedActionIdentity(actor, correlationId))
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
                 Job? job =
                         await _jobRepository
                                 .GetByIdAsync(
@@ -4057,6 +4062,11 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         CancellationToken cancellationToken =
                                 default(CancellationToken))
         {
+                if (!ValidGovernedActionIdentity(actor, correlationId))
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.StageRecoveryFailed);
+
                 Job? job =
                         await _jobRepository
                                 .GetByIdAsync(
@@ -4090,4 +4100,14 @@ public sealed class JobOrchestrator : IJobOrchestrator
 
                 return JobOperationResult.Success();
         }
+
+        private static bool ValidGovernedActionIdentity(
+                string actor,
+                string correlationId) =>
+                !string.IsNullOrWhiteSpace(actor) &&
+                !string.IsNullOrWhiteSpace(correlationId) &&
+                actor.Length <= 200 &&
+                correlationId.Length <= 200 &&
+                actor.IndexOfAny(['\0', '\r', '\n']) < 0 &&
+                correlationId.IndexOfAny(['\0', '\r', '\n']) < 0;
 }

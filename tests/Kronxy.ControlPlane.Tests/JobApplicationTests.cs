@@ -481,6 +481,88 @@ public sealed class JobApplicationTests
 		Assert.Equal<int>(transitionCount, created.Value.Transitions.Count);
 	}
 
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task RetryPending_rejects_blank_correlation_before_mutation(
+                string correlationId)
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync(
+                        "request", "KRX-RETRY-BLANK");
+                await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "advance");
+                int attemptCount = created.Value.AttemptCount;
+                int transitionCount = created.Value.Transitions.Count;
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .MarkRetryPendingAsync(
+                                created.Value.Id,
+                                "retry",
+                                "orchestrator",
+                                correlationId);
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobOperationKind.PermanentFailure, result.Kind);
+                Assert.Equal(JobState.ContextBuilding, created.Value.State);
+                Assert.Null(created.Value.ResumeState);
+                Assert.Equal(attemptCount, created.Value.AttemptCount);
+                Assert.Equal(transitionCount, created.Value.Transitions.Count);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task Resume_rejects_blank_correlation_before_mutation(
+                string correlationId)
+        {
+                Fixture fixture = CreateFixture();
+                Result<Job> created = await fixture.Service.CreateAsync(
+                        "request", "KRX-RESUME-BLANK");
+                await fixture.Orchestrator.AdvanceAsync(
+                        created.Value.Id, "orchestrator", "advance");
+                await fixture.Orchestrator.MarkRetryPendingAsync(
+                        created.Value.Id, "retry", "orchestrator", "retry");
+                int attemptCount = created.Value.AttemptCount;
+                int transitionCount = created.Value.Transitions.Count;
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ResumeAsync(
+                                created.Value.Id,
+                                "resume",
+                                "orchestrator",
+                                correlationId);
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobOperationKind.PermanentFailure, result.Kind);
+                Assert.Equal(JobState.RetryPending, created.Value.State);
+                Assert.Equal(JobState.ContextBuilding, created.Value.ResumeState);
+                Assert.Equal(attemptCount, created.Value.AttemptCount);
+                Assert.Equal(transitionCount, created.Value.Transitions.Count);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task Human_review_approval_rejects_blank_correlation(
+                string correlationId)
+        {
+                (Fixture fixture, Job job) = await WaitingHumanJob(
+                        "KRX-APPROVE-BLANK");
+                ConfigureApprovalEvidence(fixture, job);
+
+                JobOperationResult result = await fixture.Orchestrator
+                        .ApproveHumanReviewAsync(
+                                job.Id,
+                                "human-review",
+                                correlationId);
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(JobOperationKind.PermanentFailure, result.Kind);
+                Assert.Equal(JobState.WaitingHuman, job.State);
+                Assert.Empty(fixture.Artifacts.Writes);
+        }
+
 	[Fact]
 	public async Task Retry_StopsAtConfiguredAttemptLimit()
 	{
