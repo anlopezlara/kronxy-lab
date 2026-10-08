@@ -3,6 +3,7 @@ using Kronxy.Application.Jobs;
 using Kronxy.Application.Execution;
 using Kronxy.Domain.Abstractions;
 using Kronxy.Domain.Jobs;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Kronxy.Api.Controllers.Jobs;
@@ -331,16 +332,16 @@ public sealed class JobsController : ControllerBase
         string? ExternalId);
 
     public sealed record JobActionRequest(
-        [property: Required, RegularExpression(@".*\S.*")]
+        [Required, RegularExpression(@".*\S.*")]
         string Actor,
-        [property: Required, RegularExpression(@".*\S.*")]
+        [Required, RegularExpression(@".*\S.*")]
         string CorrelationId);
 
     public sealed record JobReasonActionRequest(
-        [property: Required, RegularExpression(@".*\S.*")]
+        [Required, RegularExpression(@".*\S.*")]
         string Reason,
-        [property: Required, RegularExpression(@".*\S.*")]
+        [Required, RegularExpression(@".*\S.*")]
         string Actor,
-        [property: Required, RegularExpression(@".*\S.*")]
+        [Required, RegularExpression(@".*\S.*")]
         string CorrelationId);
 }

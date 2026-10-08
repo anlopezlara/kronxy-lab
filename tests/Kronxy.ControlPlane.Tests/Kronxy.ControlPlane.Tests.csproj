@@ -19,10 +19,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../../src/Kronxy.Application/Kronxy.Application.csproj" />
     <ProjectReference Include="../../src/Kronxy.Domain/Kronxy.Domain.csproj" />
     <ProjectReference Include="../../src/Kronxy.Infrastructure/Kronxy.Infrastructure.csproj" />
     <ProjectReference Include="../../tools/KRONXY.Context/KRONXY.Context.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../../src/Kronxy.Api/Controllers/Jobs/JobsController.cs"
+             Link="Api/JobsController.cs" />
   </ItemGroup>
 
 </Project>
