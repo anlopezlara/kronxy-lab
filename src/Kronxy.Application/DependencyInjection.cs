@@ -30,6 +30,7 @@ public static class DependencyInjection
 
         services.AddScoped<IJobService, JobService>();
         services.AddScoped<IJobOrchestrator, JobOrchestrator>();
+        services.AddScoped<IOperatorJobService, OperatorJobService>();
 
         return services;
     }

@@ -32,6 +32,10 @@
   <ItemGroup>
     <Compile Include="../../src/Kronxy.Api/Controllers/Jobs/JobsController.cs"
              Link="Api/JobsController.cs" />
+    <Compile Include="../../src/Kronxy.Api/Controllers/Jobs/OperatorJobsController.cs"
+             Link="Api/OperatorJobsController.cs" />
+    <Compile Include="../../src/Kronxy.Api/Controllers/HealthController.cs"
+             Link="Api/HealthController.cs" />
   </ItemGroup>
 
 </Project>

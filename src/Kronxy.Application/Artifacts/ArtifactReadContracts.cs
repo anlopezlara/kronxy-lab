@@ -62,4 +62,14 @@ public interface IArtifactReader
     Task<ArtifactReadResult> ReadAsync(
         ArtifactReadRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<ArtifactReadResult> ReadByIdAsync(
+        Guid artifactId,
+        Guid jobId,
+        Guid runId,
+        long maxBytes = 0,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(ArtifactReadResult.Failure(
+            ArtifactReadFailureKind.NotFound,
+            "ARTIFACT_READ_BY_ID_NOT_SUPPORTED"));
 }

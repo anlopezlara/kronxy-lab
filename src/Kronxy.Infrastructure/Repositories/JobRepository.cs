@@ -20,4 +20,21 @@ internal sealed class JobRepository : Repository<Job>, IJobRepository
                 job => job.ExternalId == externalId,
                 cancellationToken);
     }
+
+    public async Task<(IReadOnlyList<Job> Items, int TotalItems)> GetPageAsync(
+        int page, int pageSize, string? externalId, JobState? state,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<Job> query = DbContext.Set<Job>().AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(externalId))
+            query = query.Where(job => job.ExternalId == externalId.Trim());
+        if (state.HasValue)
+            query = query.Where(job => job.State == state.Value);
+
+        int total = await query.CountAsync(cancellationToken);
+        List<Job> items = await query.OrderByDescending(job => job.CreatedOnUtc)
+            .ThenBy(job => job.Id).Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync(cancellationToken);
+        return (items, total);
+    }
 }

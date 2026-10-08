@@ -14,10 +14,12 @@ public sealed class JobsController : ControllerBase
 {
     private readonly IJobService _jobService;
     private readonly IJobOrchestrator _jobOrchestrator;
+    private readonly IJobRunIdProvider _jobRunIdProvider;
 
     public JobsController(
         IJobService jobService,
-        IJobOrchestrator jobOrchestrator)
+        IJobOrchestrator jobOrchestrator,
+        IJobRunIdProvider? jobRunIdProvider = null)
     {
         _jobService =
             jobService ??
@@ -26,6 +28,9 @@ public sealed class JobsController : ControllerBase
         _jobOrchestrator =
             jobOrchestrator ??
             throw new ArgumentNullException(nameof(jobOrchestrator));
+
+        _jobRunIdProvider =
+            jobRunIdProvider ?? new DeterministicJobRunIdProvider();
     }
 
     [HttpPost]
@@ -279,7 +284,7 @@ public sealed class JobsController : ControllerBase
         };
     }
 
-    private static object ToJobResponse(
+    private object ToJobResponse(
         Job job)
     {
         return new
@@ -291,6 +296,7 @@ public sealed class JobsController : ControllerBase
             resumeState =
                 job.ResumeState?.ToString(),
             attemptCount = job.AttemptCount,
+            runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount),
             humanReviewRequired = job.State == JobState.WaitingHuman,
             baseRepositoryHead =
                 job.BaseRepositoryHead,

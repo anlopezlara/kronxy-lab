@@ -10,5 +10,10 @@ public interface IJobRepository
 
 	Task<Job?> GetByExternalIdAsync(string externalId, CancellationToken cancellationToken = default(CancellationToken));
 
+	Task<(IReadOnlyList<Job> Items, int TotalItems)> GetPageAsync(
+		int page, int pageSize, string? externalId, JobState? state,
+		CancellationToken cancellationToken = default) =>
+		Task.FromResult(((IReadOnlyList<Job>)Array.Empty<Job>(), 0));
+
 	void Add(Job job);
 }

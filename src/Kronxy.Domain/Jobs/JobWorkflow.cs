@@ -73,4 +73,21 @@ public static class JobWorkflow
             _ => false
         };
     }
+
+    public static bool IsOperatorActionAllowed(Job job, string action)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        return action switch
+        {
+            "advance" => DetermineNextAutomaticState(job.State).HasValue,
+            "resume" => job.State is JobState.WaitingAi or JobState.RetryPending && job.ResumeState.HasValue,
+            "retryPending" => IsOperationalState(job.State) && job.AttemptCount < job.Limits.MaxAttempts,
+            "cancel" => !job.IsTerminal,
+            "humanReviewApprove" or "humanReviewChangesRequired" or "humanCorrection" =>
+                job.State == JobState.WaitingHuman,
+            "architectureDecision" => job.State == JobState.WaitingHuman,
+            "reviewerHumanReviewCorrectionSupersede" => job.State == JobState.Reviewing,
+            _ => false
+        };
+    }
 }

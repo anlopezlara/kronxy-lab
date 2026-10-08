@@ -295,6 +295,49 @@ public sealed class FileSystemArtifactReader :
         }
     }
 
+    public async Task<ArtifactReadResult> ReadByIdAsync(
+        Guid artifactId, Guid jobId, Guid runId, long maxBytes = 0,
+        CancellationToken cancellationToken = default)
+    {
+        if (artifactId == Guid.Empty || jobId == Guid.Empty || runId == Guid.Empty)
+            return Failure(ArtifactReadFailureKind.InvalidRequest, "ARTIFACT_READ_INVALID_REQUEST");
+
+        ArtifactRecord? metadata = await metadataRepository.GetByIdAsync(
+            artifactId, cancellationToken).ConfigureAwait(false);
+        if (metadata is null || metadata.JobId != jobId || metadata.RunId != runId)
+            return Failure(ArtifactReadFailureKind.NotFound, "ARTIFACT_READ_NOT_FOUND");
+
+        return await ReadExactAsync(metadata, maxBytes, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ArtifactReadResult> ReadExactAsync(
+        ArtifactRecord artifact, long maxBytes, CancellationToken cancellationToken)
+    {
+        long limit = maxBytes > 0 ? Math.Min(maxBytes, options.MaxArtifactBytes) : options.MaxArtifactBytes;
+        try
+        {
+            if (!IsSafeDirectory(rootPath) || !IsSafeRelativePath(artifact.RelativePath))
+                return Failure(ArtifactReadFailureKind.UnsafePath, "ARTIFACT_READ_PATH_UNSAFE");
+            string candidate = Path.GetFullPath(Path.Combine(rootPath,
+                artifact.RelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if (!IsUnderRoot(rootPath, candidate) || !HasSafePathChain(rootPath, candidate))
+                return Failure(ArtifactReadFailureKind.UnsafePath, "ARTIFACT_READ_PATH_ESCAPE");
+            if (!IsSafeRegularFile(candidate))
+                return Failure(ArtifactReadFailureKind.NotFound, "ARTIFACT_READ_FILE_NOT_FOUND");
+            var info = new FileInfo(candidate);
+            if (info.Length > limit)
+                return Failure(ArtifactReadFailureKind.TooLarge, "ARTIFACT_READ_TOO_LARGE");
+            byte[] content = await File.ReadAllBytesAsync(candidate, cancellationToken);
+            string sha = Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
+            if (!string.Equals(sha, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+                return Failure(ArtifactReadFailureKind.IntegrityFailure, "ARTIFACT_READ_INTEGRITY_FAILURE");
+            return ArtifactReadResult.Success(artifact, content);
+        }
+        catch (OperationCanceledException) { return Failure(ArtifactReadFailureKind.Cancelled, "ARTIFACT_READ_CANCELLED"); }
+        catch (IOException) { return Failure(ArtifactReadFailureKind.IoFailure, "ARTIFACT_READ_IO_FAILURE"); }
+        catch (UnauthorizedAccessException) { return Failure(ArtifactReadFailureKind.UnsafePath, "ARTIFACT_READ_ACCESS_DENIED"); }
+    }
+
     private static ArtifactRecord[]
         SelectPlanningRejectedResponse(
             IReadOnlyList<ArtifactRecord> artifacts,

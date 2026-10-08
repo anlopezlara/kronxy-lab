@@ -80,6 +80,7 @@ public static class DependencyInjection
         services.AddScoped<ICatalogRepository, CatalogRepository>();
 
         services.AddScoped<IJobRepository, JobRepository>();
+        services.AddScoped<IOperatorHealthService, OperatorHealthService>();
 
         services.AddScoped<
             IArtifactMetadataRepository,
