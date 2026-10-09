@@ -18,3 +18,20 @@ textarea { resize: vertical; }
 .check { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
 .check input { width: auto; }
 .form-stack textarea, .action-dialog textarea { min-height: 90px; }
+.diagnostic-action {
+    align-items: center; background: #241f13; border: 1px solid #66522b;
+    border-radius: 7px; color: #f4d897; display: flex; gap: 12px;
+    justify-content: space-between; margin: 16px 0; padding: 12px 16px;
+}
+.artifact-card.diagnostic { border-color: #66522b; }
+.artifact-card .badge { align-self: flex-start; }
+.diagnostic-summary {
+    display: grid; gap: 2px; grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 16px 0;
+}
+.artifact-view h3 { color: #b8c9da; font-size: .9rem; margin: 20px 0 8px; }
+.artifact-view details summary { color: #8295a9; cursor: pointer; margin-top: 18px; }
+.rejected-paths { background: #221925; border-left: 3px solid #a75a71; padding: 4px 16px 14px; }
+.rejected-paths ul { margin-bottom: 8px; padding-left: 20px; }
+.rejected-paths li { margin: 5px 0; }
+@media(max-width:900px) { .diagnostic-summary { grid-template-columns: 1fr; } }

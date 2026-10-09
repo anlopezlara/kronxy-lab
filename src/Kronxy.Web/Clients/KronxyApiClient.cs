@@ -47,22 +47,36 @@ public sealed class KronxyApiClient(HttpClient httpClient, IOperatorIdentity ide
     public Task<OperationResultDto> ApproveHumanReviewAsync(Guid jobId, CancellationToken cancellationToken = default) => ActionAsync(jobId, "human-review/approve", "human-review-approve", cancellationToken);
 
     public Task<OperationResultDto> RequestHumanReviewChangesAsync(Guid jobId, IReadOnlyList<HumanReviewCorrectionDto> corrections, CancellationToken cancellationToken = default) =>
-        PostAsync<OperationResultDto>($"api/jobs/{jobId:D}/human-review/changes-required", new { requiredCorrections = corrections, actor = identity.Actor, correlationId = identity.NewCorrelationId("human-review-changes-required") }, cancellationToken);
+        PostGovernedAsync<OperationResultDto>($"api/jobs/{jobId:D}/human-review/changes-required", "human-review-changes-required", correlationId => new { requiredCorrections = corrections, actor = identity.Actor, correlationId }, cancellationToken);
 
     public Task<OperationResultDto> ResolveArchitectureDecisionAsync(Guid jobId, ArchitectureDecisionInputDto decision, CancellationToken cancellationToken = default) =>
-        PostAsync<OperationResultDto>($"api/jobs/{jobId:D}/architecture-decision", new { actor = identity.Actor, correlationId = identity.NewCorrelationId("architecture-decision"), decision = (int)decision.Decision, decision.Reason, decision.FollowUpRequired, decision.FollowUpDescription }, cancellationToken);
+        PostGovernedAsync<OperationResultDto>($"api/jobs/{jobId:D}/architecture-decision", "architecture-decision", correlationId => new { actor = identity.Actor, correlationId, decision = (int)decision.Decision, decision.Reason, decision.FollowUpRequired, decision.FollowUpDescription }, cancellationToken);
 
     public Task<OperationResultDto> ApplyHumanCorrectionAsync(Guid jobId, string reason, IReadOnlyList<HumanFileReplacementDto> changes, CancellationToken cancellationToken = default) =>
-        PostAsync<OperationResultDto>($"api/jobs/{jobId:D}/human-correction", new { changes, actor = identity.Actor, correlationId = identity.NewCorrelationId("human-correction"), reason }, cancellationToken);
+        PostGovernedAsync<OperationResultDto>($"api/jobs/{jobId:D}/human-correction", "human-correction", correlationId => new { changes, actor = identity.Actor, correlationId, reason }, cancellationToken);
 
     public Task<OperationResultDto> SupersedeReviewerCorrectionAsync(Guid jobId, CancellationToken cancellationToken = default) =>
         ActionAsync(jobId, "reviewer/human-review-correction/supersede", "reviewer-supersede", cancellationToken);
 
-    private Task<OperationResultDto> ActionAsync(Guid jobId, string route, string operation, CancellationToken cancellationToken) =>
-        PostAsync<OperationResultDto>($"api/jobs/{jobId:D}/{route}", new { actor = identity.Actor, correlationId = identity.NewCorrelationId(operation) }, cancellationToken);
+    private Task<OperationResultDto> ActionAsync(Guid jobId, string route, string operation, CancellationToken cancellationToken)
+    {
+        string correlationId = identity.NewCorrelationId(operation);
+        return PostActionAsync<OperationResultDto>(
+            $"api/jobs/{jobId:D}/{route}",
+            new { actor = identity.Actor, correlationId },
+            correlationId,
+            cancellationToken);
+    }
 
-    private Task<OperationResultDto> ReasonActionAsync(Guid jobId, string route, string operation, string reason, CancellationToken cancellationToken) =>
-        PostAsync<OperationResultDto>($"api/jobs/{jobId:D}/{route}", new { reason, actor = identity.Actor, correlationId = identity.NewCorrelationId(operation) }, cancellationToken);
+    private Task<OperationResultDto> ReasonActionAsync(Guid jobId, string route, string operation, string reason, CancellationToken cancellationToken)
+    {
+        string correlationId = identity.NewCorrelationId(operation);
+        return PostActionAsync<OperationResultDto>(
+            $"api/jobs/{jobId:D}/{route}",
+            new { reason, actor = identity.Actor, correlationId },
+            correlationId,
+            cancellationToken);
+    }
 
     private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
     {
@@ -77,6 +91,30 @@ public sealed class KronxyApiClient(HttpClient httpClient, IOperatorIdentity ide
         HttpResponseMessage response = await SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         return await ReadRequiredJsonAsync<T>(response, cancellationToken);
+    }
+
+    private async Task<T> PostActionAsync<T>(string uri, object body,
+        string correlationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await PostAsync<T>(uri, body, cancellationToken);
+        }
+        catch (KronxyApiException exception)
+        {
+            throw exception.WithCorrelationId(correlationId);
+        }
+    }
+
+    private Task<T> PostGovernedAsync<T>(string uri, string operation,
+        Func<string, object> body, CancellationToken cancellationToken)
+    {
+        string correlationId = identity.NewCorrelationId(operation);
+        return PostActionAsync<T>(
+            uri,
+            body(correlationId),
+            correlationId,
+            cancellationToken);
     }
 
     private static async Task<T> ReadRequiredJsonAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken) =>
@@ -94,15 +132,21 @@ public sealed class KronxyApiClient(HttpClient httpClient, IOperatorIdentity ide
         if (response.IsSuccessStatusCode) return;
         string code = $"HTTP_{(int)response.StatusCode}";
         string message = KronxyApiException.Category(response.StatusCode);
+        string? diagnosticCode = null;
         try
         {
             using JsonDocument document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
             JsonElement root = document.RootElement;
             code = Text(root, "code") ?? Text(root, "type") ?? code;
             message = Text(root, "message") ?? Text(root, "detail") ?? Text(root, "title") ?? message;
+            diagnosticCode = Text(root, "diagnosticCode");
         }
         catch (JsonException) { }
-        throw new KronxyApiException(response.StatusCode, code, message);
+        throw new KronxyApiException(
+            response.StatusCode,
+            code,
+            message,
+            diagnosticCode: diagnosticCode);
     }
 
     private static string? Text(JsonElement element, string property) => element.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;

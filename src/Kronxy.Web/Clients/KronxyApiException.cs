@@ -5,14 +5,28 @@ namespace Kronxy.Web.Clients;
 public sealed class KronxyApiException : Exception
 {
     public KronxyApiException(HttpStatusCode? statusCode, string code, string safeMessage,
-        Exception? innerException = null) : base(safeMessage, innerException)
+        Exception? innerException = null, string? diagnosticCode = null,
+        string? correlationId = null) : base(safeMessage, innerException)
     {
         StatusCode = statusCode;
         Code = code;
+        DiagnosticCode = diagnosticCode;
+        CorrelationId = correlationId;
     }
 
     public HttpStatusCode? StatusCode { get; }
     public string Code { get; }
+    public string? DiagnosticCode { get; }
+    public string? CorrelationId { get; }
+
+    public KronxyApiException WithCorrelationId(string correlationId) =>
+        new(
+            StatusCode,
+            Code,
+            Message,
+            InnerException,
+            DiagnosticCode,
+            correlationId);
 
     public static string Category(HttpStatusCode? statusCode) => statusCode switch
     {

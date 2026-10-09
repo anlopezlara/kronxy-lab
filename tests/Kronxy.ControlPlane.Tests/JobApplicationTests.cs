@@ -633,6 +633,9 @@ public sealed class JobApplicationTests
 			created.Value.Id, "orchestrator", "corr-rejected");
 
 		Assert.False(result.IsSuccess);
+		Assert.Equal(
+			"PLANNING_PATH_COHERENCE_INVALID",
+			result.DiagnosticCode);
 		Assert.Equal(JobState.Planning, created.Value.State);
 		Assert.Null(created.Value.ActiveExecutionStartedOnUtc);
 		Assert.Equal(fixture.Clock.UtcNow, created.Value.LastActiveProgressOnUtc);

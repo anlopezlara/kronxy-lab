@@ -4,6 +4,10 @@
         <strong>@KronxyApiException.Category(Error.StatusCode)</strong>
         <span>@Error.Message</span>
         <code>@Error.Code@if (Error.StatusCode is not null) { <text> · HTTP @((int)Error.StatusCode)</text> }</code>
+        @if (!string.IsNullOrWhiteSpace(Error.DiagnosticCode))
+        {
+            <code class="diagnostic-code">@Error.DiagnosticCode</code>
+        }
         @if (Retry.HasDelegate) { <button class="button secondary" @onclick="Retry">Retry</button> }
     </div>
 }

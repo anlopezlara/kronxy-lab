@@ -14,6 +14,13 @@ else if (_job is not null)
     </div>
 
     @if (_error is not null) { <ApiError Error="_error" Retry="LoadAsync" /> }
+    @if (_error is not null && _diagnosticArtifact is not null)
+    {
+        <div class="diagnostic-action" role="status">
+            <span>Diagnostic evidence is available for this failure.</span>
+            <button class="button secondary" @onclick="OpenFailureDiagnosticsAsync">View diagnostics</button>
+        </div>
+    }
     @if (_operationMessage is not null) { <div class="alert success" role="status"><strong>@_operationName</strong><span>@_operationMessage</span><span>Current state: @_job.State</span></div> }
     @if (_job.LastErrorCode is not null) { <div class="alert error"><strong>@_job.LastErrorCode</strong><span>@_job.LastErrorMessage</span></div> }
 
@@ -30,8 +37,51 @@ else if (_job is not null)
     }
     else if (_tab == "Artifacts")
     {
-        <section class="panel"><h2>Artifacts</h2>@if (_artifacts.Count == 0) { <div class="empty-state">No artifacts available.</div> } else { <div class="artifact-grid">@foreach (ArtifactDto item in _artifacts) { <button class="artifact-card" @onclick="() => OpenArtifactAsync(item)"><strong>@item.ArtifactType</strong><span class="mono">@item.ArtifactId</span><small>@FormatBytes(item.SizeBytes) · @item.CreatedAtUtc.ToLocalTime().ToString("g")</small><small>SHA256 @item.Sha256[..Math.Min(12, item.Sha256.Length)]…</small><small>Correlation @item.CorrelationId</small></button> }</div> }</section>
-        @if (_artifactContent is not null) { <section class="panel artifact-view"><div class="panel-heading"><h2>@_selectedArtifact?.ArtifactType</h2><button class="button secondary" @onclick="() => _artifactContent = null">Close</button></div>@if (_artifactContent.IsText) { <pre>@OperatorPresentation.SafeArtifactText(_artifactContent)</pre> } else { <p>Binary artifact · @FormatBytes(_artifactContent.Content.Length)</p><a class="button" href="@BinaryDataUrl(_artifactContent)" download="@ArtifactFileName(_artifactContent)" target="_blank" rel="noopener">Download / open</a> }</section> }
+        <section class="panel"><h2>Artifacts</h2>@if (_artifacts.Count == 0) { <div class="empty-state">No artifacts available.</div> } else { <div class="artifact-grid">@foreach (ArtifactDto item in _artifacts) { <button class="artifact-card @(ArtifactDiagnostics.IsDiagnostic(item.ArtifactType) ? "diagnostic" : null)" @onclick="() => OpenArtifactAsync(item)"><strong>@item.ArtifactType</strong>@if (ArtifactDiagnostics.IsDiagnostic(item.ArtifactType)) { <span class="badge warning">Diagnostic</span> }<span class="mono">@item.ArtifactId</span><small>@FormatBytes(item.SizeBytes) · @item.CreatedAtUtc.ToLocalTime().ToString("g")</small><small>SHA256 @item.Sha256[..Math.Min(12, item.Sha256.Length)]…</small><small>Correlation @item.CorrelationId</small></button> }</div> }</section>
+        @if (_artifactContent is not null)
+        {
+            <section class="panel artifact-view">
+                <div class="panel-heading"><h2>@_selectedArtifact?.ArtifactType</h2><button class="button secondary" @onclick="CloseArtifact">Close</button></div>
+                @if (_artifactContent.IsText && _artifactView is not null)
+                {
+                    @if (_selectedArtifact is not null && ArtifactDiagnostics.IsDiagnostic(_selectedArtifact.ArtifactType))
+                    {
+                        <div class="diagnostic-summary">
+                            <Info Label="Artifact type" Value="@_selectedArtifact.ArtifactType" />
+                            <Info Label="Stage" Value="@_job.State" />
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.Provider)) { <Info Label="Provider" Value="@_artifactView.Provider" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.LogicalModel)) { <Info Label="Logical model" Value="@_artifactView.LogicalModel" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.PhysicalModel)) { <Info Label="Physical model" Value="@_artifactView.PhysicalModel" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.Duration)) { <Info Label="Duration" Value="@_artifactView.Duration" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.PromptTokens)) { <Info Label="Prompt tokens" Value="@_artifactView.PromptTokens" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.CompletionTokens)) { <Info Label="Completion tokens" Value="@_artifactView.CompletionTokens" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.TerminationReason)) { <Info Label="Termination reason" Value="@_artifactView.TerminationReason" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.ErrorCode)) { <Info Label="Error code" Value="@_artifactView.ErrorCode" /> }
+                            @if (!string.IsNullOrWhiteSpace(_artifactView.SuccessStatus)) { <Info Label="Provider result" Value="@_artifactView.SuccessStatus" /> }
+                            <Info Label="Correlation ID" Value="@_selectedArtifact.CorrelationId" />
+                            <Info Label="Created" Value="@_selectedArtifact.CreatedAtUtc.ToLocalTime().ToString("g")" />
+                        </div>
+                    }
+                    @if (_artifactView.FilesToInspect.Count > 0 || _artifactView.CandidateFilesToModify.Count > 0)
+                    {
+                        <div class="rejected-paths">
+                            @if (_artifactView.FilesToInspect.Count > 0) { <h3>Files to inspect</h3><ul>@foreach (string path in _artifactView.FilesToInspect) { <li class="mono">@path</li> }</ul> }
+                            @if (_artifactView.CandidateFilesToModify.Count > 0) { <h3>Rejected candidate paths</h3><ul>@foreach (string path in _artifactView.CandidateFilesToModify) { <li class="mono">@path</li> }</ul> }
+                        </div>
+                    }
+                    @if (_artifactView.NestedContent is not null)
+                    {
+                        <h3>@(_artifactView.NestedContentIsJson ? "Structured provider content" : "Provider content")</h3>
+                        <pre>@_artifactView.NestedContent</pre>
+                    }
+                    <details open="@(_artifactView.NestedContent is null)"><summary>Raw artifact</summary><pre>@_artifactView.RawContent</pre></details>
+                }
+                else
+                {
+                    <p>Binary artifact · @FormatBytes(_artifactContent.Content.Length)</p><a class="button" href="@BinaryDataUrl(_artifactContent)" download="@ArtifactFileName(_artifactContent)" target="_blank" rel="noopener">Download / open</a>
+                }
+            </section>
+        }
     }
     else if (_tab == "Lineage")
     {
@@ -64,7 +114,7 @@ else if (_job is not null)
     private static readonly string[] Tabs = ["Overview", "Pipeline", "Artifacts", "Lineage", "Actions"];
     private string _tab = "Overview"; private bool _loading; private readonly OperatorActionGuard _submission = new(); private bool _submitting => _submission.IsActive; private int _pollSeconds;
     private JobDetailDto? _job; private IReadOnlyList<JobHistoryDto> _history = []; private IReadOnlyList<ArtifactDto> _artifacts = []; private LineageDto? _lineage; private IReadOnlyList<AllowedActionDto> _actions = [];
-    private ArtifactDto? _selectedArtifact; private ArtifactContentDto? _artifactContent; private KronxyApiException? _error; private Timer? _pollTimer;
+    private ArtifactDto? _selectedArtifact; private ArtifactDto? _diagnosticArtifact; private ArtifactContentDto? _artifactContent; private ArtifactDiagnosticPresentation? _artifactView; private KronxyApiException? _error; private Timer? _pollTimer;
     private string? _pendingAction; private string _reason = string.Empty; private string _correctionPath = string.Empty; private string _correctionInstruction = string.Empty; private int _architectureDecision; private bool _followUpRequired; private string? _followUpDescription; private string? _validationMessage; private string? _operationName; private string? _operationMessage;
 
     protected override Task OnParametersSetAsync() => LoadAsync();
@@ -72,7 +122,7 @@ else if (_job is not null)
     {
         if (_loading) return; _loading = true; _error = null;
         try { Task<JobDetailDto> job = Api.GetJobAsync(JobId); Task<IReadOnlyList<JobHistoryDto>> history = Api.GetJobHistoryAsync(JobId); Task<IReadOnlyList<ArtifactDto>> artifacts = Api.GetJobArtifactsAsync(JobId); Task<LineageDto?> lineage = Api.GetEffectiveLineageAsync(JobId); Task<IReadOnlyList<AllowedActionDto>> actions = Api.GetAllowedActionsAsync(JobId); await Task.WhenAll(job, history, artifacts, lineage, actions); _job = job.Result; _history = history.Result; _artifacts = artifacts.Result; _lineage = lineage.Result; _actions = actions.Result; }
-        catch (KronxyApiException exception) { _error = exception; }
+        catch (KronxyApiException exception) { _error = exception; await LoadFailureDiagnosticsAsync(exception); }
         finally { _loading = false; }
     }
 
@@ -114,7 +164,26 @@ else if (_job is not null)
     };
 
     private async Task LoadAfterMutationAsync() { _loading = false; await LoadAsync(); }
-    private async Task OpenArtifactAsync(ArtifactDto item) { _selectedArtifact = item; try { _artifactContent = await Api.GetArtifactAsync(JobId, item.ArtifactId); } catch (KronxyApiException exception) { _error = exception; } }
+    private async Task LoadFailureDiagnosticsAsync(KronxyApiException exception)
+    {
+        try
+        {
+            _artifacts = await Api.GetJobArtifactsAsync(JobId);
+            _diagnosticArtifact = ArtifactDiagnostics.Select(_artifacts, exception.CorrelationId);
+        }
+        catch (KronxyApiException)
+        {
+            _diagnosticArtifact = null;
+        }
+    }
+    private async Task OpenFailureDiagnosticsAsync()
+    {
+        if (_diagnosticArtifact is null) return;
+        _tab = "Artifacts";
+        await OpenArtifactAsync(_diagnosticArtifact);
+    }
+    private async Task OpenArtifactAsync(ArtifactDto item) { _selectedArtifact = item; try { _artifactContent = await Api.GetArtifactAsync(JobId, item.ArtifactId); _artifactView = _artifactContent.IsText ? ArtifactDiagnostics.Present(_artifactContent) : null; } catch (KronxyApiException exception) { _error = exception; } }
+    private void CloseArtifact() { _artifactContent = null; _artifactView = null; }
     private void PollingChanged(ChangeEventArgs args) { _pollSeconds = int.TryParse(args.Value?.ToString(), out int value) ? value : 0; _pollTimer?.Dispose(); _pollTimer = _pollSeconds == 0 ? null : new Timer(async _ => await InvokeAsync(PollAsync), null, TimeSpan.FromSeconds(_pollSeconds), TimeSpan.FromSeconds(_pollSeconds)); }
     private async Task PollAsync() { if (!_submitting && _pendingAction is null) { await LoadAsync(); StateHasChanged(); } }
     public void Dispose() => _pollTimer?.Dispose();

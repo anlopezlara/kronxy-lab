@@ -175,6 +175,22 @@ public sealed class KronxyApiClientTests
     }
 
     [Fact]
+    public async Task Governed_error_preserves_high_level_and_specific_diagnostic_codes()
+    {
+        var client = Client(new RecordingHandler(
+            """{"code":"Job.PlanningExecutionFailed","message":"The AI planning execution did not complete successfully.","diagnosticCode":"PLANNING_PATH_COHERENCE_INVALID"}""",
+            HttpStatusCode.BadRequest));
+
+        KronxyApiException error = await Assert.ThrowsAsync<KronxyApiException>(
+            () => client.AdvanceJobAsync(
+                Guid.Parse("10000000-0000-4000-8000-000000000001")));
+
+        Assert.Equal("Job.PlanningExecutionFailed", error.Code);
+        Assert.Equal("PLANNING_PATH_COHERENCE_INVALID", error.DiagnosticCode);
+        Assert.StartsWith("web-advance-", error.CorrelationId);
+    }
+
+    [Fact]
     public void Artifact_identity_is_api_relative_not_filesystem_path()
     {
         var artifact = new ArtifactDto(Guid.NewGuid(), "BuildReport", "/api/jobs/a/artifacts/b",

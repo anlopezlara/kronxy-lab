@@ -1899,7 +1899,8 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 MapPlanningFailureKind(
                                         planning.FailureKind),
                                 JobApplicationErrors
-                                        .PlanningExecutionFailed);
+                                        .PlanningExecutionFailed,
+                                planning.ErrorCode);
                 }
 
                 return await TransitionAndSaveAsync(

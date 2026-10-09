@@ -239,7 +239,9 @@ public sealed class JobsController : ControllerBase
         }
 
         object error =
-            ToErrorResponse(result.Error);
+            ToErrorResponse(
+                result.Error,
+                result.DiagnosticCode);
 
         return result.Kind switch
         {
@@ -275,12 +277,17 @@ public sealed class JobsController : ControllerBase
     }
 
     private static object ToErrorResponse(
-        Error error)
+        Error error,
+        string? diagnosticCode = null)
     {
         return new
         {
             code = error.Code,
-            message = error.Name
+            message = error.Name,
+            diagnosticCode = string.IsNullOrWhiteSpace(
+                diagnosticCode)
+                ? null
+                : diagnosticCode
         };
     }
 
