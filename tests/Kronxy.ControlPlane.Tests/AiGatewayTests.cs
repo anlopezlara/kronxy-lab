@@ -10,6 +10,66 @@ namespace Kronxy.ControlPlane.Tests;
 public sealed class AiGatewayTests
 {
     [Fact]
+    public void Options_default_inference_timeout_is_two_minutes()
+    {
+        var options =
+            new AiGatewayOptions
+            {
+                Provider = "Ollama",
+                Endpoint = "http://example.invalid",
+                Models =
+                    new Dictionary<string, string>
+                    {
+                        ["CodingFast"] = "model-fast",
+                        ["CodingQuality"] = "model-quality",
+                        ["General"] = "model-general"
+                    },
+                MaxConcurrentInferences = 1,
+                ConnectionTimeout = TimeSpan.FromSeconds(1),
+                QueueWaitTimeout = TimeSpan.FromSeconds(1),
+                MaxOutputTokens = 256,
+                MaxInputCharacters = 65_536,
+                MaxResponseBytes = 1_048_576
+            };
+
+        Assert.Equal(
+            TimeSpan.FromSeconds(120),
+            options.InferenceTimeout);
+    }
+
+    [Fact]
+    public void Options_configured_inference_timeout_overrides_default()
+    {
+        TimeSpan configured =
+            TimeSpan.FromSeconds(45);
+
+        var options =
+            new AiGatewayOptions
+            {
+                Provider = "Ollama",
+                Endpoint = "http://example.invalid",
+                Models =
+                    new Dictionary<string, string>
+                    {
+                        ["CodingFast"] = "model-fast",
+                        ["CodingQuality"] = "model-quality",
+                        ["General"] = "model-general"
+                    },
+                MaxConcurrentInferences = 1,
+                ConnectionTimeout = TimeSpan.FromSeconds(1),
+                InferenceTimeout = configured,
+                QueueWaitTimeout = TimeSpan.FromSeconds(1),
+                MaxOutputTokens = 256,
+                MaxInputCharacters = 65_536,
+                MaxResponseBytes = 1_048_576
+            };
+
+        Assert.Equal(
+            configured,
+            options.InferenceTimeout);
+    }
+
+    [Fact]
     public async Task GenerateAsync_maps_logical_model_and_returns_success()
     {
         var provider = new FakeAiProvider

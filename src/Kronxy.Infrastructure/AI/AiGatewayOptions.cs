@@ -40,7 +40,7 @@ public sealed record AiGatewayOptions
     {
         get;
         init;
-    }
+    } = TimeSpan.FromMinutes(2);
 
     public TimeSpan PlanningInferenceTimeout
     {

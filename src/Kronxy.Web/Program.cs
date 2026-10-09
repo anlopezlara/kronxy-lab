@@ -9,7 +9,7 @@ builder.Services.AddHttpClient<IKronxyApiClient, KronxyApiClient>((services, cli
     string baseUrl = services.GetRequiredService<IConfiguration>()["KronxyApi:BaseUrl"]
         ?? throw new InvalidOperationException("KronxyApi:BaseUrl is required.");
     client.BaseAddress = new Uri(baseUrl, UriKind.Absolute);
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = Timeout.InfiniteTimeSpan;
 });
 
 var app = builder.Build();
