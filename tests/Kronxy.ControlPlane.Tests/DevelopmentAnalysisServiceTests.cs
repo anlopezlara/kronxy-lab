@@ -68,6 +68,7 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
     [Theory]
     [InlineData("Domain-only /src/Kronxy.Domain/Widgets/Widget.cs")]
     [InlineData("Domain-only ../src/Kronxy.Domain/Widgets/Widget.cs")]
+    [InlineData("Domain-only src/Kronxy.Domain/../Widgets/Widget.cs")]
     [InlineData("Domain-only https://example.test/src/Kronxy.Domain/Widgets/Widget.cs")]
     public async Task Unsafe_or_non_repository_candidate_paths_are_rejected(string request)
     {
@@ -342,6 +343,153 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
         Assert.True(result.IsSuccess);
         Assert.Equal(DevelopmentChangeClassification.Unknown, result.Analysis!.PrimaryClassification);
         Assert.False(result.Analysis.DeveloperExecutionAllowed);
+    }
+
+    [Fact]
+    public async Task Explicit_razor_path_is_discovered_and_inspected()
+    {
+        Write("src/Example.Web/Pages/OrderDetail.razor", "<h1>Order detail</h1>");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Web-only add usability behavior to src/Example.Web/Pages/OrderDetail.razor");
+
+        Assert.Equal(DevelopmentChangeClassification.Extension, result.PrimaryClassification);
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.Contains("src/Example.Web/Pages/OrderDetail.razor", result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Explicit_filename_is_mapped_to_a_unique_inventory_candidate()
+    {
+        Write("src/Example.Web/Pages/OrderDetail.razor", "<h1>Order detail</h1>");
+
+        DevelopmentAnalysis result = await Analyze("Web-only add behavior to OrderDetail.razor");
+
+        Assert.Contains("src/Example.Web/Pages/OrderDetail.razor", result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Duplicate_explicit_filename_matches_fail_closed()
+    {
+        Write("src/First.Web/Pages/OrderDetail.razor", "<h1>First</h1>");
+        Write("src/Second.Web/Pages/OrderDetail.razor", "<h1>Second</h1>");
+
+        DevelopmentAnalysis result = await Analyze("Add behavior to OrderDetail.razor");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.FilesInspected);
+    }
+
+    [Theory]
+    [InlineData("Add a usability improvement to the existing Example.Web Job Detail page.")]
+    [InlineData("Add a usability improvement to the existing job-detail page.")]
+    [InlineData("Add a usability improvement to the existing job_detail page.")]
+    public async Task Compound_component_name_is_discovered_from_natural_language(string request)
+    {
+        Write("src/Example.Web/Components/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+        Write("src/Example.Web/Components/Pages/Jobs.razor", "<h1>Jobs</h1>");
+        Write("src/Example.Web/Components/Pages/CreateJob.razor", "<h1>Create job</h1>");
+
+        DevelopmentAnalysis result = await Analyze(request);
+
+        Assert.Equal(DevelopmentChangeClassification.Extension, result.PrimaryClassification);
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.Contains("src/Example.Web/Components/Pages/JobDetail.razor", result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Web_target_and_tests_keep_web_only_functional_scope()
+    {
+        Write("src/Example.Web/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+        Write("tests/Example.Web.Tests/JobDetailTests.cs", "public sealed class JobDetailTests { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Web-only add behavior in src/Example.Web/Pages/JobDetail.razor and tests/Example.Web.Tests/JobDetailTests.cs");
+
+        Assert.Equal(["Tests", "Web"], result.ImpactedLayers);
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+    }
+
+    [Theory]
+    [InlineData("Web-only add styling in src/Example.Web/Pages/JobDetail.css", "src/Example.Web/Pages/JobDetail.css")]
+    [InlineData("Web-only add script behavior in src/Example.Web/Pages/JobDetail.js", "src/Example.Web/Pages/JobDetail.js")]
+    public async Task Explicit_style_and_script_targets_are_supported(string request, string path)
+    {
+        Write(path, "/* safe text fixture */");
+
+        DevelopmentAnalysis result = await Analyze(request);
+
+        Assert.Contains(path, result.FilesInspected);
+        Assert.Equal("Web-only", result.RequiredScope);
+    }
+
+    [Theory]
+    [InlineData("src/Example.Web/bin/Debug/Generated.razor")]
+    [InlineData("src/Example.Web/obj/Debug/Generated.razor")]
+    [InlineData("src/Example.Web/Generated.g.cs")]
+    public async Task Generated_output_candidates_are_excluded(string path)
+    {
+        Write(path, "generated");
+
+        DevelopmentAnalysis result = await Analyze($"Add behavior to {path}");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Unsupported_binary_candidate_is_excluded()
+    {
+        Write("src/Example.Web/Pages/JobDetail.png", "not an image");
+
+        DevelopmentAnalysis result = await Analyze("Add behavior to src/Example.Web/Pages/JobDetail.png");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Equally_relevant_unrelated_components_fail_closed()
+    {
+        Write("src/Example.Web/Pages/OrderItem.razor", "<p>One</p>");
+        Write("src/Example.Web/Pages/ItemOrder.razor", "<p>Two</p>");
+
+        DevelopmentAnalysis result = await Analyze("Add behavior to the order item page");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.FilesInspected);
+        Assert.Contains(result.Evidence, item => item.Detail.Contains("equal relevance", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Ambiguous_request_without_component_hints_remains_unknown()
+    {
+        Write("src/Example.Web/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+
+        DevelopmentAnalysis result = await Analyze("Improve the operator experience");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Representative_frontend_inventory_selects_job_detail_without_exact_path()
+    {
+        Write("src/Example.Web/Components/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+        Write("src/Example.Web/Components/Pages/Jobs.razor", "<h1>Jobs</h1>");
+        Write("src/Example.Web/Components/Pages/CreateJob.razor", "<h1>Create job</h1>");
+        Write("src/Example.Web/Clients/ExampleApiClient.cs", "public sealed class ExampleApiClient { }");
+        Write("src/Example.Web/Models/ApiContracts.cs", "public sealed class ApiContracts { }");
+        Write("tests/Example.Web.Tests/ExampleApiClientTests.cs", "public sealed class ExampleApiClientTests { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Add a usability improvement to the existing Example.Web Job Detail page.");
+
+        Assert.Equal(DevelopmentChangeClassification.Extension, result.PrimaryClassification);
+        Assert.Contains("src/Example.Web/Components/Pages/JobDetail.razor", result.FilesInspected);
+        Assert.Equal(["JobDetail"], result.TargetSymbols);
+        Assert.NotEqual("Unknown", result.RequiredScope);
     }
 
     private async Task<DevelopmentAnalysis> Analyze(string jobRequest)
