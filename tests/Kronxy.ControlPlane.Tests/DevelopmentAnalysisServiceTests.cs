@@ -450,16 +450,28 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Equally_relevant_unrelated_components_fail_closed()
+    public async Task Exact_compound_match_outranks_reversed_generic_tokens()
     {
         Write("src/Example.Web/Pages/OrderItem.razor", "<p>One</p>");
         Write("src/Example.Web/Pages/ItemOrder.razor", "<p>Two</p>");
 
         DevelopmentAnalysis result = await Analyze("Add behavior to the order item page");
 
+        Assert.Contains("src/Example.Web/Pages/OrderItem.razor", result.FilesInspected);
+        Assert.DoesNotContain("src/Example.Web/Pages/ItemOrder.razor", result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Equal_high_confidence_candidates_without_project_hint_fail_closed()
+    {
+        Write("src/First.Portal/Pages/OrderDetail.razor", "<p>First</p>");
+        Write("src/Second.Portal/Pages/OrderDetail.razor", "<p>Second</p>");
+
+        DevelopmentAnalysis result = await Analyze("Add behavior to the Order Detail page");
+
         Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
         Assert.Empty(result.FilesInspected);
-        Assert.Contains(result.Evidence, item => item.Detail.Contains("equal relevance", StringComparison.Ordinal));
+        Assert.Contains(result.Evidence, item => item.Detail.Contains("tied", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -490,6 +502,108 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
         Assert.Contains("src/Example.Web/Components/Pages/JobDetail.razor", result.FilesInspected);
         Assert.Equal(["JobDetail"], result.TargetSymbols);
         Assert.NotEqual("Unknown", result.RequiredScope);
+    }
+
+    [Fact]
+    public async Task Job_detail_page_outranks_job_migration_noise()
+    {
+        Write("src/Example.Infrastructure/Migrations/20260829043649_Add_Job_ControlPlane_Persistence.cs", "public sealed class AddJobPersistence { }");
+        Write("src/Example.Web/Components/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+
+        DevelopmentAnalysis result = await Analyze("Add a small usability improvement to the Job Detail page");
+
+        Assert.Equal(["src/Example.Web/Components/Pages/JobDetail.razor"], result.FilesInspected);
+        Assert.Equal(["JobDetail"], result.TargetSymbols);
+    }
+
+    [Fact]
+    public async Task Explicit_project_hint_prefers_matching_project()
+    {
+        Write("src/Example.Infrastructure/Pages/JobDetail.razor", "<p>Infrastructure</p>");
+        Write("src/Example.Web/Pages/JobDetail.razor", "<p>Web</p>");
+
+        DevelopmentAnalysis result = await Analyze("Add usability to the Example.Web Job Detail page");
+
+        Assert.Equal(["src/Example.Web/Pages/JobDetail.razor"], result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Project_affinity_uses_generic_inventory_segments()
+    {
+        Write("src/Acme.Portal/Pages/OrderDetail.razor", "<p>Portal</p>");
+        Write("src/Acme.Worker/Pages/OrderDetail.razor", "<p>Worker</p>");
+
+        DevelopmentAnalysis result = await Analyze("Add usability to the Acme.Portal Order Detail page");
+
+        Assert.Equal(["src/Acme.Portal/Pages/OrderDetail.razor"], result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Persistence_intent_keeps_migrations_discoverable()
+    {
+        Write("src/Example.Infrastructure/Migrations/20260829043649_Add_Job_Persistence.cs", "public sealed class AddJobPersistence { }");
+        Write("src/Example.Application/Jobs/Job.cs", "public sealed class Job { }");
+
+        DevelopmentAnalysis result = await Analyze("Modify the Job persistence migration");
+
+        Assert.Contains("src/Example.Infrastructure/Migrations/20260829043649_Add_Job_Persistence.cs", result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Designer_file_is_deprioritized_without_designer_intent()
+    {
+        Write("src/Example.Infrastructure/Migrations/JobDetail.Designer.cs", "public sealed class JobDetailDesigner { }");
+        Write("src/Example.Web/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+
+        DevelopmentAnalysis result = await Analyze("Improve the Job Detail page");
+
+        Assert.Equal(["src/Example.Web/Pages/JobDetail.razor"], result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Low_information_job_token_alone_selects_no_candidate()
+    {
+        Write("src/Example.Application/Jobs/CreateJob.cs", "public sealed class CreateJob { }");
+        Write("src/Example.Application/Jobs/GetJob.cs", "public sealed class GetJob { }");
+        Write("src/Example.Web/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+
+        DevelopmentAnalysis result = await Analyze("Change job");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Empty(result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Unrelated_low_score_inventory_does_not_create_false_ambiguity()
+    {
+        Write("src/Example.Web/Pages/OrderDetail.razor", "<h1>Order detail</h1>");
+        Write("src/Example.Infrastructure/Services/OrderService.cs", "public sealed class OrderService { }");
+        Write("src/Example.Application/Models/OrderModel.cs", "public sealed class OrderModel { }");
+        Write("src/Example.Domain/Data/OrderData.cs", "public sealed class OrderData { }");
+
+        DevelopmentAnalysis result = await Analyze("Add usability to the Order Detail page");
+
+        Assert.Equal(["src/Example.Web/Pages/OrderDetail.razor"], result.FilesInspected);
+    }
+
+    [Fact]
+    public async Task Representative_v3_pilot_suppresses_migrations_and_designer_noise()
+    {
+        Write("src/Example.Infrastructure/Migrations/20260829043649_Add_Job_ControlPlane_Persistence.Designer.cs", "public sealed class AddJobPersistenceDesigner { }");
+        Write("src/Example.Infrastructure/Migrations/20260829043649_Add_Job_ControlPlane_Persistence.cs", "public sealed class AddJobPersistence { }");
+        Write("src/Example.Web/Components/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+        Write("src/Example.Web/Components/Pages/Jobs.razor", "<h1>Jobs</h1>");
+        Write("src/Example.Web/Components/Pages/CreateJob.razor", "<h1>Create job</h1>");
+        Write("src/Example.Web/Clients/ExampleApiClient.cs", "public sealed class ExampleApiClient { }");
+        Write("tests/Example.Web.Tests/ExampleApiClientTests.cs", "public sealed class ExampleApiClientTests { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Add a small usability improvement to the existing Example.Web Job Detail page.");
+
+        Assert.Equal(DevelopmentChangeClassification.Extension, result.PrimaryClassification);
+        Assert.Equal(["src/Example.Web/Components/Pages/JobDetail.razor"], result.FilesInspected);
+        Assert.Equal(["JobDetail"], result.TargetSymbols);
+        Assert.DoesNotContain(result.TargetSymbols, symbol => symbol.Contains("Persistence", StringComparison.Ordinal));
     }
 
     private async Task<DevelopmentAnalysis> Analyze(string jobRequest)

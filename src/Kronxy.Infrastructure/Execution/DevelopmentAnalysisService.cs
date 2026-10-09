@@ -9,7 +9,7 @@ namespace Kronxy.Infrastructure.Execution;
 
 public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 {
-    private const string Version = "development-analysis-v2";
+    private const string Version = "development-analysis-v3";
     private static readonly Regex CandidatePath = new(
         @"(?<![A-Za-z0-9_./:\\-])(?<path>(?:src|tests|tools)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:cs|razor|cshtml|json|css|js|ts|html|ya?ml|xml|props|targets|csproj|sln))(?=$|[\s`'\""()\[\]{},;:!?\.])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -26,6 +26,10 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
     {
         "a", "an", "and", "as", "at", "by", "existing", "file", "for", "from", "in", "of",
         "on", "or", "page", "project", "repository", "src", "test", "tests", "the", "to", "with"
+    };
+    private static readonly HashSet<string> LowInformationTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "add", "data", "get", "job", "model", "service", "set"
     };
     private readonly IArtifactStore artifactStore;
     private readonly DevelopmentAnalysisOptions options;
@@ -93,8 +97,11 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         var breakingContracts = new HashSet<string>(StringComparer.Ordinal);
         int references = 0;
         bool truncated = false;
-        IEnumerable<string> sourceFiles = inventory
-            .Select(relative => Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
+        bool discoverReferences = candidates.Any(path =>
+            Path.GetExtension(path).Equals(".cs", StringComparison.OrdinalIgnoreCase));
+        IEnumerable<string> sourceFiles = discoverReferences
+            ? inventory.Select(relative => Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)))
+            : [];
 
         foreach (string file in sourceFiles)
         {
@@ -266,11 +273,9 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
                 ? new(namedMatches, true, "The explicit filename matches multiple candidate targets.")
                 : new(namedMatches, false, null);
 
-        HashSet<string> requestTokens = Tokenize(request).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        bool stylingIntent = Regex.IsMatch(request, @"(?i)\b(css|style|styling|stylesheet|layout|theme)\b");
-        bool scriptIntent = Regex.IsMatch(request, @"(?i)\b(java\s*script|typescript|script|client[- ]side|browser behavior)\b");
+        RequestHints hints = RequestHints.Create(request);
         var ranked = inventory
-            .Select(path => new { Path = path, Score = LexicalScore(path, requestTokens, stylingIntent, scriptIntent) })
+            .Select(path => new { Path = path, Score = CandidateScore(path, hints) })
             .Where(item => item.Score > 0)
             .OrderByDescending(item => item.Score)
             .ThenBy(item => item.Path, StringComparer.Ordinal)
@@ -280,55 +285,154 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 
         int bestScore = ranked[0].Score;
         string[] best = ranked.Where(item => item.Score == bestScore).Select(item => item.Path).Take(limit + 1).ToArray();
-        string[] componentKeys = best.Select(ComponentKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (best.Length > limit || componentKeys.Length > 1)
-            return new(best, true, "Multiple unrelated candidate targets have equal relevance or exceed the configured limit.");
+        if (best.Length > 1)
+            return new(best, true, "Multiple candidate targets remain tied after structural relevance ranking.");
 
         return new(best, false, null);
     }
 
-    private static int LexicalScore(string path, HashSet<string> requestTokens, bool stylingIntent, bool scriptIntent)
+    private static int CandidateScore(string path, RequestHints hints)
     {
         string extension = Path.GetExtension(path);
-        if (extension.Equals(".css", StringComparison.OrdinalIgnoreCase) && !stylingIntent)
+        if (extension.Equals(".css", StringComparison.OrdinalIgnoreCase) && !hints.Styling)
             return 0;
-        if ((extension.Equals(".js", StringComparison.OrdinalIgnoreCase) || extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)) && !scriptIntent)
+        if ((extension.Equals(".js", StringComparison.OrdinalIgnoreCase) || extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)) && !hints.Script)
             return 0;
 
-        string[] stemTokens = Tokenize(Path.GetFileNameWithoutExtension(path))
+        string stem = Path.GetFileNameWithoutExtension(path);
+        string[] stemTokens = Tokenize(stem)
             .Where(token => !LexicalStopWords.Contains(token))
             .ToArray();
-        int matched = stemTokens.Count(requestTokens.Contains);
-        if (matched == 0 || (stemTokens.Length > 1 && matched < 2) ||
-            (stemTokens.Length == 1 && stemTokens[0].Length < 4))
-            return 0;
+        string stemCompound = string.Concat(stemTokens.Where(token => !long.TryParse(token, out _)));
+        bool exactCompound = stemCompound.Length >= 5 && hints.Compact.Contains(stemCompound, StringComparison.OrdinalIgnoreCase);
+        string[] matchedTokens = stemTokens.Where(hints.Tokens.Contains).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        int informativeMatches = matchedTokens.Count(token => !LowInformationTokens.Contains(token));
 
-        int score = matched * 10;
-        if (matched == stemTokens.Length)
-            score += 5;
-        if (path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase))
-            score -= 2;
-        return score;
+        int score = matchedTokens.Sum(token => LowInformationTokens.Contains(token) ? 1 : 7);
+        if (exactCompound)
+            score += 60;
+
+        string project = ProjectSegment(path);
+        string projectCompound = string.Concat(Tokenize(project));
+        bool projectAffinity = projectCompound.Length >= 4 &&
+            hints.Compact.Contains(projectCompound, StringComparison.OrdinalIgnoreCase);
+        if (projectAffinity)
+            score += 40;
+
+        string[] directoryTokens = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Skip(2)
+            .SkipLast(1)
+            .SelectMany(Tokenize)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        score += Math.Min(8, directoryTokens.Count(hints.Tokens.Contains) * 2);
+
+        bool presentationFile = extension.Equals(".razor", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".cshtml", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".html", StringComparison.OrdinalIgnoreCase);
+        bool webProject = Tokenize(project).Any(token => token.Equals("web", StringComparison.OrdinalIgnoreCase) ||
+                                                        token.Equals("ui", StringComparison.OrdinalIgnoreCase));
+        if (hints.Presentation && presentationFile)
+            score += 30;
+        if (hints.Presentation && webProject)
+            score += 12;
+        if (hints.Client && (stemTokens.Contains("client", StringComparer.OrdinalIgnoreCase) ||
+                             directoryTokens.Contains("clients", StringComparer.OrdinalIgnoreCase)))
+            score += 24;
+        if (hints.Test && path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase))
+            score += 24;
+        if (hints.Styling && extension.Equals(".css", StringComparison.OrdinalIgnoreCase))
+            score += 24;
+        if (hints.Script && (extension.Equals(".js", StringComparison.OrdinalIgnoreCase) ||
+                             extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)))
+            score += 24;
+
+        bool migration = path.Contains("/Migrations/", StringComparison.OrdinalIgnoreCase) ||
+            Regex.IsMatch(stem, @"^\d{8,}[_-]");
+        bool designer = stem.EndsWith(".Designer", StringComparison.OrdinalIgnoreCase) ||
+            stemTokens.Contains("designer", StringComparer.OrdinalIgnoreCase);
+        bool snapshot = stemTokens.Contains("snapshot", StringComparer.OrdinalIgnoreCase);
+        bool assemblyMetadata = stem.StartsWith("Assembly", StringComparison.OrdinalIgnoreCase) &&
+            (stem.Contains("Info", StringComparison.OrdinalIgnoreCase) || stem.Contains("Attributes", StringComparison.OrdinalIgnoreCase));
+
+        if (migration)
+            score += hints.Persistence ? 35 : -55;
+        if (hints.Persistence && (migration || directoryTokens.Contains("persistence", StringComparer.OrdinalIgnoreCase) ||
+                                  directoryTokens.Contains("repositories", StringComparer.OrdinalIgnoreCase)))
+            score += 20;
+        if (designer && !hints.Designer)
+            score -= 30;
+        if (snapshot && !hints.Persistence)
+            score -= 35;
+        if (assemblyMetadata)
+            score -= 50;
+        if (path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase) && !hints.Test)
+            score -= 12;
+
+        bool hasStrongSignal = exactCompound || projectAffinity || informativeMatches > 0 ||
+            (hints.Presentation && presentationFile) ||
+            (hints.Persistence && migration);
+        if (!hasStrongSignal)
+            return 0;
+        return Math.Max(0, score);
     }
 
     private static IEnumerable<string> Tokenize(string value)
     {
+        return TokenizeRaw(value).Where(token => !LexicalStopWords.Contains(token));
+    }
+
+    private static IEnumerable<string> TokenizeRaw(string value)
+    {
         foreach (Match match in Regex.Matches(value, @"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|[0-9]+"))
         {
-            string token = match.Value.ToLowerInvariant();
-            if (!LexicalStopWords.Contains(token))
-                yield return token;
+            yield return match.Value.ToLowerInvariant();
         }
     }
 
-    private static string ComponentKey(string path)
+    private static string ProjectSegment(string path)
     {
-        string stem = Path.GetFileNameWithoutExtension(path);
-        return string.Concat(Tokenize(stem).Where(token => !token.Equals("test", StringComparison.OrdinalIgnoreCase) &&
-                                                          !token.Equals("tests", StringComparison.OrdinalIgnoreCase)));
+        string[] segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length >= 2 && (segments[0].Equals("src", StringComparison.OrdinalIgnoreCase) ||
+                                        segments[0].Equals("tests", StringComparison.OrdinalIgnoreCase) ||
+                                        segments[0].Equals("tools", StringComparison.OrdinalIgnoreCase))
+            ? segments[1]
+            : string.Empty;
     }
 
     private sealed record CandidateDiscovery(string[] Paths, bool IsAmbiguous, string? Reason);
+
+    private sealed record RequestHints(
+        HashSet<string> Tokens,
+        string Compact,
+        bool Presentation,
+        bool Client,
+        bool Persistence,
+        bool Test,
+        bool Styling,
+        bool Script,
+        bool Designer)
+    {
+        public static RequestHints Create(string request)
+        {
+            string[] orderedTokens = TokenizeRaw(request).ToArray();
+            HashSet<string> tokens = orderedTokens.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            string compact = string.Concat(orderedTokens);
+            return new(
+                tokens,
+                compact,
+                HasAny(tokens, "page", "view", "screen", "ui", "frontend", "presentation", "web"),
+                HasAny(tokens, "client") || (tokens.Contains("api") && tokens.Contains("client")),
+                HasAny(tokens, "migration", "schema", "database", "ef", "persistence", "repository"),
+                HasAny(tokens, "test", "tests", "spec", "specification"),
+                HasAny(tokens, "css", "style", "styling", "stylesheet", "layout", "theme"),
+                HasAny(tokens, "javascript", "typescript", "script", "browser"),
+                HasAny(tokens, "designer"));
+        }
+
+        private static bool HasAny(HashSet<string> tokens, params string[] values) =>
+            values.Any(tokens.Contains);
+    }
 
     private static IEnumerable<string> RequiredIdentifiers(string request)
     {
