@@ -9,7 +9,7 @@ namespace Kronxy.Infrastructure.Execution;
 
 public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 {
-    private const string Version = "development-analysis-v3";
+    private const string Version = "development-analysis-v4";
     private static readonly Regex CandidatePath = new(
         @"(?<![A-Za-z0-9_./:\\-])(?<path>(?:src|tests|tools)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:cs|razor|cshtml|json|css|js|ts|html|ya?ml|xml|props|targets|csproj|sln))(?=$|[\s`'\""()\[\]{},;:!?\.])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -50,13 +50,12 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         string root = Path.GetFullPath(request.Repository.RepositoryPath);
         string[] inventory = CreateCandidateInventory(root, options.MaxFilesInspected + 1);
         if (inventory.Length > options.MaxFilesInspected)
-            return await PersistUnknownAsync(request, [], "Candidate inventory exceeds the configured inspection limit.", cancellationToken);
+            return await PersistUnknownAsync(request, "Candidate inventory exceeds the configured inspection limit.", cancellationToken);
 
         CandidateDiscovery discovery = DiscoverCandidates(request.JobRequest, inventory, options.MaxCandidateTargets);
         if (discovery.IsAmbiguous || discovery.Paths.Length == 0 || discovery.Paths.Length > options.MaxCandidateTargets)
             return await PersistUnknownAsync(
                 request,
-                discovery.Paths.Take(options.MaxCandidateTargets).ToArray(),
                 discovery.Reason ?? "Candidate targets are missing or exceed the configured limit.",
                 cancellationToken);
 
@@ -67,6 +66,7 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         var declarations = new List<string>();
         var symbols = new HashSet<string>(StringComparer.Ordinal);
         var existingCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var authoritativeSources = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (string candidate in candidates)
         {
@@ -82,6 +82,7 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 
             existingCandidates.Add(candidate);
             string source = await File.ReadAllTextAsync(full, cancellationToken);
+            authoritativeSources[candidate] = source;
             filesInspected.Add(candidate);
             foreach (Match match in Declaration.Matches(source))
             {
@@ -97,27 +98,44 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         var breakingContracts = new HashSet<string>(StringComparer.Ordinal);
         int references = 0;
         bool truncated = false;
-        bool discoverReferences = candidates.Any(path =>
+        bool replacementIntent = Regex.IsMatch(request.JobRequest, @"(?i)replace|rename|remove|parent|belongs\s+to|exactly|only\s*:");
+        bool csharpAuthoritative = candidates.Any(path =>
             Path.GetExtension(path).Equals(".cs", StringComparison.OrdinalIgnoreCase));
-        IEnumerable<string> sourceFiles = discoverReferences
-            ? inventory.Select(relative => Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)))
-            : [];
+        string[] highConfidenceSymbols = symbols
+            .Where(IsHighConfidenceSymbol)
+            .ToArray();
+        int referenceBudget = Math.Min(
+            options.MaxReferenceMatches,
+            Math.Max(4, options.MaxCandidateTargets * 2));
+        int remainingInspectionBudget = Math.Max(0, options.MaxFilesInspected - filesInspected.Count);
+        int effectiveReferenceBudget = Math.Min(referenceBudget, remainingInspectionBudget);
+        string[] relatedPaths = csharpAuthoritative
+            ? StrongReferenceCandidates(inventory, existingCandidates, highConfidenceSymbols, replacementIntent, effectiveReferenceBudget + 1)
+            : SupportingContextCandidates(inventory, existingCandidates, authoritativeSources, effectiveReferenceBudget + 1);
 
-        foreach (string file in sourceFiles)
+        if (relatedPaths.Length > effectiveReferenceBudget)
+            return await PersistUnknownAsync(
+                request,
+                "Reference expansion exceeds the configured bounded inspection budget.",
+                cancellationToken,
+                filesInspected,
+                highConfidenceSymbols);
+
+        foreach (string relative in relatedPaths)
         {
-            if (filesInspected.Count >= options.MaxFilesInspected) { truncated = true; break; }
-            string relative = Path.GetRelativePath(root, file).Replace('\\', '/');
-            if (existingCandidates.Contains(relative)) continue;
+            string file = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
             string source = await File.ReadAllTextAsync(file, cancellationToken);
             filesInspected.Add(relative);
-            foreach (string symbol in symbols)
+            foreach (string symbol in highConfidenceSymbols)
             {
                 if (!Regex.IsMatch(source, $@"\b{Regex.Escape(symbol)}\b")) continue;
-                impactedLayers.Add(Layer(relative));
                 if (references++ < options.MaxReferenceMatches)
                     evidence.Add(new("Reference", relative, symbol));
                 else truncated = true;
-                if (relative.StartsWith("src/", StringComparison.OrdinalIgnoreCase))
+                if (csharpAuthoritative)
+                    impactedLayers.Add(Layer(relative));
+                if (csharpAuthoritative && replacementIntent &&
+                    relative.StartsWith("src/", StringComparison.OrdinalIgnoreCase))
                     breakingContracts.Add($"{symbol} consumed by {relative}");
             }
             if (evidence.Count > options.MaxEvidenceItems) { truncated = true; break; }
@@ -136,7 +154,6 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         bool hasExisting = existingCandidates.Count > 0;
         bool allExisting = existingCandidates.Count == candidates.Length;
         bool crossLayer = scopeDefiningLayers.Length > 1;
-        bool replacementIntent = Regex.IsMatch(request.JobRequest, @"(?i)replace|rename|remove|parent|belongs\s+to|exactly|only\s*:");
         bool extensionIntent = Regex.IsMatch(request.JobRequest, @"(?i)\b(add|extend|additional|new member)\b");
         bool refactorIntent = Regex.IsMatch(request.JobRequest, @"(?i)\brefactor\b");
         string[] requiredIdentifiers = RequiredIdentifiers(request.JobRequest).Distinct(StringComparer.Ordinal).ToArray();
@@ -175,14 +192,19 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         return await PersistAsync(request, analysis, cancellationToken);
     }
 
-    private Task<DevelopmentAnalysisResult> PersistUnknownAsync(DevelopmentAnalysisRequest request, string[] targets, string reason, CancellationToken token) =>
+    private Task<DevelopmentAnalysisResult> PersistUnknownAsync(
+        DevelopmentAnalysisRequest request,
+        string reason,
+        CancellationToken token,
+        IReadOnlyList<string>? filesInspected = null,
+        IReadOnlyList<string>? targetSymbols = null) =>
         PersistAsync(request, new DevelopmentAnalysis
         {
             JobId=request.JobId, RunId=request.RunId, AttemptCount=request.AttemptCount, RequestIdentity=Hash(request.JobRequest),
-            TargetSymbols=targets.Select(target => Path.GetFileNameWithoutExtension(target) ?? string.Empty).ToArray(), ExistingDeclarations=[],
+            TargetSymbols=targetSymbols ?? [], ExistingDeclarations=[],
             PrimaryClassification=DevelopmentChangeClassification.Unknown, ImpactedLayers=[], RequestedScope=RequestedScope(request.JobRequest),
             RequiredScope="Unknown", ScopeCompatible=null, BreakingContracts=[], ArchitectureDecisionRequired=true,
-            DeveloperExecutionAllowed=false, Evidence=[new("Ambiguity", string.Empty, reason)], FilesInspected=[], AnalysisVersion=Version
+            DeveloperExecutionAllowed=false, Evidence=[new("Ambiguity", string.Empty, reason)], FilesInspected=filesInspected ?? [], AnalysisVersion=Version
         }, token);
 
     private async Task<DevelopmentAnalysisResult> PersistAsync(DevelopmentAnalysisRequest request, DevelopmentAnalysis analysis, CancellationToken token)
@@ -224,6 +246,100 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
             .Take(limit)
             .ToArray();
     }
+
+    private static bool IsHighConfidenceSymbol(string symbol)
+    {
+        string[] tokens = Tokenize(symbol).ToArray();
+        if (symbol.Length < 4 || tokens.Length == 0 || tokens.All(LowInformationTokens.Contains))
+            return false;
+        if (Regex.IsMatch(symbol, @"^\d{8,}[_-]") ||
+            tokens.Contains("designer", StringComparer.OrdinalIgnoreCase) ||
+            tokens.Contains("migration", StringComparer.OrdinalIgnoreCase))
+            return false;
+        return !symbol.Equals("Jobs", StringComparison.OrdinalIgnoreCase) &&
+               !symbol.Equals("Services", StringComparison.OrdinalIgnoreCase) &&
+               !symbol.Equals("Models", StringComparison.OrdinalIgnoreCase) &&
+               !symbol.Equals("Data", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string[] StrongReferenceCandidates(
+        string[] inventory,
+        HashSet<string> authoritative,
+        string[] symbols,
+        bool replacementIntent,
+        int limit)
+    {
+        string[] normalizedSymbols = symbols
+            .Select(NormalizeCompound)
+            .Where(symbol => symbol.Length >= 4)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        string[] semanticSuffixes = symbols
+            .SelectMany(Tokenize)
+            .Where(token => token.Length >= 4 && !LowInformationTokens.Contains(token))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return inventory
+            .Where(path => !authoritative.Contains(path) &&
+                           Path.GetExtension(path).Equals(".cs", StringComparison.OrdinalIgnoreCase))
+            .Where(path =>
+            {
+                string fileName = NormalizeCompound(Path.GetFileNameWithoutExtension(path));
+                bool symbolAffinity = normalizedSymbols.Any(symbol => fileName.Contains(symbol, StringComparison.OrdinalIgnoreCase)) ||
+                    semanticSuffixes.Any(suffix => fileName.Contains(suffix, StringComparison.OrdinalIgnoreCase));
+                bool structuralReplacement = replacementIntent &&
+                    (path.Contains("/Migrations/", StringComparison.OrdinalIgnoreCase) ||
+                     path.Contains("/Configurations/", StringComparison.OrdinalIgnoreCase));
+                return symbolAffinity || structuralReplacement;
+            })
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .Take(limit)
+            .ToArray();
+    }
+
+    private static string[] SupportingContextCandidates(
+        string[] inventory,
+        HashSet<string> authoritative,
+        IReadOnlyDictionary<string, string> authoritativeSources,
+        int limit)
+    {
+        string[] componentNames = authoritative
+            .Select(path => NormalizeCompound(Path.GetFileNameWithoutExtension(path)))
+            .Where(name => name.Length >= 5)
+            .ToArray();
+        string[] authoritativeProjects = authoritative
+            .Select(ProjectSegment)
+            .Where(project => project.Length != 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        string[] directlyUsedTypes = authoritativeSources.Values
+            .SelectMany(source => Regex.Matches(source, @"\b[A-Z][A-Za-z0-9]*(?:Client|Service)\b")
+                .Select(match => match.Value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        return inventory
+            .Where(path => !authoritative.Contains(path))
+            .Where(path =>
+            {
+                string fileName = NormalizeCompound(Path.GetFileNameWithoutExtension(path));
+                string project = ProjectSegment(path);
+                bool sameProjectFamily = authoritativeProjects.Any(authoritativeProject =>
+                    project.Equals(authoritativeProject, StringComparison.OrdinalIgnoreCase) ||
+                    project.StartsWith(authoritativeProject + ".Tests", StringComparison.OrdinalIgnoreCase));
+                bool componentCompanion = componentNames.Any(component =>
+                    fileName.Contains(component, StringComparison.OrdinalIgnoreCase)) && sameProjectFamily;
+                bool directDependency = directlyUsedTypes.Any(type =>
+                    fileName.Equals(NormalizeCompound(type), StringComparison.OrdinalIgnoreCase));
+                return componentCompanion || directDependency;
+            })
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .Take(limit)
+            .ToArray();
+    }
+
+    private static string NormalizeCompound(string value) =>
+        string.Concat(Tokenize(value));
 
     private static bool IsSafeCandidatePath(string path)
     {

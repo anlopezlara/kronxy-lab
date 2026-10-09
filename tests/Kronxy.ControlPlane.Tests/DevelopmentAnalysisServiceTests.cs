@@ -606,10 +606,164 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
         Assert.DoesNotContain(result.TargetSymbols, symbol => symbol.Contains("Persistence", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Razor_authoritative_candidate_keeps_web_only_required_scope()
+    {
+        Write("src/Example.Web/Pages/OrderDetail.razor", "<h1>Order detail</h1>");
+        Write("src/Example.Api/Orders/GetOrder.cs", "public sealed class GetOrder { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Web-only add usability to the Example.Web Order Detail page");
+
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+        Assert.True(result.DeveloperExecutionAllowed);
+        Assert.Equal(["Web"], result.ImpactedLayers);
+    }
+
+    [Fact]
+    public async Task Razor_direct_client_is_supporting_context_without_scope_expansion()
+    {
+        Write("src/Example.Web/Pages/OrderDetail.razor", "@inject OrderApiClient Client\n<h1>Order detail</h1>");
+        Write("src/Example.Web/Clients/OrderApiClient.cs", "public sealed class OrderApiClient { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Web-only add usability to the Example.Web Order Detail page");
+
+        Assert.Contains("src/Example.Web/Clients/OrderApiClient.cs", result.FilesInspected);
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.Equal(["OrderDetail"], result.TargetSymbols);
+    }
+
+    [Fact]
+    public async Task Generic_jobs_across_layers_do_not_expand_non_csharp_scope()
+    {
+        Write("src/Example.Web/Pages/JobDetail.razor", "<h1>Jobs</h1>");
+        Write("src/Example.Api/Jobs/JobsController.cs", "public sealed class JobsController { }");
+        Write("src/Example.Application/Jobs/JobsService.cs", "public sealed class JobsService { }");
+        Write("src/Example.Domain/Jobs/Jobs.cs", "public sealed class Jobs { }");
+        Write("src/Example.Infrastructure/Jobs/JobsRepository.cs", "public sealed class JobsRepository { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Web-only add usability to the Job Detail page");
+
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.Equal(["Web"], result.ImpactedLayers);
+        Assert.DoesNotContain(result.TargetSymbols, symbol => symbol.Equals("Jobs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Migration_and_test_helper_declarations_do_not_become_target_symbols()
+    {
+        Write("src/Example.Web/Pages/JobDetail.razor", "<h1>Job detail</h1>");
+        Write("src/Example.Infrastructure/Migrations/20260829043649_Add_Job.cs", "public sealed class AddJob { }");
+        Write("tests/Example.Web.Tests/Helpers.cs", "public sealed class RecordingHandler { } public sealed class RouteHandler { } public sealed class TestIdentity { }");
+
+        DevelopmentAnalysis result = await Analyze("Web-only add usability to the Job Detail page");
+
+        Assert.Equal(["JobDetail"], result.TargetSymbols);
+        Assert.DoesNotContain(result.TargetSymbols, symbol => symbol.Contains("Migration", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain("RecordingHandler", result.TargetSymbols);
+        Assert.DoesNotContain("RouteHandler", result.TargetSymbols);
+        Assert.DoesNotContain("TestIdentity", result.TargetSymbols);
+    }
+
+    [Fact]
+    public async Task Large_unrelated_inventory_keeps_files_inspected_small()
+    {
+        Write("src/Example.Web/Pages/OrderDetail.razor", "<h1>Order detail</h1>");
+        for (int index = 0; index < 300; index++)
+            Write($"src/Example.Application/Noise/Unrelated{index}.cs", $"public sealed class Unrelated{index} {{ }}");
+
+        DevelopmentAnalysis result = await Analyze("Web-only add usability to the Order Detail page");
+
+        Assert.Equal(["src/Example.Web/Pages/OrderDetail.razor"], result.FilesInspected);
+        Assert.Equal("Web-only", result.RequiredScope);
+    }
+
+    [Fact]
+    public async Task Explicit_web_and_api_targets_produce_cross_layer_scope()
+    {
+        Write("src/Kronxy.Web/Pages/OrderDetail.razor", "<h1>Order detail</h1>");
+        Write("src/Kronxy.Api/Orders/OrderEndpoint.cs", "public sealed class OrderEndpoint { }");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Cross-layer add behavior to src/Kronxy.Web/Pages/OrderDetail.razor and src/Kronxy.Api/Orders/OrderEndpoint.cs");
+
+        Assert.Equal("Cross-layer", result.RequiredScope);
+        Assert.Contains("Web", result.ImpactedLayers);
+        Assert.Contains("API", result.ImpactedLayers);
+    }
+
+    [Fact]
+    public async Task Breaking_contracts_require_strong_csharp_replacement_evidence()
+    {
+        Write("src/Kronxy.Domain/Widgets/Widget.cs", "public sealed class Widget { }");
+        Write("src/Kronxy.Application/Widgets/UseWidget.cs", "public sealed class UseWidget { private Widget? value; }");
+
+        DevelopmentAnalysis additive = await AnalyzeWithFreshStore(
+            "Cross-layer add member to src/Kronxy.Domain/Widgets/Widget.cs");
+        DevelopmentAnalysis replacement = await AnalyzeWithFreshStore(
+            "Cross-layer replace Widget in src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Empty(additive.BreakingContracts);
+        Assert.NotEmpty(replacement.BreakingContracts);
+    }
+
+    [Fact]
+    public async Task Reference_expansion_budget_fails_closed_explicitly()
+    {
+        Write("src/Kronxy.Domain/Widgets/Widget.cs", "public sealed class Widget { }");
+        for (int index = 0; index < 17; index++)
+            Write($"src/Kronxy.Application/Widgets/UseWidget{index}.cs", $"public sealed class UseWidget{index} {{ private Widget? value; }}");
+
+        DevelopmentAnalysis result = await Analyze("Cross-layer replace Widget in src/Kronxy.Domain/Widgets/Widget.cs");
+
+        Assert.Equal(DevelopmentChangeClassification.Unknown, result.PrimaryClassification);
+        Assert.Equal(["src/Kronxy.Domain/Widgets/Widget.cs"], result.FilesInspected);
+        Assert.Contains(result.Evidence, item => item.Detail.Contains("bounded inspection budget", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Representative_v4_pilot_keeps_authoritative_web_scope_bounded()
+    {
+        Write("src/Example.Web/Components/Pages/JobDetail.razor", "@inject ExampleApiClient Client\n<h1>Job detail</h1>");
+        Write("src/Example.Web/Components/Pages/Jobs.razor", "<h1>Jobs</h1>");
+        Write("src/Example.Web/Components/Pages/CreateJob.razor", "<h1>Create job</h1>");
+        Write("src/Example.Web/Clients/ExampleApiClient.cs", "public sealed class ExampleApiClient { }");
+        Write("tests/Example.Web.Tests/ExampleApiClientTests.cs", "public sealed class RecordingHandler { } public sealed class TestIdentity { }");
+        Write("src/Example.Infrastructure/Migrations/20260829043649_Add_Job.cs", "public sealed class AddJob { }");
+        for (int index = 0; index < 100; index++)
+            Write($"src/Example.Application/Jobs/JobsReference{index}.cs", $"public sealed class JobsReference{index} {{ }}");
+
+        DevelopmentAnalysis result = await Analyze(
+            "Web-only add a small usability improvement to the existing Example.Web Job Detail page");
+
+        Assert.Equal(DevelopmentChangeClassification.Extension, result.PrimaryClassification);
+        Assert.Equal("Web-only", result.RequestedScope);
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+        Assert.False(result.ArchitectureDecisionRequired);
+        Assert.True(result.DeveloperExecutionAllowed);
+        Assert.Equal(["JobDetail"], result.TargetSymbols);
+        Assert.InRange(result.FilesInspected.Count, 1, 3);
+        Assert.DoesNotContain(result.FilesInspected, path => path.Contains("Migrations", StringComparison.Ordinal));
+    }
+
     private async Task<DevelopmentAnalysis> Analyze(string jobRequest)
     {
         Directory.CreateDirectory(root);
         var service = new DevelopmentAnalysisService(store, new DevelopmentAnalysisOptions());
+        DevelopmentAnalysisResult result = await service.AnalyzeAsync(Request(jobRequest));
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        return result.Analysis!;
+    }
+
+    private async Task<DevelopmentAnalysis> AnalyzeWithFreshStore(string jobRequest)
+    {
+        Directory.CreateDirectory(root);
+        var isolatedStore = new RecordingArtifactStore();
+        var service = new DevelopmentAnalysisService(isolatedStore, new DevelopmentAnalysisOptions());
         DevelopmentAnalysisResult result = await service.AnalyzeAsync(Request(jobRequest));
         Assert.True(result.IsSuccess, result.ErrorCode);
         return result.Analysis!;
