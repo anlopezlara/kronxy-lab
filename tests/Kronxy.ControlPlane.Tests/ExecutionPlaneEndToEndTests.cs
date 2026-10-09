@@ -182,7 +182,7 @@ public sealed class ExecutionPlaneEndToEndTests
 
                 Assert.True(
                     third.IsSuccess,
-                    $"Third advance failed. Kind={third.Kind}; Error={third.Error.Code}; Name={third.Error.Name}");
+                    $"Third advance failed. Kind={third.Kind}; Error={third.Error.Code}; Name={third.Error.Name}; Diagnostic={third.DiagnosticCode}");
 
                 Assert.Equal(
                     JobState.WorkspacePreparing,

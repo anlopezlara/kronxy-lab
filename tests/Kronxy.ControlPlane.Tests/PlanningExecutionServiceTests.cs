@@ -371,6 +371,7 @@ public sealed class PlanningExecutionServiceTests
         [
             "src/unrelated.cs"
         ];
+        fixture.Reader.AuthoritativePath = "src/unrelated.cs";
 
         PlanningExecutionResult result =
             await fixture.Service.ExecuteAsync(
@@ -405,6 +406,7 @@ public sealed class PlanningExecutionServiceTests
         Fixture fixture = CreateFixture();
         PlanningExecutionRequest request = Request();
         fixture.PriorityPaths.Result = ["src/unrelated.cs"];
+        fixture.Reader.AuthoritativePath = "src/unrelated.cs";
 
         PlanningExecutionResult first =
             await fixture.Service.ExecuteAsync(
@@ -420,6 +422,7 @@ public sealed class PlanningExecutionServiceTests
                 });
 
         fixture.PriorityPaths.Result = ["src/a.cs"];
+        fixture.Reader.AuthoritativePath = "src/a.cs";
         PlanningExecutionResult accepted =
             await fixture.Service.ExecuteAsync(
                 request with
@@ -462,7 +465,8 @@ public sealed class PlanningExecutionServiceTests
 
         fixture.PriorityPaths.Result = ["src/a.cs"];
         fixture.Context.Result = ContextAiInputResult.Success(
-            "===== FILE: src/a.cs =====\nclass A {}\n");
+            "===== FILE: src/a.cs =====\nclass A {}\n" +
+            "===== FILE: src/New/Existing.cs =====\nclass Existing {}\n");
         fixture.Reader.RejectedResult = RejectedArtifact(
             PlanResponse(
                 "Implement Widget safely.",
@@ -471,7 +475,7 @@ public sealed class PlanningExecutionServiceTests
         fixture.Gateway.Response = PlanResponse(
             "Implement Widget safely.",
             ["src/a.cs"],
-            ["src/New/Widget.cs"]);
+            ["src/a.cs", "src/New/Widget.cs"]);
 
         PlanningExecutionResult result =
             await fixture.Service.ExecuteAsync(
@@ -708,16 +712,87 @@ public sealed class PlanningExecutionServiceTests
                 ArtifactReadFailureKind.NotFound,
                 "ARTIFACT_READ_NOT_FOUND");
 
+        public ArtifactReadResult? DevelopmentAnalysisResult
+        {
+            get;
+            set;
+        }
+
+        public string AuthoritativePath { get; set; } = "src/a.cs";
+
+        public string RequiredScope { get; set; } = "Cross-layer";
+
+        public int AnalysisAttemptCount { get; set; } = 1;
+
+        public Guid? AnalysisJobId { get; set; }
+
+        public Guid? AnalysisRunId { get; set; }
+
+        public IReadOnlyList<string> SupportingContext { get; set; } = [];
+
         public Task<ArtifactReadResult> ReadAsync(
             ArtifactReadRequest request,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
+
+            if (request.ArtifactType == ArtifactType.DevelopmentAnalysis)
+            {
+                return Task.FromResult(
+                    DevelopmentAnalysisResult ??
+                    AnalysisArtifact(request));
+            }
+
             return Task.FromResult(
                 request.ArtifactType ==
                     ArtifactType.PlanningRejectedResponse
                     ? RejectedResult
                     : Result);
+        }
+
+        private ArtifactReadResult AnalysisArtifact(
+            ArtifactReadRequest request)
+        {
+            var analysis = new DevelopmentAnalysis
+            {
+                JobId = AnalysisJobId ?? request.JobId,
+                RunId = AnalysisRunId ?? request.RunId,
+                AttemptCount = AnalysisAttemptCount,
+                RequestIdentity = "test-request",
+                TargetSymbols = [Path.GetFileNameWithoutExtension(AuthoritativePath)],
+                ExistingDeclarations = [$"Target@{AuthoritativePath}"],
+                PrimaryClassification = DevelopmentChangeClassification.Extension,
+                ImpactedLayers = RequiredScope == "Cross-layer"
+                    ? ["Application", "Web"]
+                    : [RequiredScope.Replace("-only", string.Empty)],
+                RequestedScope = "Unspecified",
+                RequiredScope = RequiredScope,
+                ScopeCompatible = true,
+                BreakingContracts = [],
+                ArchitectureDecisionRequired = false,
+                DeveloperExecutionAllowed = true,
+                Evidence = [new("Declaration", AuthoritativePath, "Target")],
+                FilesInspected = [AuthoritativePath, .. SupportingContext],
+                AnalysisVersion = "test"
+            };
+
+            byte[] content =
+                JsonSerializer.SerializeToUtf8Bytes(analysis);
+
+            return ArtifactReadResult.Success(
+                new ArtifactRecord
+                {
+                    ArtifactId = Guid.NewGuid(),
+                    JobId = request.JobId,
+                    RunId = request.RunId,
+                    ArtifactType = ArtifactType.DevelopmentAnalysis,
+                    RelativePath = "development-analysis/analysis.json",
+                    Sha256 = new string('d', 64),
+                    SizeBytes = content.Length,
+                    CreatedAtUtc = DateTimeOffset.UtcNow,
+                    CorrelationId = "analysis"
+                },
+                content);
         }
     }
 
@@ -789,8 +864,8 @@ public sealed class PlanningExecutionServiceTests
                     TimeSpan.FromMilliseconds(10),
                 TerminationReason =
                     AiTerminationReason.Stop,
-                Usage = new AiUsage(10, 5)
-            };
+            Usage = new AiUsage(10, 5)
+        };
 
         public Task<AiResponse> GenerateAsync(
             AiRequest request,
@@ -810,6 +885,203 @@ public sealed class PlanningExecutionServiceTests
                     Array.Empty<string>(),
                     string.Empty));
     }
+
+    [Fact]
+    public async Task Authoritative_razor_target_and_supporting_context_are_explicit_in_planner_input()
+    {
+        Fixture fixture = PilotFixture();
+        fixture.Gateway.Response = PlanResponse(
+            "Add Job Detail copy controls.",
+            [
+                "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+                "tests/Kronxy.Web.Tests/KronxyApiClientTests.cs"
+            ],
+            [
+                "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+                "tests/Kronxy.Web.Tests/KronxyApiClientTests.cs"
+            ]);
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(PilotRequest());
+
+        Assert.True(result.IsSuccess);
+        string prompt = fixture.Gateway.LastRequest!.UserContent;
+        Assert.Contains("AuthoritativeTargetFiles", prompt);
+        Assert.Contains("src/Kronxy.Web/Components/Pages/JobDetail.razor", prompt);
+        Assert.Contains("SupportingContextFiles", prompt);
+        Assert.Contains("src/Kronxy.Web/Clients/IKronxyApiClient.cs", prompt);
+        Assert.Contains("\"RequiredScope\":\"Web-only\"", prompt);
+        Assert.DoesNotContain(
+            "candidateFilesToModify\":[\"src/Kronxy.Web/Clients/IKronxyApiClient.cs",
+            fixture.Gateway.Response.Content);
+    }
+
+    [Fact]
+    public async Task Pilot_mvc_substitution_is_rejected_by_strict_path_coherence()
+    {
+        Fixture fixture = PilotFixture();
+        fixture.Gateway.Response = PlanResponse(
+            "Add Job Detail copy controls.",
+            ["src/Kronxy.Web/Views/JobDetail.cshtml"],
+            [
+                "src/Kronxy.Web/Views/JobDetail.cshtml",
+                "src/Kronxy.Web/Controllers/JobController.cs",
+                "src/Kronxy.Web.Tests/JobDetailTests.cs"
+            ]);
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(PilotRequest());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("PLANNING_PATH_COHERENCE_INVALID", result.ErrorCode);
+        Assert.Contains(fixture.Store.Requests,
+            request => request.ArtifactType == ArtifactType.PlanningRejectedResponse);
+    }
+
+    [Fact]
+    public async Task Web_only_analysis_rejects_cross_layer_candidate()
+    {
+        Fixture fixture = PilotFixture();
+        fixture.Context.Result = ContextAiInputResult.Success(
+            "===== FILE: src/Kronxy.Web/Components/Pages/JobDetail.razor =====\npage\n" +
+            "===== FILE: src/Kronxy.Api/Controllers/Jobs/JobsController.cs =====\ncontroller\n");
+        fixture.Gateway.Response = PlanResponse(
+            "Add Job Detail copy controls.",
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"],
+            [
+                "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+                "src/Kronxy.Api/Controllers/Jobs/JobsController.cs"
+            ]);
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(PilotRequest());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("PLANNING_PATH_COHERENCE_INVALID", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task New_test_file_in_real_test_project_is_allowed_when_justified()
+    {
+        Fixture fixture = PilotFixture();
+        fixture.Gateway.Response = PlanResponse(
+            "Add Job Detail copy controls.",
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"],
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"]) with
+        {
+            Content = JsonSerializer.Serialize(new PlannerPlan
+            {
+                Objective = "Add Job Detail copy controls.",
+                FilesToInspect = ["src/Kronxy.Web/Components/Pages/JobDetail.razor"],
+                CandidateFilesToModify =
+                [
+                    "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+                    "tests/Kronxy.Web.Tests/JobDetailDiagnosticsTests.cs"
+                ],
+                Strategy = "Add a new focused test in the existing frontend test project.",
+                AcceptanceCriteria = ["Copy controls work."],
+                Risks = [],
+                ExpectedTests = ["Run frontend tests."],
+                Assumptions = [],
+                Uncertainties = []
+            })
+        };
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(PilotRequest());
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Theory]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    public async Task Missing_or_wrong_attempt_development_analysis_fails_closed(
+        bool missing,
+        int analysisAttempt)
+    {
+        Fixture fixture = CreateFixture();
+        if (missing)
+        {
+            fixture.Reader.DevelopmentAnalysisResult = ArtifactReadResult.Failure(
+                ArtifactReadFailureKind.NotFound,
+                "ARTIFACT_READ_NOT_FOUND");
+        }
+        else
+        {
+            fixture.Reader.AnalysisAttemptCount = analysisAttempt;
+        }
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.StartsWith("PLANNING_DEVELOPMENT_ANALYSIS_", result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    [Fact]
+    public async Task Wrong_run_development_analysis_fails_closed()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.AnalysisRunId = Guid.NewGuid();
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("PLANNING_DEVELOPMENT_ANALYSIS_INVALID", result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    [Fact]
+    public async Task Explicit_multi_layer_analysis_allows_coherent_multi_layer_plan()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.AuthoritativePath = "src/Kronxy.Domain/Jobs/Job.cs";
+        fixture.Reader.SupportingContext =
+            ["src/Kronxy.Api/Controllers/Jobs/JobsController.cs"];
+        fixture.Reader.RequiredScope = "Cross-layer";
+        fixture.Context.Result = ContextAiInputResult.Success(
+            "===== FILE: src/Kronxy.Domain/Jobs/Job.cs =====\nentity\n" +
+            "===== FILE: src/Kronxy.Api/Controllers/Jobs/JobsController.cs =====\ncontroller\n");
+        fixture.Gateway.Response = PlanResponse(
+            "Change Job API contracts.",
+            [
+                "src/Kronxy.Domain/Jobs/Job.cs",
+                "src/Kronxy.Api/Controllers/Jobs/JobsController.cs"
+            ],
+            [
+                "src/Kronxy.Domain/Jobs/Job.cs",
+                "src/Kronxy.Api/Controllers/Jobs/JobsController.cs"
+            ]);
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(
+            Request() with
+            {
+                JobRequest = "Cross-layer change Job API contracts."
+            });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    private static Fixture PilotFixture()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.AuthoritativePath =
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor";
+        fixture.Reader.SupportingContext =
+            ["src/Kronxy.Web/Clients/IKronxyApiClient.cs"];
+        fixture.Reader.RequiredScope = "Web-only";
+        fixture.Context.Result = ContextAiInputResult.Success(
+            "===== FILE: src/Kronxy.Web/Components/Pages/JobDetail.razor =====\npage\n" +
+            "===== FILE: src/Kronxy.Web/Clients/IKronxyApiClient.cs =====\nclient\n" +
+            "===== FILE: tests/Kronxy.Web.Tests/KronxyApiClientTests.cs =====\ntests\n");
+        return fixture;
+    }
+
+    private static PlanningExecutionRequest PilotRequest() => new()
+    {
+        JobId = Guid.NewGuid(),
+        RunId = Guid.NewGuid(),
+        AttemptCount = 1,
+        JobRequest = "Web-only add Job Detail copy controls with focused frontend tests.",
+        CorrelationId = "planning-v2-pilot"
+    };
 
     private sealed class FakeStore :
         IArtifactStore
@@ -984,6 +1256,11 @@ public sealed class PlanningExecutionServiceTests
         [
             "src/Kronxy.Domain/Projects/Project.cs"
         ];
+        fixture.Reader.AuthoritativePath =
+            "src/Kronxy.Domain/Projects/Project.cs";
+        fixture.Reader.RequiredScope = "Domain-only";
+        fixture.Context.Result = ContextAiInputResult.Success(
+            "===== FILE: src/Kronxy.Domain/Projects/Project.cs =====\npublic sealed class Project {}\n");
 
         PlanningExecutionResult result =
             await fixture.Service.ExecuteAsync(

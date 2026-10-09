@@ -26,6 +26,8 @@ public sealed record PlanningExecutionRequest
 
     public required Guid RunId { get; init; }
 
+    public int AttemptCount { get; init; } = 1;
+
     public required string JobRequest { get; init; }
 
     public required string CorrelationId { get; init; }

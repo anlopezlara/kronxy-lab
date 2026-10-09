@@ -183,6 +183,44 @@ public sealed class PlanningPriorityPathSelector :
             .ToArray();
     }
 
+    internal static IReadOnlySet<string> ExtractManifestPaths(
+        ReadOnlyMemory<byte> packageContent)
+    {
+        try
+        {
+            using var stream = new MemoryStream(
+                packageContent.ToArray(),
+                writable: false);
+            using var archive = new ZipArchive(
+                stream,
+                ZipArchiveMode.Read,
+                leaveOpen: false);
+            ZipArchiveEntry? manifestEntry = archive.GetEntry(ManifestName);
+            if (manifestEntry is null)
+            {
+                return new HashSet<string>(StringComparer.Ordinal);
+            }
+
+            using Stream manifestStream = manifestEntry.Open();
+            ManifestModel? manifest = JsonSerializer.Deserialize<ManifestModel>(
+                manifestStream);
+
+            return manifest?.Entries?
+                .Where(entry => !string.IsNullOrWhiteSpace(entry.Path))
+                .Select(entry => entry.Path)
+                .ToHashSet(StringComparer.Ordinal) ??
+                new HashSet<string>(StringComparer.Ordinal);
+        }
+        catch (InvalidDataException)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+    }
+
     internal static bool HasTopFivePlanPathOverlap(
         PlannerPlan? plan,
         IReadOnlyList<string>? priorityPaths)

@@ -1871,6 +1871,9 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                                         RunId =
                                                                 runId,
 
+                                                        AttemptCount =
+                                                                job.AttemptCount,
+
                                                         JobRequest =
                                                                 job.Request,
 
