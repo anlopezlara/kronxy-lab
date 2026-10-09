@@ -12,6 +12,112 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "kronxy-development-analysis-tests", Guid.NewGuid().ToString("N"));
     private readonly RecordingArtifactStore store = new();
+    private const string ExactPilotRequest = """
+        Add a small usability improvement to the existing Kronxy.Web Job Detail page.
+
+        Requirements:
+
+        1. Add a copy-to-clipboard control next to JobId.
+        2. Add a copy-to-clipboard control next to RunId when RunId is available.
+        3. After copying, provide brief visible confirmation to the operator.
+        4. Do not change Kronxy.Api, Application, Domain, Infrastructure, persistence, workflow semantics, or API contracts.
+        5. Keep the implementation within Kronxy.Web and its frontend tests.
+        6. Reuse the existing visual design and component conventions.
+        7. Do not introduce a third-party JavaScript or UI library.
+        8. Handle a missing RunId without rendering a broken copy control.
+        9. Add focused regression tests where supported by the existing frontend test architecture.
+        10. Preserve all existing frontend behavior.
+
+        Expected scope:
+        Kronxy.Web and frontend tests only.
+
+        Acceptance:
+        - JobId can be copied from Job Detail.
+        - RunId can be copied when present.
+        - Missing RunId is handled safely.
+        - Operator receives visible copy confirmation.
+        - Existing tests pass.
+        - Solution builds with zero errors.
+        """;
+
+    [Fact]
+    public void Diagnostic_real_repository_inventory_resolves_exact_target_after_v5_weighting()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        IReadOnlyList<DevelopmentAnalysisService.CandidateRankingDiagnostic> ranking =
+            DevelopmentAnalysisService.RankRepositoryForDiagnostics(ExactPilotRequest, repositoryRoot);
+        Assert.Equal("src/Kronxy.Web/Components/Pages/JobDetail.razor", ranking[0].Path);
+        Assert.True(ranking[0].CompoundMatchContribution > 0);
+        Assert.Equal(1, ranking.Count(item => item.FinalScore == ranking[0].FinalScore));
+        DevelopmentAnalysisService.CandidateRankingDiagnostic testProject = Assert.Single(
+            ranking,
+            item => item.Path == "tests/Kronxy.Web.Tests/Kronxy.Web.Tests.csproj");
+        Assert.Equal(0, testProject.CompoundMatchContribution);
+        Assert.Equal(0, testProject.ProjectAffinityContribution);
+        Assert.True(testProject.FinalScore < ranking[0].FinalScore);
+    }
+
+    [Fact]
+    public async Task Exact_pilot_request_with_representative_real_inventory_selects_job_detail()
+    {
+        string[] webInventory =
+        [
+            "src/Kronxy.Web/Clients/IKronxyApiClient.cs",
+            "src/Kronxy.Web/Clients/KronxyApiClient.cs",
+            "src/Kronxy.Web/Clients/KronxyApiException.cs",
+            "src/Kronxy.Web/Clients/OperatorIdentity.cs",
+            "src/Kronxy.Web/Components/App.razor",
+            "src/Kronxy.Web/Components/Layout/MainLayout.razor",
+            "src/Kronxy.Web/Components/Pages/CreateJob.razor",
+            "src/Kronxy.Web/Components/Pages/Error.razor",
+            "src/Kronxy.Web/Components/Pages/Home.razor",
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "src/Kronxy.Web/Components/Pages/Jobs.razor",
+            "src/Kronxy.Web/Components/Pages/System.razor",
+            "src/Kronxy.Web/Components/Routes.razor",
+            "src/Kronxy.Web/Components/Shared/ApiError.razor",
+            "src/Kronxy.Web/Components/Shared/Info.razor",
+            "src/Kronxy.Web/Components/Shared/PipelineIndicator.razor",
+            "src/Kronxy.Web/Components/Shared/StatusBadge.razor",
+            "src/Kronxy.Web/Components/_Imports.razor",
+            "src/Kronxy.Web/Kronxy.Web.csproj",
+            "src/Kronxy.Web/Models/ApiContracts.cs",
+            "src/Kronxy.Web/Presentation/OperatorActionGuard.cs",
+            "src/Kronxy.Web/Presentation/OperatorPresentation.cs",
+            "src/Kronxy.Web/Program.cs",
+            "src/Kronxy.Web/Properties/launchSettings.json",
+            "src/Kronxy.Web/appsettings.json",
+            "src/Kronxy.Web/wwwroot/app.css",
+            "src/Kronxy.Web/wwwroot/operator-actions.css",
+            "tests/Kronxy.Web.Tests/Kronxy.Web.Tests.csproj",
+            "tests/Kronxy.Web.Tests/KronxyApiClientTests.cs"
+        ];
+        foreach (string path in webInventory)
+            Write(path, path.EndsWith("JobDetail.razor", StringComparison.Ordinal)
+                ? "@inject KronxyApiClient Client\n<h1>Job detail</h1>"
+                : "safe fixture");
+
+        Write("src/Kronxy.Api/Jobs/JobResponse.cs", "public sealed class JobResponse { public Guid JobId { get; init; } public Guid RunId { get; init; } }");
+        Write("src/Kronxy.Application/Jobs/JobService.cs", "public sealed class JobService { }");
+        Write("src/Kronxy.Domain/Jobs/Job.cs", "public sealed class Job { }");
+        Write("src/Kronxy.Infrastructure/Migrations/20260829043649_Add_Job.cs", "public sealed class AddJob { }");
+        Write("tests/Kronxy.ControlPlane.Tests/JobTests.cs", "public sealed class JobTests { }");
+        Write("tests/KRONXY.Context.Tests/ContextTests.cs", "public sealed class ContextTests { }");
+
+        DevelopmentAnalysis result = await Analyze(ExactPilotRequest);
+
+        Assert.Equal(DevelopmentChangeClassification.Extension, result.PrimaryClassification);
+        Assert.Equal("Web-only", result.RequestedScope);
+        Assert.Equal("Web-only", result.RequiredScope);
+        Assert.True(result.ScopeCompatible);
+        Assert.False(result.ArchitectureDecisionRequired);
+        Assert.True(result.DeveloperExecutionAllowed);
+        Assert.Equal(["JobDetail"], result.TargetSymbols);
+        Assert.Equal(["Web"], result.ImpactedLayers);
+        Assert.Contains("src/Kronxy.Web/Components/Pages/JobDetail.razor", result.FilesInspected);
+        Assert.InRange(result.FilesInspected.Count, 1, 3);
+        Assert.DoesNotContain(result.FilesInspected, path => path.StartsWith("src/Kronxy.Api/", StringComparison.Ordinal));
+    }
 
     [Fact]
     public async Task New_component_is_allowed_and_persisted()
@@ -757,6 +863,14 @@ public sealed class DevelopmentAnalysisServiceTests : IDisposable
         DevelopmentAnalysisResult result = await service.AnalyzeAsync(Request(jobRequest));
         Assert.True(result.IsSuccess, result.ErrorCode);
         return result.Analysis!;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Kronxy.sln")))
+            directory = directory.Parent;
+        return directory?.FullName ?? throw new InvalidOperationException("Repository root was not found.");
     }
 
     private async Task<DevelopmentAnalysis> AnalyzeWithFreshStore(string jobRequest)

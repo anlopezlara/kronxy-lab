@@ -9,7 +9,7 @@ namespace Kronxy.Infrastructure.Execution;
 
 public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 {
-    private const string Version = "development-analysis-v4";
+    private const string Version = "development-analysis-v5";
     private static readonly Regex CandidatePath = new(
         @"(?<![A-Za-z0-9_./:\\-])(?<path>(?:src|tests|tools)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:cs|razor|cshtml|json|css|js|ts|html|ya?ml|xml|props|targets|csproj|sln))(?=$|[\s`'\""()\[\]{},;:!?\.])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -235,6 +235,7 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         Regex.IsMatch(request, @"(?i)application[- ]only") ? "Application-only" :
         Regex.IsMatch(request, @"(?i)infrastructure[- ]only") ? "Infrastructure-only" :
         Regex.IsMatch(request, @"(?i)(?:web|presentation|ui)[- ]only") ? "Web-only" :
+        Regex.IsMatch(request, @"(?is)expected\s+scope\s*:\s*[^\n]*\bweb\b[^\n]*\bonly\b") ? "Web-only" :
         Regex.IsMatch(request, @"(?i)cross[- ]layer") ? "Cross-layer" : "Unspecified";
 
     private static string[] CreateCandidateInventory(string root, int limit)
@@ -391,7 +392,7 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 
         RequestHints hints = RequestHints.Create(request);
         var ranked = inventory
-            .Select(path => new { Path = path, Score = CandidateScore(path, hints) })
+            .Select(path => new { Path = path, Score = ScoreCandidate(path, hints).FinalScore })
             .Where(item => item.Score > 0)
             .OrderByDescending(item => item.Score)
             .ThenBy(item => item.Path, StringComparer.Ordinal)
@@ -407,33 +408,53 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         return new(best, false, null);
     }
 
-    private static int CandidateScore(string path, RequestHints hints)
+    internal static IReadOnlyList<CandidateRankingDiagnostic> RankCandidatesForDiagnostics(
+        string request,
+        IEnumerable<string> inventory)
+    {
+        RequestHints hints = RequestHints.Create(request);
+        return inventory
+            .Select(path => ScoreCandidate(path, hints))
+            .Where(item => item.FinalScore > 0)
+            .OrderByDescending(item => item.FinalScore)
+            .ThenBy(item => item.Path, StringComparer.Ordinal)
+            .Select((item, index) => item with { FinalRank = index + 1 })
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<CandidateRankingDiagnostic> RankRepositoryForDiagnostics(
+        string request,
+        string repositoryRoot,
+        int inventoryLimit = 1000) =>
+        RankCandidatesForDiagnostics(
+            request,
+            CreateCandidateInventory(Path.GetFullPath(repositoryRoot), inventoryLimit));
+
+    private static CandidateRankingDiagnostic ScoreCandidate(string path, RequestHints hints)
     {
         string extension = Path.GetExtension(path);
         if (extension.Equals(".css", StringComparison.OrdinalIgnoreCase) && !hints.Styling)
-            return 0;
+            return CandidateRankingDiagnostic.Zero(path);
         if ((extension.Equals(".js", StringComparison.OrdinalIgnoreCase) || extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)) && !hints.Script)
-            return 0;
+            return CandidateRankingDiagnostic.Zero(path);
 
         string stem = Path.GetFileNameWithoutExtension(path);
         string[] stemTokens = Tokenize(stem)
             .Where(token => !LexicalStopWords.Contains(token))
             .ToArray();
-        string stemCompound = string.Concat(stemTokens.Where(token => !long.TryParse(token, out _)));
+        string stemCompound = string.Concat(TokenizeRaw(stem).Where(token => !long.TryParse(token, out _)));
         bool exactCompound = stemCompound.Length >= 5 && hints.Compact.Contains(stemCompound, StringComparison.OrdinalIgnoreCase);
         string[] matchedTokens = stemTokens.Where(hints.Tokens.Contains).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         int informativeMatches = matchedTokens.Count(token => !LowInformationTokens.Contains(token));
 
-        int score = matchedTokens.Sum(token => LowInformationTokens.Contains(token) ? 1 : 7);
-        if (exactCompound)
-            score += 60;
+        int informativeTokenContribution = matchedTokens.Sum(token => LowInformationTokens.Contains(token) ? 1 : 7);
+        int compoundMatchContribution = exactCompound ? 60 : 0;
 
         string project = ProjectSegment(path);
-        string projectCompound = string.Concat(Tokenize(project));
+        string projectCompound = string.Concat(TokenizeRaw(project));
         bool projectAffinity = projectCompound.Length >= 4 &&
             hints.Compact.Contains(projectCompound, StringComparison.OrdinalIgnoreCase);
-        if (projectAffinity)
-            score += 40;
+        int projectAffinityContribution = projectAffinity ? 40 : 0;
 
         string[] directoryTokens = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
             .Skip(2)
@@ -441,27 +462,28 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
             .SelectMany(Tokenize)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        score += Math.Min(8, directoryTokens.Count(hints.Tokens.Contains) * 2);
+        int pathAffinityContribution = Math.Min(8, directoryTokens.Count(hints.Tokens.Contains) * 2);
 
         bool presentationFile = extension.Equals(".razor", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".cshtml", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".html", StringComparison.OrdinalIgnoreCase);
         bool webProject = Tokenize(project).Any(token => token.Equals("web", StringComparison.OrdinalIgnoreCase) ||
                                                         token.Equals("ui", StringComparison.OrdinalIgnoreCase));
+        int fileRoleContribution = 0;
         if (hints.Presentation && presentationFile)
-            score += 30;
+            fileRoleContribution += 30;
         if (hints.Presentation && webProject)
-            score += 12;
+            fileRoleContribution += 12;
         if (hints.Client && (stemTokens.Contains("client", StringComparer.OrdinalIgnoreCase) ||
                              directoryTokens.Contains("clients", StringComparer.OrdinalIgnoreCase)))
-            score += 24;
+            fileRoleContribution += 24;
         if (hints.Test && path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase))
-            score += 24;
+            fileRoleContribution += 24;
         if (hints.Styling && extension.Equals(".css", StringComparison.OrdinalIgnoreCase))
-            score += 24;
+            fileRoleContribution += 24;
         if (hints.Script && (extension.Equals(".js", StringComparison.OrdinalIgnoreCase) ||
                              extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)))
-            score += 24;
+            fileRoleContribution += 24;
 
         bool migration = path.Contains("/Migrations/", StringComparison.OrdinalIgnoreCase) ||
             Regex.IsMatch(stem, @"^\d{8,}[_-]");
@@ -471,26 +493,39 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
         bool assemblyMetadata = stem.StartsWith("Assembly", StringComparison.OrdinalIgnoreCase) &&
             (stem.Contains("Info", StringComparison.OrdinalIgnoreCase) || stem.Contains("Attributes", StringComparison.OrdinalIgnoreCase));
 
-        if (migration)
-            score += hints.Persistence ? 35 : -55;
+        int migrationGeneratedContribution = migration ? (hints.Persistence ? 35 : -55) : 0;
         if (hints.Persistence && (migration || directoryTokens.Contains("persistence", StringComparer.OrdinalIgnoreCase) ||
                                   directoryTokens.Contains("repositories", StringComparer.OrdinalIgnoreCase)))
-            score += 20;
+            fileRoleContribution += 20;
+        int noisePenalty = 0;
         if (designer && !hints.Designer)
-            score -= 30;
+            noisePenalty -= 30;
         if (snapshot && !hints.Persistence)
-            score -= 35;
+            noisePenalty -= 35;
         if (assemblyMetadata)
-            score -= 50;
-        if (path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase) && !hints.Test)
-            score -= 12;
+            noisePenalty -= 50;
+        int testPenalty = path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase) && !hints.Test ? -12 : 0;
 
         bool hasStrongSignal = exactCompound || projectAffinity || informativeMatches > 0 ||
             (hints.Presentation && presentationFile) ||
             (hints.Persistence && migration);
-        if (!hasStrongSignal)
-            return 0;
-        return Math.Max(0, score);
+        int finalScore = hasStrongSignal
+            ? Math.Max(0, compoundMatchContribution + informativeTokenContribution + projectAffinityContribution +
+                pathAffinityContribution + fileRoleContribution + noisePenalty + testPenalty + migrationGeneratedContribution)
+            : 0;
+        return new(
+            path,
+            finalScore,
+            compoundMatchContribution,
+            informativeTokenContribution,
+            projectAffinityContribution,
+            pathAffinityContribution,
+            fileRoleContribution,
+            noisePenalty,
+            testPenalty,
+            migrationGeneratedContribution,
+            0,
+            0);
     }
 
     private static IEnumerable<string> Tokenize(string value)
@@ -518,6 +553,24 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
 
     private sealed record CandidateDiscovery(string[] Paths, bool IsAmbiguous, string? Reason);
 
+    internal sealed record CandidateRankingDiagnostic(
+        string Path,
+        int FinalScore,
+        int CompoundMatchContribution,
+        int InformativeTokenContribution,
+        int ProjectAffinityContribution,
+        int PathAffinityContribution,
+        int FileRoleContribution,
+        int NoisePenalty,
+        int TestPenalty,
+        int MigrationGeneratedContribution,
+        int ExplicitContribution,
+        int FinalRank)
+    {
+        public static CandidateRankingDiagnostic Zero(string path) =>
+            new(path, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+
     private sealed record RequestHints(
         HashSet<string> Tokens,
         string Compact,
@@ -531,7 +584,8 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
     {
         public static RequestHints Create(string request)
         {
-            string[] orderedTokens = TokenizeRaw(request).ToArray();
+            string primaryRequest = PrimaryRequestText(request);
+            string[] orderedTokens = TokenizeRaw(primaryRequest).ToArray();
             HashSet<string> tokens = orderedTokens.ToHashSet(StringComparer.OrdinalIgnoreCase);
             string compact = string.Concat(orderedTokens);
             return new(
@@ -544,6 +598,16 @@ public sealed class DevelopmentAnalysisService : IDevelopmentAnalysisService
                 HasAny(tokens, "css", "style", "styling", "stylesheet", "layout", "theme"),
                 HasAny(tokens, "javascript", "typescript", "script", "browser"),
                 HasAny(tokens, "designer"));
+        }
+
+        private static string PrimaryRequestText(string request)
+        {
+            string[] lines = request.Split('\n');
+            int sectionStart = Array.FindIndex(lines, line =>
+                Regex.IsMatch(line.Trim(), @"(?i)^(requirements|acceptance|expected\s+scope)\s*:"));
+            return sectionStart >= 0
+                ? string.Join('\n', lines.Take(sectionStart))
+                : request;
         }
 
         private static bool HasAny(HashSet<string> tokens, params string[] values) =>
