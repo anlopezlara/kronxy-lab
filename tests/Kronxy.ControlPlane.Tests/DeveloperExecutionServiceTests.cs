@@ -151,6 +151,44 @@ public sealed class DeveloperExecutionServiceTests
     }
 
     [Fact]
+    public async Task Medium_existing_target_receives_dynamically_reduced_output_budget()
+    {
+        const string path = "src/new.cs";
+        string current = string.Concat(Enumerable.Repeat(
+            "<div class=\"job-detail\">@Model.JobId & @Model.RunId</div>\n",
+            340));
+        string hash = CurrentHash(current);
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, current));
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Preserve and update file.","content":"updated","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess);
+        int outputTokens = fixture.Gateway.LastRequest!.Generation.MaxOutputTokens!.Value;
+        Assert.InRange(outputTokens, 2_048, 8_191);
+        Assert.Equal(16_384, fixture.Gateway.LastRequest.Generation.ContextWindowTokens);
+    }
+
+    [Fact]
+    public async Task Impossible_full_file_envelope_fails_before_inference()
+    {
+        const string path = "src/new.cs";
+        string current = new('a', 50_000);
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, current));
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_CONTEXT_ENVELOPE_EXCEEDED", result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    [Fact]
     public void Developer_context_budget_at_hard_limit_is_rejected() =>
         Assert.Throws<InvalidOperationException>(
             () => CreateFixture(65_536));
@@ -1116,7 +1154,9 @@ public sealed class DeveloperExecutionServiceTests
         return stream.ToArray();
     }
 
-    private static Fixture CreateFixture(int developerContextCharacters = 48_000)
+    private static Fixture CreateFixture(
+        int developerContextCharacters = 48_000,
+        int developerContextWindowTokens = 16_384)
     {
         var reader = new FakeReader();
         var context = new FakeContextBuilder();
@@ -1150,6 +1190,7 @@ public sealed class DeveloperExecutionServiceTests
             MaxInputCharacters = 65_536,
             DeveloperContextCharacters = developerContextCharacters,
             DeveloperFeedbackCharacters = 8_192,
+            DeveloperContextWindowTokens = developerContextWindowTokens,
             MaxResponseBytes = 1_048_576
         };
 

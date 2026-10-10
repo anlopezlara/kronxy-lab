@@ -33,6 +33,8 @@ public sealed record AiGenerationOptions
 {
     public int? MaxOutputTokens { get; init; }
 
+    public int? ContextWindowTokens { get; init; }
+
     public double? Temperature { get; init; }
 }
 

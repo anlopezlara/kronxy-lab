@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Kronxy.Application.AI;
@@ -18,6 +19,11 @@ public sealed class DeveloperExecutionService :
     IDeveloperExecutionService
 {
     private const int ConservativeCharactersPerToken = 3;
+
+    private static readonly JsonSerializerOptions PromptJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     private const string SystemInstructions =
         "You are the KRONXY developer model. Return only the smallest complete JSON proposal needed for the task. " +
@@ -194,7 +200,8 @@ public sealed class DeveloperExecutionService :
             }
 
             string targetContextJson = JsonSerializer.Serialize(
-                targetContext.Targets);
+                targetContext.Targets,
+                PromptJsonOptions);
             string feedbackJson =
                 JsonSerializer.Serialize(request.ReviewerFeedback);
 
@@ -299,33 +306,39 @@ public sealed class DeveloperExecutionService :
             int schemaCharacters =
                 developerSchema.GetRawText().Length;
 
+            int fixedInputCharacters =
+                systemInstructions.Length + prefix.Length +
+                outputRequirements.Length + schemaCharacters;
+            int minimumRequiredOutputTokens =
+                EstimateMinimumOutputTokens(targetContext.Targets);
+            int availableInputTokens =
+                aiOptions.DeveloperContextWindowTokens -
+                aiOptions.DeveloperContextSafetyMarginTokens -
+                minimumRequiredOutputTokens;
+
             int remainingCharacters =
                 aiOptions.MaxInputCharacters -
-                systemInstructions.Length - prefix.Length -
-                outputRequirements.Length -
-                schemaCharacters;
+                fixedInputCharacters;
 
             remainingCharacters = Math.Min(
                 remainingCharacters,
                 aiOptions.DeveloperContextCharacters);
 
-            int tokenWindowCharacters = checked(
-                (aiOptions.ContextWindowTokens -
-                    aiOptions.DeveloperMaxOutputTokens) *
-                ConservativeCharactersPerToken);
             remainingCharacters = Math.Min(
                 remainingCharacters,
-                tokenWindowCharacters -
-                    systemInstructions.Length -
-                    prefix.Length -
-                    outputRequirements.Length -
-                    schemaCharacters);
+                checked(availableInputTokens *
+                    ConservativeCharactersPerToken) -
+                    fixedInputCharacters);
 
             if (remainingCharacters <= 0)
             {
-                return Failure(
-                    DeveloperExecutionFailureKind.ContextTooLarge,
-                    "DEVELOPER_INPUT_LIMIT_EXCEEDED");
+                LogEnvelopeFailure(
+                    DivideRoundUp(
+                        fixedInputCharacters,
+                        ConservativeCharactersPerToken),
+                    minimumRequiredOutputTokens,
+                    targetContext.Targets);
+                return EnvelopeFailure();
             }
 
             ContextAiInputResult context;
@@ -355,15 +368,39 @@ public sealed class DeveloperExecutionService :
             string userContent =
                 prefix + context.Content + outputRequirements;
 
+            int estimatedInputTokens = DivideRoundUp(
+                systemInstructions.Length + userContent.Length +
+                    schemaCharacters,
+                ConservativeCharactersPerToken);
+            int maximumAvailableOutputTokens =
+                aiOptions.DeveloperContextWindowTokens -
+                aiOptions.DeveloperContextSafetyMarginTokens -
+                estimatedInputTokens;
+            int effectiveOutputTokens = Math.Min(
+                aiOptions.DeveloperMaxOutputTokens,
+                maximumAvailableOutputTokens);
+
             if ((long)systemInstructions.Length +
                     userContent.Length > aiOptions.MaxInputCharacters ||
-                (long)systemInstructions.Length + userContent.Length +
-                    schemaCharacters > tokenWindowCharacters)
+                effectiveOutputTokens < minimumRequiredOutputTokens)
             {
-                return Failure(
-                    DeveloperExecutionFailureKind.ContextTooLarge,
-                    "DEVELOPER_CONTEXT_WINDOW_BUDGET_EXCEEDED");
+                LogEnvelopeFailure(
+                    estimatedInputTokens,
+                    minimumRequiredOutputTokens,
+                    targetContext.Targets);
+                return EnvelopeFailure();
             }
+
+            logger?.LogInformation(
+                "Developer context envelope: ContextWindow={ContextWindow} EstimatedInputTokens={EstimatedInputTokens} MinimumRequiredOutputTokens={MinimumRequiredOutputTokens} EffectiveOutputTokens={EffectiveOutputTokens} ConfiguredMaxOutputTokens={ConfiguredMaxOutputTokens} SafetyMargin={SafetyMargin} TargetCount={TargetCount} TargetBytes={TargetBytes}.",
+                aiOptions.DeveloperContextWindowTokens,
+                estimatedInputTokens,
+                minimumRequiredOutputTokens,
+                effectiveOutputTokens,
+                aiOptions.DeveloperMaxOutputTokens,
+                aiOptions.DeveloperContextSafetyMarginTokens,
+                targetContext.Targets.Count,
+                TargetBytes(targetContext.Targets));
 
             if (request.BuildCorrection is not null)
                 logger?.LogInformation(
@@ -385,7 +422,9 @@ public sealed class DeveloperExecutionService :
                         Generation = new AiGenerationOptions
                         {
                             MaxOutputTokens =
-                                aiOptions.DeveloperMaxOutputTokens,
+                                effectiveOutputTokens,
+                            ContextWindowTokens =
+                                aiOptions.DeveloperContextWindowTokens,
                             Temperature = 0
                         },
                         StructuredOutput = new AiStructuredOutput
@@ -623,6 +662,51 @@ public sealed class DeveloperExecutionService :
                 "DEVELOPER_INTERNAL_FAILURE");
         }
     }
+
+    private int EstimateMinimumOutputTokens(
+        IReadOnlyList<DeveloperTargetContext> targets)
+    {
+        int escapedContentCharacters = targets
+            .Where(target => target.Exists && target.CurrentContent is not null)
+            .Sum(target => JsonSerializer.Serialize(
+                target.CurrentContent!,
+                PromptJsonOptions).Length);
+        int proposalOverheadCharacters = 512 + targets.Count * 256;
+        int fullFileEstimate = DivideRoundUp(
+            escapedContentCharacters + proposalOverheadCharacters,
+            ConservativeCharactersPerToken);
+        return Math.Max(
+            aiOptions.DeveloperMinimumOutputTokens,
+            fullFileEstimate);
+    }
+
+    private static int DivideRoundUp(int value, int divisor) =>
+        checked((value + divisor - 1) / divisor);
+
+    private static int TargetBytes(
+        IReadOnlyList<DeveloperTargetContext> targets) =>
+        targets.Sum(target => target.CurrentContent is null
+            ? 0
+            : Encoding.UTF8.GetByteCount(target.CurrentContent));
+
+    private void LogEnvelopeFailure(
+        int estimatedInputTokens,
+        int minimumRequiredOutputTokens,
+        IReadOnlyList<DeveloperTargetContext> targets) =>
+        logger?.LogWarning(
+            "Developer context envelope exceeded. ContextWindow={ContextWindow} EstimatedInputTokens={EstimatedInputTokens} MinimumRequiredOutputTokens={MinimumRequiredOutputTokens} ConfiguredMaxOutputTokens={ConfiguredMaxOutputTokens} SafetyMargin={SafetyMargin} TargetCount={TargetCount} TargetBytes={TargetBytes}.",
+            aiOptions.DeveloperContextWindowTokens,
+            estimatedInputTokens,
+            minimumRequiredOutputTokens,
+            aiOptions.DeveloperMaxOutputTokens,
+            aiOptions.DeveloperContextSafetyMarginTokens,
+            targets.Count,
+            TargetBytes(targets));
+
+    private static DeveloperExecutionResult EnvelopeFailure() =>
+        DeveloperExecutionResult.Failure(
+            DeveloperExecutionFailureKind.ContextTooLarge,
+            "DEVELOPER_CONTEXT_ENVELOPE_EXCEEDED");
 
     private static TargetContextResult BuildTargetContext(
         ReadOnlyMemory<byte> packageContent,

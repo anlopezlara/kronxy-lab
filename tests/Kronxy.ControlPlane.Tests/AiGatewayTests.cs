@@ -1424,6 +1424,9 @@ public sealed class AiGatewayTests
                 DeveloperMaxOutputTokens =
                     maxOutputTokens,
 
+                DeveloperMinimumOutputTokens =
+                    Math.Min(2_048, maxOutputTokens),
+
                 MaxInputCharacters =
                     maxInputCharacters,
 

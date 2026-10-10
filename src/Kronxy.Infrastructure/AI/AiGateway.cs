@@ -398,6 +398,17 @@ public sealed class AiGateway : IAiGateway, IDisposable
                 "AI_OUTPUT_LIMIT_EXCEEDED");
         }
 
+        int? requestedContextWindow =
+            request.Generation.ContextWindowTokens;
+        if (requestedContextWindow is <= 0 ||
+            requestedContextWindow > options.DeveloperContextWindowTokens)
+        {
+            return Failure(
+                request,
+                AiOperationStatus.Rejected,
+                "AI_CONTEXT_WINDOW_LIMIT_EXCEEDED");
+        }
+
         double? temperature =
             request.Generation.Temperature;
 

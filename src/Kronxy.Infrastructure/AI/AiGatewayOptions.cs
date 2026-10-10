@@ -72,6 +72,12 @@ public sealed record AiGatewayOptions
         init;
     } = 8_192;
 
+    public int DeveloperMinimumOutputTokens { get; init; } = 2_048;
+
+    public int DeveloperContextWindowTokens { get; init; } = 16_384;
+
+    public int DeveloperContextSafetyMarginTokens { get; init; } = 512;
+
     public int ContextWindowTokens
     {
         get;
@@ -211,6 +217,21 @@ public sealed record AiGatewayOptions
         {
             throw new InvalidOperationException(
                 "AI DeveloperMaxOutputTokens must be greater than zero.");
+        }
+
+        if (DeveloperMinimumOutputTokens <= 0 ||
+            DeveloperMinimumOutputTokens > DeveloperMaxOutputTokens)
+        {
+            throw new InvalidOperationException(
+                "AI DeveloperMinimumOutputTokens is invalid.");
+        }
+
+        if (DeveloperContextWindowTokens <= DeveloperMaxOutputTokens ||
+            DeveloperContextSafetyMarginTokens <= 0 ||
+            DeveloperContextSafetyMarginTokens >= DeveloperContextWindowTokens)
+        {
+            throw new InvalidOperationException(
+                "AI Developer context envelope is invalid.");
         }
 
         if (ContextWindowTokens <= Math.Max(

@@ -79,6 +79,7 @@ public sealed class OllamaProvider : IAiProvider
                     new OllamaRequestOptions
                     {
                         NumContext =
+                            request.Generation.ContextWindowTokens ??
                             options.ContextWindowTokens,
 
                         NumPredict =
