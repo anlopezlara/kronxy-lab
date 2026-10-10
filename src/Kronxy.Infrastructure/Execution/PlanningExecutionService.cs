@@ -444,16 +444,27 @@ public sealed class PlanningExecutionService :
                         : policyResult.ErrorCode);
             }
 
-            if (!PlanningPriorityPathSelector
-                    .HasTopFivePlanPathOverlap(
-                        plan,
-                        priorityPaths) ||
-                !IsPathCoherent(
-                    plan,
-                    guidance,
-                    context.Content,
-                    request.JobRequest))
+            PathCoherenceResult pathCoherence = IsPathCoherent(
+                plan,
+                guidance,
+                context.Content,
+                request.JobRequest,
+                repositoryPaths);
+
+            bool hasGroundingOverlap = PlanningPriorityPathSelector
+                    .HasTopFivePlanPathOverlap(plan, priorityPaths) ||
+                pathCoherence.HasExistingAuthoritativeTarget;
+
+            if (!hasGroundingOverlap || !pathCoherence.IsValid)
             {
+                logger?.LogWarning(
+                    "Planning path coherence rejected a plan. Reason={Reason} Path={Path} HasGroundingOverlap={HasGroundingOverlap}",
+                    hasGroundingOverlap
+                        ? pathCoherence.Reason
+                        : "PATH_NOT_AUTHORITATIVE_OR_SUPPORTED",
+                    pathCoherence.Path,
+                    hasGroundingOverlap);
+
                 byte[] rejectedResponseBytes =
                     JsonSerializer.SerializeToUtf8Bytes(
                         response);
@@ -806,45 +817,95 @@ public sealed class PlanningExecutionService :
             artifact.Artifact.Sha256);
     }
 
-    private static bool IsPathCoherent(
+    private static PathCoherenceResult IsPathCoherent(
         PlannerPlan plan,
         PlanningGuidance guidance,
         string authorizedContext,
-        string jobRequest)
+        string jobRequest,
+        IReadOnlySet<string> repositoryPaths)
     {
-        HashSet<string> existing = ExtractFileHeaders(
-                authorizedContext)
-            .ToHashSet(StringComparer.Ordinal);
+        HashSet<string> contextPaths = NormalizeKnownPaths(
+            ExtractFileHeaders(authorizedContext));
+        HashSet<string> existing = NormalizeKnownPaths(repositoryPaths);
+        if (existing.Count == 0)
+        {
+            existing.UnionWith(contextPaths);
+        }
 
-        if (guidance.AuthoritativeTargetFiles
+        HashSet<string> authoritative = NormalizeKnownPaths(
+            guidance.AuthoritativeTargetFiles);
+        HashSet<string> supporting = NormalizeKnownPaths(
+            guidance.SupportingContextFiles);
+
+        if (!TryNormalizePlanPaths(
+                plan.FilesToInspect,
+                out string[] inspections,
+                out string? invalidPath) ||
+            !TryNormalizePlanPaths(
+                plan.CandidateFilesToModify,
+                out string[] candidates,
+                out invalidPath))
+        {
+            return PathCoherenceResult.Invalid("UNSAFE_PATH", invalidPath);
+        }
+
+        bool hasExistingAuthoritativeTarget = candidates.Any(path =>
+            authoritative.Contains(path) && existing.Contains(path));
+
+        if (authoritative
                 .Where(existing.Contains)
                 .Any() &&
-            !plan.CandidateFilesToModify.Any(path =>
-                guidance.AuthoritativeTargetFiles.Contains(
-                    path,
-                    StringComparer.Ordinal)))
+            !candidates.Any(authoritative.Contains))
         {
-            return false;
+            return PathCoherenceResult.Invalid(
+                "PATH_NOT_AUTHORITATIVE_OR_SUPPORTED",
+                candidates.FirstOrDefault(),
+                hasExistingAuthoritativeTarget);
         }
 
-        if (plan.FilesToInspect.Any(path => !existing.Contains(path)) ||
-            plan.FilesToInspect.Any(path => !IsWithinRequiredScope(
-                path,
-                guidance.RequiredScope)) ||
-            plan.CandidateFilesToModify.Any(path => !IsWithinRequiredScope(
-                path,
-                guidance.RequiredScope)))
+        string? missingInspection = inspections.FirstOrDefault(path =>
+            !existing.Contains(path));
+        if (missingInspection is not null)
         {
-            return false;
+            return PathCoherenceResult.Invalid(
+                "PATH_NOT_IN_INVENTORY",
+                missingInspection,
+                hasExistingAuthoritativeTarget);
         }
 
-        HashSet<string> explicitlyRequested = ExtractRequestedPaths(jobRequest)
-            .ToHashSet(StringComparer.Ordinal);
+        string? outsideScope = inspections.Concat(candidates)
+            .FirstOrDefault(path => !IsWithinRequiredScope(
+                path,
+                guidance.RequiredScope));
+        if (outsideScope is not null)
+        {
+            return PathCoherenceResult.Invalid(
+                "PATH_OUTSIDE_REQUIRED_SCOPE",
+                outsideScope,
+                hasExistingAuthoritativeTarget);
+        }
 
-        foreach (string candidate in plan.CandidateFilesToModify)
+        HashSet<string> explicitlyRequested = NormalizeKnownPaths(
+            ExtractRequestedPaths(jobRequest));
+
+        foreach (string candidate in candidates)
         {
             if (existing.Contains(candidate))
             {
+                if (supporting.Contains(candidate) &&
+                    !authoritative.Contains(candidate) &&
+                    !explicitlyRequested.Contains(candidate) &&
+                    !string.Equals(
+                        guidance.RequiredScope,
+                        "Cross-layer",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return PathCoherenceResult.Invalid(
+                        "PATH_ROLE_INCOMPATIBLE",
+                        candidate,
+                        hasExistingAuthoritativeTarget);
+                }
+
                 continue;
             }
 
@@ -859,10 +920,80 @@ public sealed class PlanningExecutionService :
                     plan.Strategy,
                     existing))
             {
-                return false;
+                return PathCoherenceResult.Invalid(
+                    HasKnownProjectRoot(candidate, existing)
+                        ? "PATH_NOT_IN_INVENTORY"
+                        : "NEW_FILE_PARENT_UNKNOWN",
+                    candidate,
+                    hasExistingAuthoritativeTarget);
             }
         }
 
+        return PathCoherenceResult.Valid(hasExistingAuthoritativeTarget);
+    }
+
+    private static HashSet<string> NormalizeKnownPaths(
+        IEnumerable<string> paths) =>
+        paths.Select(path => TryNormalizePlanPath(path, out string normalized)
+                ? normalized
+                : null)
+            .Where(path => path is not null)
+            .Select(path => path!)
+            .ToHashSet(StringComparer.Ordinal);
+
+    private static bool TryNormalizePlanPaths(
+        IEnumerable<string> paths,
+        out string[] normalized,
+        out string? invalidPath)
+    {
+        var result = new List<string>();
+        foreach (string path in paths)
+        {
+            if (!TryNormalizePlanPath(path, out string value))
+            {
+                normalized = [];
+                invalidPath = path;
+                return false;
+            }
+
+            result.Add(value);
+        }
+
+        normalized = result.Distinct(StringComparer.Ordinal).ToArray();
+        invalidPath = null;
+        return true;
+    }
+
+    private static bool TryNormalizePlanPath(
+        string path,
+        out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(path) ||
+            path.StartsWith("/", StringComparison.Ordinal) ||
+            path.StartsWith("\\", StringComparison.Ordinal) ||
+            path.Contains("://", StringComparison.Ordinal) ||
+            path.Length >= 2 && char.IsLetter(path[0]) && path[1] == ':')
+        {
+            return false;
+        }
+
+        string candidate = path.Replace('\\', '/');
+        while (candidate.StartsWith("./", StringComparison.Ordinal))
+        {
+            candidate = candidate[2..];
+        }
+
+        string[] segments = candidate.Split(
+            '/',
+            StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0 ||
+            segments.Any(segment => segment is "." or ".."))
+        {
+            return false;
+        }
+
+        normalized = string.Join('/', segments);
         return true;
     }
 
@@ -950,11 +1081,7 @@ public sealed class PlanningExecutionService :
             StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSafePlanPath(string path) =>
-        !string.IsNullOrWhiteSpace(path) &&
-        !Path.IsPathFullyQualified(path) &&
-        !path.Contains('\\') &&
-        path.Split('/').All(segment =>
-            segment.Length > 0 && segment is not "." and not "..");
+        TryNormalizePlanPath(path, out _);
 
     private static string NormalizeSymbol(string value) =>
         new(value.Where(char.IsLetterOrDigit).ToArray());
@@ -972,6 +1099,23 @@ public sealed class PlanningExecutionService :
         IReadOnlyList<string> SupportingContextFiles,
         Guid DevelopmentAnalysisArtifactId,
         string DevelopmentAnalysisSha256);
+
+    private sealed record PathCoherenceResult(
+        bool IsValid,
+        string Reason,
+        string? Path,
+        bool HasExistingAuthoritativeTarget)
+    {
+        public static PathCoherenceResult Valid(
+            bool hasExistingAuthoritativeTarget) =>
+            new(true, string.Empty, null, hasExistingAuthoritativeTarget);
+
+        public static PathCoherenceResult Invalid(
+            string reason,
+            string? path,
+            bool hasExistingAuthoritativeTarget = false) =>
+            new(false, reason, path, hasExistingAuthoritativeTarget);
+    }
 
     private static PlanningExecutionFailureKind
         MapArtifactReadFailure(

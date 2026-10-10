@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
 using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Context;
@@ -915,6 +916,54 @@ public sealed class PlanningExecutionServiceTests
             fixture.Gateway.Response.Content);
     }
 
+    [Theory]
+    [InlineData("src/Kronxy.Web/Components/Pages/JobDetail.razor", "Web-only")]
+    [InlineData("src/Kronxy.Web/Pages/JobDetail.cshtml", "Web-only")]
+    [InlineData("src/Kronxy.Application/Jobs/JobService.cs", "Application-only")]
+    public async Task Existing_authoritative_inventory_target_is_accepted_when_context_budget_omits_it(
+        string authoritativePath,
+        string requiredScope)
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.AuthoritativePath = authoritativePath;
+        fixture.Reader.RequiredScope = requiredScope;
+        fixture.Reader.Result = ContextPackage(authoritativePath);
+        fixture.Context.Result = ContextAiInputResult.Success(string.Empty);
+        fixture.Gateway.Response = PlanResponse(
+            "Change the authoritative target safely.",
+            [authoritativePath],
+            [authoritativePath]);
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(
+            Request() with
+            {
+                JobRequest = "Change the authoritative target safely."
+            });
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task Supporting_context_is_not_automatically_writable()
+    {
+        Fixture fixture = PilotFixture();
+        string authoritative =
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor";
+        string supporting =
+            "src/Kronxy.Web/Clients/IKronxyApiClient.cs";
+        fixture.Reader.Result = ContextPackage(authoritative, supporting);
+        fixture.Gateway.Response = PlanResponse(
+            "Add Job Detail copy controls.",
+            [authoritative],
+            [authoritative, supporting]);
+
+        PlanningExecutionResult result = await fixture.Service.ExecuteAsync(
+            PilotRequest());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("PLANNING_PATH_COHERENCE_INVALID", result.ErrorCode);
+    }
+
     [Fact]
     public async Task Pilot_mvc_substitution_is_rejected_by_strict_path_coherence()
     {
@@ -1082,6 +1131,45 @@ public sealed class PlanningExecutionServiceTests
         JobRequest = "Web-only add Job Detail copy controls with focused frontend tests.",
         CorrelationId = "planning-v2-pilot"
     };
+
+    private static ArtifactReadResult ContextPackage(params string[] paths)
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(
+            stream,
+            ZipArchiveMode.Create,
+            leaveOpen: true))
+        {
+            ZipArchiveEntry manifest = archive.CreateEntry("manifest.json");
+            using Stream output = manifest.Open();
+            JsonSerializer.Serialize(
+                output,
+                new
+                {
+                    entries = paths.Select(path => new
+                    {
+                        path,
+                        sizeBytes = 1
+                    })
+                });
+        }
+
+        byte[] content = stream.ToArray();
+        return ArtifactReadResult.Success(
+            new ArtifactRecord
+            {
+                ArtifactId = Guid.NewGuid(),
+                JobId = Guid.NewGuid(),
+                RunId = Guid.NewGuid(),
+                ArtifactType = ArtifactType.ContextPackage,
+                RelativePath = "context/context.zip",
+                Sha256 = new string('a', 64),
+                SizeBytes = content.Length,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                CorrelationId = "corr"
+            },
+            content);
+    }
 
     private sealed class FakeStore :
         IArtifactStore
