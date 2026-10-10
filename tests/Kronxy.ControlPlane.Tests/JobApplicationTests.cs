@@ -2461,6 +2461,16 @@ public sealed class JobApplicationTests
                         result.Kind);
 
                 Assert.Equal(
+                        recoveryStatus switch
+                        {
+                                StageRecoveryStatus.InvalidEvidence => "BAD_EVIDENCE",
+                                StageRecoveryStatus.Cancelled => "RECOVERY_CANCELLED",
+                                StageRecoveryStatus.Failure => "RECOVERY_FAILED",
+                                _ => throw new InvalidOperationException()
+                        },
+                        result.DiagnosticCode);
+
+                Assert.Equal(
                         JobState.Developing,
                         created.Value.State);
 

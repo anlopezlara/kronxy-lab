@@ -6,6 +6,7 @@ using Kronxy.Infrastructure.AI;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
 using Kronxy.Infrastructure.Artifacts;
+using Microsoft.Extensions.Logging;
 
 namespace Kronxy.Infrastructure.Execution;
 
@@ -21,6 +22,7 @@ public sealed class StageRecoveryEvidenceService :
     private readonly AiStructuredOutputValidator structuredValidator;
     private readonly IPlannerPlanPolicy plannerPlanPolicy;
     private readonly IPlanningPriorityPathSelector priorityPathSelector;
+    private readonly ILogger<StageRecoveryEvidenceService>? logger;
 
     public StageRecoveryEvidenceService(
         IArtifactReader artifactReader,
@@ -28,7 +30,8 @@ public sealed class StageRecoveryEvidenceService :
         IDeveloperProposalPolicy? developerPolicy = null,
         AiStructuredOutputValidator? structuredValidator = null,
         IPlannerPlanPolicy? plannerPlanPolicy = null,
-        IPlanningPriorityPathSelector? priorityPathSelector = null)
+        IPlanningPriorityPathSelector? priorityPathSelector = null,
+        ILogger<StageRecoveryEvidenceService>? logger = null)
     {
         this.artifactReader =
             artifactReader ??
@@ -50,6 +53,7 @@ public sealed class StageRecoveryEvidenceService :
             new PlannerPlanPolicy();
         this.priorityPathSelector = priorityPathSelector ??
             new PlanningPriorityPathSelector();
+        this.logger = logger;
 
         this.artifactOptions.Validate();
     }
@@ -67,7 +71,7 @@ public sealed class StageRecoveryEvidenceService :
 
         try
         {
-            return request.Stage switch
+            StageRecoveryResult result = request.Stage switch
             {
                 RecoveryStage.Context =>
                     await CheckArtifactAsync(
@@ -300,6 +304,9 @@ public sealed class StageRecoveryEvidenceService :
                     StageRecoveryResult.Failure(
                         "STAGE_RECOVERY_UNKNOWN_STAGE")
             };
+
+            LogFailure(request, result, null);
+            return result;
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
@@ -307,12 +314,49 @@ public sealed class StageRecoveryEvidenceService :
             return StageRecoveryResult.Cancelled(
                 "STAGE_RECOVERY_CANCELLED");
         }
-        catch
+        catch (Exception exception)
         {
+            logger?.LogWarning(
+                exception,
+                "Stage recovery failed. JobId={JobId} RunId={RunId} AttemptCount={AttemptCount} CurrentState={CurrentState} RecoveryStage={RecoveryStage} ExpectedArtifactType={ExpectedArtifactType} CandidateArtifactId={CandidateArtifactId} CandidateArtifactType={CandidateArtifactType} CandidateCorrelationId={CandidateCorrelationId} CandidateSha256={CandidateSha256} FailureReason={FailureReason} SpecificErrorCode={SpecificErrorCode}",
+                request.JobId, request.RunId, request.AttemptCount, request.CurrentState,
+                request.Stage, ExpectedArtifactType(request.Stage), null, null,
+                request.CorrelationId, null, exception.GetType().Name,
+                "STAGE_RECOVERY_FAILED");
             return StageRecoveryResult.Failure(
                 "STAGE_RECOVERY_FAILED");
         }
     }
+
+    private void LogFailure(
+        StageRecoveryRequest request,
+        StageRecoveryResult result,
+        ArtifactRecord? candidate)
+    {
+        if (result.Status is StageRecoveryStatus.Completed or
+            StageRecoveryStatus.NotCompleted)
+            return;
+
+        logger?.LogWarning(
+            "Stage recovery rejected evidence. JobId={JobId} RunId={RunId} AttemptCount={AttemptCount} CurrentState={CurrentState} RecoveryStage={RecoveryStage} ExpectedArtifactType={ExpectedArtifactType} CandidateArtifactId={CandidateArtifactId} CandidateArtifactType={CandidateArtifactType} CandidateCorrelationId={CandidateCorrelationId} CandidateSha256={CandidateSha256} FailureReason={FailureReason} SpecificErrorCode={SpecificErrorCode}",
+            request.JobId, request.RunId, request.AttemptCount, request.CurrentState,
+            request.Stage, ExpectedArtifactType(request.Stage),
+            candidate?.ArtifactId, candidate?.ArtifactType,
+            candidate?.CorrelationId ?? request.CorrelationId,
+            candidate?.Sha256, result.Status, result.ErrorCode);
+    }
+
+    private static string ExpectedArtifactType(RecoveryStage stage) =>
+        stage switch
+        {
+            RecoveryStage.Test =>
+                $"{ArtifactType.TestReport},{ArtifactType.TestResults}",
+            RecoveryStage.TestHumanReviewCorrection =>
+                $"{ArtifactType.TestHumanReviewCorrectionReport},{ArtifactType.TestHumanReviewCorrectionResults}",
+            RecoveryStage.TestGovernedHumanCorrection =>
+                $"{ArtifactType.TestGovernedHumanCorrectionReport},{ArtifactType.TestGovernedHumanCorrectionResults}",
+            _ => stage.ToString()
+        };
 
     private async Task<StageRecoveryResult>
         CheckArtifactAsync(
@@ -1325,31 +1369,68 @@ public sealed class StageRecoveryEvidenceService :
         ArtifactType resultsArtifactType,
         CancellationToken cancellationToken)
     {
-        StageRecoveryResult report =
-            await CheckReportAsync<TestExecutionReport>(
-                request,
-                reportArtifactType,
-                value => value.IsSuccess &&
-                    value.JobId == request.JobId &&
-                    value.RunId == request.RunId,
-                cancellationToken,
-                value => StageRecoveryResult.Completed(
-                    testReport: value));
-
-        if (!report.IsCompleted)
+        StageRecoveryResult Invalid(
+            string code,
+            ArtifactRecord? candidate)
         {
-            return report;
+            StageRecoveryResult failure =
+                StageRecoveryResult.InvalidEvidence(code);
+            LogFailure(request, failure, candidate);
+            return failure;
         }
 
-        StageRecoveryResult results = await CheckArtifactAsync(
-            request,
-            resultsArtifactType,
-            artifactOptions.MaxArtifactBytes,
+        ArtifactReadResult reportRead = await ReadAsync(
+            request, reportArtifactType, MaxReportBytes, cancellationToken);
+
+        if (reportRead.FailureKind == ArtifactReadFailureKind.NotFound)
+            return StageRecoveryResult.NotCompleted();
+        if (!reportRead.IsSuccess)
+        {
+            StageRecoveryResult failure = MapReadFailure(reportRead);
+            LogFailure(request, failure, reportRead.Artifact);
+            return failure;
+        }
+
+        TestExecutionReport? testReport;
+        try
+        {
+            testReport = JsonSerializer.Deserialize<TestExecutionReport>(
+                reportRead.Content.Span);
+        }
+        catch (JsonException)
+        {
+            return Invalid(
+                "STAGE_RECOVERY_PAYLOAD_INVALID", reportRead.Artifact);
+        }
+
+        if (testReport is null)
+            return Invalid(
+                "STAGE_RECOVERY_PAYLOAD_INVALID", reportRead.Artifact);
+        if (testReport.JobId != request.JobId)
+            return Invalid(
+                "STAGE_RECOVERY_JOB_MISMATCH", reportRead.Artifact);
+        if (testReport.RunId != request.RunId)
+            return Invalid(
+                "STAGE_RECOVERY_RUN_MISMATCH", reportRead.Artifact);
+        if (!testReport.IsSuccess)
+            return Invalid(
+                "STAGE_RECOVERY_STAGE_INCOMPATIBLE", reportRead.Artifact);
+
+        ArtifactReadResult resultsRead = await ReadAsync(
+            request, resultsArtifactType, artifactOptions.MaxArtifactBytes,
             cancellationToken);
 
-        return results.IsCompleted
-            ? StageRecoveryResult.Completed(testReport: report.TestReport)
-            : results;
+        if (resultsRead.FailureKind == ArtifactReadFailureKind.NotFound)
+            return Invalid(
+                "STAGE_RECOVERY_ARTIFACT_MISSING", null);
+        if (!resultsRead.IsSuccess)
+        {
+            StageRecoveryResult failure = MapReadFailure(resultsRead);
+            LogFailure(request, failure, resultsRead.Artifact);
+            return failure;
+        }
+
+        return StageRecoveryResult.Completed(testReport: testReport);
     }
 
     private async Task<StageRecoveryResult> CheckReviewerAsync(
@@ -1572,10 +1653,20 @@ public sealed class StageRecoveryEvidenceService :
                     : read.ErrorCode);
         }
 
-        return StageRecoveryResult.InvalidEvidence(
-            string.IsNullOrWhiteSpace(
-                read.ErrorCode)
-                ? "STAGE_RECOVERY_EVIDENCE_INVALID"
-                : read.ErrorCode);
+        string code = read.ErrorCode switch
+        {
+            "ARTIFACT_READ_METADATA_AMBIGUOUS" =>
+                "STAGE_RECOVERY_ARTIFACT_AMBIGUOUS",
+            "ARTIFACT_READ_HASH_MISMATCH" =>
+                "STAGE_RECOVERY_SHA_MISMATCH",
+            "ARTIFACT_READ_NOT_FOUND" or
+            "ARTIFACT_READ_FILE_NOT_FOUND" =>
+                "STAGE_RECOVERY_ARTIFACT_MISSING",
+            _ when string.IsNullOrWhiteSpace(read.ErrorCode) =>
+                "STAGE_RECOVERY_EVIDENCE_INVALID",
+            _ => read.ErrorCode
+        };
+
+        return StageRecoveryResult.InvalidEvidence(code);
     }
 }

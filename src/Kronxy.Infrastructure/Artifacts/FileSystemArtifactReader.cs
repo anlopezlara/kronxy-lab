@@ -257,7 +257,8 @@ public sealed class FileSystemArtifactReader :
             {
                 return Failure(
                     ArtifactReadFailureKind.IntegrityFailure,
-                    "ARTIFACT_READ_HASH_MISMATCH");
+                    "ARTIFACT_READ_HASH_MISMATCH",
+                    artifact);
             }
 
             return ArtifactReadResult.Success(
@@ -626,8 +627,13 @@ public sealed class FileSystemArtifactReader :
 
     private static ArtifactReadResult Failure(
         ArtifactReadFailureKind kind,
-        string errorCode) =>
-        ArtifactReadResult.Failure(
-            kind,
-            errorCode);
+        string errorCode,
+        ArtifactRecord? artifact = null) =>
+        artifact is null
+            ? ArtifactReadResult.Failure(kind, errorCode)
+            : new ArtifactReadResult(
+                artifact,
+                ReadOnlyMemory<byte>.Empty,
+                kind,
+                errorCode);
 }

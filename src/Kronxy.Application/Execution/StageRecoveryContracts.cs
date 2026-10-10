@@ -1,4 +1,5 @@
 using Kronxy.Application.Artifacts;
+using Kronxy.Domain.Jobs;
 
 namespace Kronxy.Application.Execution;
 
@@ -72,6 +73,8 @@ public sealed record StageRecoveryRequest
         string.Empty;
 
     public int AttemptCount { get; init; }
+
+    public JobState CurrentState { get; init; }
 }
 
 public sealed record StageRecoveryResult(

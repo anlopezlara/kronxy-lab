@@ -3727,7 +3727,8 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                                         job.Request,
                                                 CorrelationId =
                                                         correlationId,
-                                                AttemptCount = job.AttemptCount
+                                                AttemptCount = job.AttemptCount,
+                                                CurrentState = job.State
                                         },
                                         cancellationToken);
                 }
@@ -3765,19 +3766,22 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 JobOperationResult.Failure(
                                         JobOperationKind.Cancelled,
                                         JobApplicationErrors
-                                                .StageRecoveryFailed),
+                                                .StageRecoveryFailed,
+                                        recovery.ErrorCode),
 
                         StageRecoveryStatus.InvalidEvidence =>
                                 JobOperationResult.Failure(
                                         JobOperationKind.PermanentFailure,
                                         JobApplicationErrors
-                                                .StageRecoveryFailed),
+                                                .StageRecoveryFailed,
+                                        recovery.ErrorCode),
 
                         _ =>
                                 JobOperationResult.Failure(
                                         JobOperationKind.RetryableFailure,
                                         JobApplicationErrors
-                                                .StageRecoveryFailed)
+                                                .StageRecoveryFailed,
+                                        recovery.ErrorCode)
                 };
         }
 

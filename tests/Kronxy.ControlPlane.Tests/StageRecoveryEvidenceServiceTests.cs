@@ -1063,8 +1063,12 @@ public sealed class StageRecoveryEvidenceServiceTests
                     RecoveryStage.Test));
 
         Assert.Equal(
-            StageRecoveryStatus.NotCompleted,
+            StageRecoveryStatus.InvalidEvidence,
             result.Status);
+
+        Assert.Equal(
+            "STAGE_RECOVERY_ARTIFACT_MISSING",
+            result.ErrorCode);
 
         Assert.Equal(
             2,
@@ -1105,6 +1109,61 @@ public sealed class StageRecoveryEvidenceServiceTests
         Assert.Equal(
             2,
             reader.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Test_report_for_wrong_run_fails_with_specific_code()
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => Success(
+                request,
+                JsonSerializer.SerializeToUtf8Bytes(
+                    SuccessfulTestReport() with { RunId = Guid.NewGuid() }))
+        };
+
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(
+            reader, Options()).CheckAsync(Request(RecoveryStage.Test));
+
+        Assert.Equal(StageRecoveryStatus.InvalidEvidence, result.Status);
+        Assert.Equal("STAGE_RECOVERY_RUN_MISMATCH", result.ErrorCode);
+        Assert.Single(reader.Requests);
+    }
+
+    [Fact]
+    public async Task Test_report_invalid_json_fails_with_specific_code()
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => Success(request, "not-json"u8.ToArray())
+        };
+
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(
+            reader, Options()).CheckAsync(Request(RecoveryStage.Test));
+
+        Assert.Equal(StageRecoveryStatus.InvalidEvidence, result.Status);
+        Assert.Equal("STAGE_RECOVERY_PAYLOAD_INVALID", result.ErrorCode);
+        Assert.Single(reader.Requests);
+    }
+
+    [Theory]
+    [InlineData("ARTIFACT_READ_METADATA_AMBIGUOUS", "STAGE_RECOVERY_ARTIFACT_AMBIGUOUS")]
+    [InlineData("ARTIFACT_READ_HASH_MISMATCH", "STAGE_RECOVERY_SHA_MISMATCH")]
+    public async Task Test_reader_integrity_failures_are_classified(
+        string readerCode,
+        string expectedCode)
+    {
+        var reader = new FakeArtifactReader
+        {
+            Handler = _ => ArtifactReadResult.Failure(
+                ArtifactReadFailureKind.IntegrityFailure, readerCode)
+        };
+
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(
+            reader, Options()).CheckAsync(Request(RecoveryStage.Test));
+
+        Assert.Equal(StageRecoveryStatus.InvalidEvidence, result.Status);
+        Assert.Equal(expectedCode, result.ErrorCode);
     }
 
     [Fact]
@@ -1361,8 +1420,12 @@ public sealed class StageRecoveryEvidenceServiceTests
                     RecoveryStage.Test));
 
         Assert.Equal(
-            StageRecoveryStatus.NotCompleted,
+            StageRecoveryStatus.InvalidEvidence,
             result.Status);
+
+        Assert.Equal(
+            "STAGE_RECOVERY_ARTIFACT_MISSING",
+            result.ErrorCode);
 
         Assert.Equal(
             2,
