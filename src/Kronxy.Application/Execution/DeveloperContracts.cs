@@ -101,7 +101,7 @@ public static class DeveloperContractSchema
                   },
                   "content": {
                     "type": "string",
-                    "maxLength": 4000
+                    "maxLength": 262144
                   },
                   "expectedContentSha256": {
                     "type": "string"

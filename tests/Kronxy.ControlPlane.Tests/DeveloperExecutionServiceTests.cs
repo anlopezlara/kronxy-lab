@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using Kronxy.Application.AI;
@@ -41,7 +42,7 @@ public sealed class DeveloperExecutionServiceTests
             "never pad content with repeated blank lines",
             fixture.Gateway.LastRequest.SystemInstructions);
         Assert.Contains(
-            "Keep combined file content under 6000 characters",
+            "Use ReplaceFile for exists=true",
             fixture.Gateway.LastRequest.SystemInstructions);
         Assert.Contains(
             "Each change content must contain only the file named by relativePath",
@@ -100,6 +101,46 @@ public sealed class DeveloperExecutionServiceTests
             sent.UserContent.Length +
             sent.StructuredOutput!.Schema.GetRawText().Length;
         Assert.True(total <= 65_536);
+    }
+
+    [Fact]
+    public async Task Existing_authoritative_target_supplies_content_hash_and_requires_replace()
+    {
+        const string path = "src/new.cs";
+        const string current = "public sealed class Existing {}\n";
+        string hash = CurrentHash(current);
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, current));
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Preserve and update file.","content":"public sealed class Existing { public int Value { get; } }\n","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess);
+        string input = fixture.Gateway.LastRequest!.UserContent;
+        Assert.Contains("AUTHORIZED TARGET FILES", input);
+        Assert.Contains("\"Exists\":true", input);
+        Assert.Contains(current.Trim(), input);
+        Assert.Contains(hash, input);
+        Assert.Equal(
+            DeveloperChangeOperationType.ReplaceFile,
+            Assert.Single(result.Proposal!.Changes).Operation);
+    }
+
+    [Fact]
+    public async Task CreateFile_for_existing_authoritative_target_is_rejected()
+    {
+        const string path = "src/new.cs";
+        const string current = "public sealed class Existing {}\n";
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, current));
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_CREATE_EXISTING_FILE_REJECTED", result.ErrorCode);
     }
 
     [Fact]
@@ -1032,6 +1073,42 @@ public sealed class DeveloperExecutionServiceTests
                 SHA256.HashData(Encoding.UTF8.GetBytes(content)))
             .ToLowerInvariant();
 
+    private static byte[] ContextPackage(
+        params (string Path, string Content)[] files)
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(
+            stream,
+            ZipArchiveMode.Create,
+            leaveOpen: true))
+        {
+            foreach ((string path, string content) in files)
+            {
+                ZipArchiveEntry source = archive.CreateEntry(path);
+                using var writer = new StreamWriter(
+                    source.Open(),
+                    new UTF8Encoding(false),
+                    bufferSize: 1024,
+                    leaveOpen: false);
+                writer.Write(content);
+            }
+
+            ZipArchiveEntry manifest = archive.CreateEntry("manifest.json");
+            using Stream output = manifest.Open();
+            JsonSerializer.Serialize(output, new
+            {
+                entries = files.Select(file => new
+                {
+                    path = file.Path,
+                    sizeBytes = Encoding.UTF8.GetByteCount(file.Content),
+                    sha256 = CurrentHash(file.Content)
+                })
+            });
+        }
+
+        return stream.ToArray();
+    }
+
     private static Fixture CreateFixture(int developerContextCharacters = 48_000)
     {
         var reader = new FakeReader();
@@ -1142,6 +1219,8 @@ public sealed class DeveloperExecutionServiceTests
 
     private sealed class FakeReader : IArtifactReader
     {
+        public byte[] ContextContent { get; set; } = [1, 2, 3];
+
         public byte[] PlanContent { get; set; } =
             """
             {
@@ -1160,7 +1239,7 @@ public sealed class DeveloperExecutionServiceTests
         {
             byte[] content = request.ArtifactType == ArtifactType.PlanningPlan
                 ? PlanContent
-                : new byte[] { 1, 2, 3 };
+                : ContextContent;
             return Task.FromResult(ArtifactReadResult.Success(
                 Artifact(request, content.Length), content));
         }

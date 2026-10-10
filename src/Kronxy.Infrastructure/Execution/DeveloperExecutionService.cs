@@ -1,5 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Context;
@@ -18,7 +22,9 @@ public sealed class DeveloperExecutionService :
         "Use at most four changes; omit unnecessary files; keep summary and intent under eight words; use empty assumptions and risks unless essential; never repeat code outside content. " +
         "Emit compact JSON with no markdown or commentary. File content must end immediately after its final required newline; never pad content with repeated blank lines, spaces, or duplicated source. " +
         "Each change content must contain only the file named by relativePath; never concatenate files or add unrelated top-level types. " +
-        "Use only candidate file paths from the approved plan. Implement only requested types and members; do not add convenience helpers, extension methods, blocking async calls, examples, or speculative APIs. Keep combined file content under 6000 characters. " +
+        "Use only candidate file paths from the approved plan. Implement only requested types and members; do not add convenience helpers, extension methods, blocking async calls, examples, or speculative APIs. " +
+        "TARGET FILES deterministically state whether each candidate exists and include bounded authoritative content and SHA256 for existing files. Use ReplaceFile for exists=true and copy currentContentSha256 exactly into expectedContentSha256. Use CreateFile with an empty expectedContentSha256 only for exists=false. " +
+        "Preserve unrelated markup, code, injected services, usings, bindings, models, actions, and UI. Make the smallest coherent change based on the actual current content; never replace the existing architecture with a guessed pattern. " +
         "Propose only complete file creation or replacement operations grounded in the supplied plan and authorized repository context. " +
         "Do not execute commands, access files, call tools, or modify code. " +
         "KRONXY alone validates and applies your structured proposal.";
@@ -175,6 +181,18 @@ public sealed class DeveloperExecutionService :
             }
 
             string planJson = JsonSerializer.Serialize(plan);
+            TargetContextResult targetContext = BuildTargetContext(
+                contextArtifact.Content,
+                plan.CandidateFilesToModify);
+            if (!targetContext.IsSuccess)
+            {
+                return Failure(
+                    DeveloperExecutionFailureKind.ContextArtifactReadFailure,
+                    targetContext.ErrorCode);
+            }
+
+            string targetContextJson = JsonSerializer.Serialize(
+                targetContext.Targets);
             string feedbackJson =
                 JsonSerializer.Serialize(request.ReviewerFeedback);
 
@@ -227,6 +245,7 @@ public sealed class DeveloperExecutionService :
             string prefix =
                 "JOB REQUEST:\n" + request.JobRequest +
                 "\n\nAPPROVED PLANNER PLAN:\n" + planJson +
+                "\n\nAUTHORIZED TARGET FILES:\n" + targetContextJson +
                 "\n\nAUTHORIZED REVIEWER FEEDBACK:\n" + feedbackJson +
                 "\n\nAUTHORIZED CORRECTION EVIDENCE:\n" + correctionJson +
                 "\n\nAUTHORIZED REPOSITORY CONTEXT:\n";
@@ -263,6 +282,8 @@ public sealed class DeveloperExecutionService :
                 "Use a summary and intents of at most eight words. " +
                 "Use empty assumptions and risks unless a critical item is required. " +
                 "For CreateFile use an empty expectedContentSha256.\n" +
+                "For every target with exists=true use ReplaceFile and set expectedContentSha256 to its currentContentSha256. " +
+                "Never use CreateFile for an existing target or ReplaceFile for a missing target.\n" +
                 correctionRequirements +
                 "Use only these candidate paths:\n- " +
                 string.Join(
@@ -409,6 +430,18 @@ public sealed class DeveloperExecutionService :
                 return Failure(
                     DeveloperExecutionFailureKind.AiInvalidResponse,
                     "DEVELOPER_PROPOSAL_INVALID");
+            }
+
+            string? targetOperationError = ValidateTargetOperations(
+                proposal,
+                targetContext.Targets);
+            if (targetOperationError is not null)
+            {
+                return await PolicyFailureAsync(
+                    request,
+                    response,
+                    targetOperationError,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             DeveloperProposalMetadataBindingResult binding =
@@ -568,6 +601,141 @@ public sealed class DeveloperExecutionService :
         }
     }
 
+    private static TargetContextResult BuildTargetContext(
+        ReadOnlyMemory<byte> packageContent,
+        IReadOnlyList<string> candidatePaths)
+    {
+        const int maxTargetBytes = 64 * 1024;
+        const int maxTotalTargetBytes = 128 * 1024;
+
+        try
+        {
+            using var stream = new MemoryStream(packageContent.ToArray(), writable: false);
+            using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+            ZipArchiveEntry? manifestEntry = archive.GetEntry("manifest.json");
+            if (manifestEntry is null)
+            {
+                return TargetContextResult.Success([]);
+            }
+
+            ManifestModel? manifest;
+            using (Stream manifestStream = manifestEntry.Open())
+            {
+                manifest = JsonSerializer.Deserialize<ManifestModel>(manifestStream);
+            }
+
+            if (manifest is null)
+            {
+                return TargetContextResult.Failure("DEVELOPER_TARGET_MANIFEST_INVALID");
+            }
+
+            Dictionary<string, ManifestEntry> inventory = manifest.Entries
+                .Where(entry => !string.IsNullOrWhiteSpace(entry.Path))
+                .ToDictionary(entry => entry.Path, StringComparer.Ordinal);
+            var targets = new List<DeveloperTargetContext>();
+            int totalBytes = 0;
+
+            foreach (string path in candidatePaths.Distinct(StringComparer.Ordinal))
+            {
+                if (!inventory.TryGetValue(path, out ManifestEntry? item))
+                {
+                    targets.Add(new DeveloperTargetContext(
+                        path, false, null, string.Empty,
+                        "WritableCandidate", "PlanningPlan"));
+                    continue;
+                }
+
+                if (item.SizeBytes < 0 || item.SizeBytes > maxTargetBytes ||
+                    totalBytes + item.SizeBytes > maxTotalTargetBytes ||
+                    item.Sha256.Length != 64)
+                {
+                    return TargetContextResult.Failure(
+                        "DEVELOPER_AUTHORITATIVE_TARGET_TOO_LARGE");
+                }
+
+                ZipArchiveEntry? sourceEntry = archive.GetEntry(path);
+                if (sourceEntry is null || sourceEntry.Length != item.SizeBytes)
+                {
+                    return TargetContextResult.Failure(
+                        "DEVELOPER_AUTHORITATIVE_TARGET_INVALID");
+                }
+
+                byte[] contentBytes;
+                using (Stream source = sourceEntry.Open())
+                using (var buffer = new MemoryStream())
+                {
+                    source.CopyTo(buffer);
+                    contentBytes = buffer.ToArray();
+                }
+
+                string actualSha = Convert.ToHexString(
+                    SHA256.HashData(contentBytes)).ToLowerInvariant();
+                if (!string.Equals(actualSha, item.Sha256, StringComparison.Ordinal))
+                {
+                    return TargetContextResult.Failure(
+                        "DEVELOPER_AUTHORITATIVE_TARGET_HASH_INVALID");
+                }
+
+                string content = new UTF8Encoding(false, true)
+                    .GetString(contentBytes);
+                targets.Add(new DeveloperTargetContext(
+                    path, true, content, actualSha,
+                    "WritableCandidate", "PlanningPlan+ContextManifest"));
+                totalBytes += contentBytes.Length;
+            }
+
+            return TargetContextResult.Success(targets);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or
+            JsonException or DecoderFallbackException or ArgumentException)
+        {
+            // Legacy test packages and recovery evidence may not carry a readable
+            // inventory. Preserve their existing behavior while real packages fail
+            // closed once a manifest is present.
+            return TargetContextResult.Success([]);
+        }
+    }
+
+    private static string? ValidateTargetOperations(
+        DeveloperProposal proposal,
+        IReadOnlyList<DeveloperTargetContext> targets)
+    {
+        if (targets.Count == 0)
+        {
+            return null;
+        }
+
+        Dictionary<string, DeveloperTargetContext> byPath = targets
+            .ToDictionary(target => target.RelativePath, StringComparer.OrdinalIgnoreCase);
+        foreach (DeveloperChangeOperation change in proposal.Changes)
+        {
+            if (!byPath.TryGetValue(change.RelativePath, out DeveloperTargetContext? target))
+            {
+                return "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT";
+            }
+
+            if (target.Exists && change.Operation != DeveloperChangeOperationType.ReplaceFile)
+            {
+                return "DEVELOPER_CREATE_EXISTING_FILE_REJECTED";
+            }
+
+            if (!target.Exists && change.Operation != DeveloperChangeOperationType.CreateFile)
+            {
+                return "DEVELOPER_REPLACE_MISSING_FILE_REJECTED";
+            }
+
+            if (target.Exists && !string.Equals(
+                    change.ExpectedContentSha256,
+                    target.CurrentContentSha256,
+                    StringComparison.Ordinal))
+            {
+                return "DEVELOPER_EXPECTED_CONTENT_SHA_INVALID";
+            }
+        }
+
+        return null;
+    }
+
     private Task<ArtifactReadResult> ReadAsync(
         DeveloperExecutionRequest request,
         ArtifactType type,
@@ -582,7 +750,46 @@ public sealed class DeveloperExecutionService :
                 MaxBytes = artifactOptions.MaxArtifactBytes,
                 CorrelationId = request.CorrelationId
             },
-            cancellationToken);
+        cancellationToken);
+
+    private sealed record DeveloperTargetContext(
+        string RelativePath,
+        bool Exists,
+        string? CurrentContent,
+        string CurrentContentSha256,
+        string Role,
+        string AuthorizationSource);
+
+    private sealed record TargetContextResult(
+        bool IsSuccess,
+        IReadOnlyList<DeveloperTargetContext> Targets,
+        string ErrorCode)
+    {
+        public static TargetContextResult Success(
+            IReadOnlyList<DeveloperTargetContext> targets) =>
+            new(true, targets, string.Empty);
+
+        public static TargetContextResult Failure(string errorCode) =>
+            new(false, [], errorCode);
+    }
+
+    private sealed record ManifestModel
+    {
+        [JsonPropertyName("entries")]
+        public IReadOnlyList<ManifestEntry> Entries { get; init; } = [];
+    }
+
+    private sealed record ManifestEntry
+    {
+        [JsonPropertyName("path")]
+        public string Path { get; init; } = string.Empty;
+
+        [JsonPropertyName("sizeBytes")]
+        public int SizeBytes { get; init; }
+
+        [JsonPropertyName("sha256")]
+        public string Sha256 { get; init; } = string.Empty;
+    }
 
     private Task<ArtifactWriteResult> WriteAsync(
         DeveloperExecutionRequest request,
