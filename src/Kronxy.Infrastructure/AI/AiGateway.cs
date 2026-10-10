@@ -192,6 +192,15 @@ public sealed class AiGateway : IAiGateway, IDisposable
                     };
 
                 if (normalized.IsSuccess &&
+                    normalized.TerminationReason == AiTerminationReason.Length)
+                {
+                    normalized = normalized with
+                    {
+                        Status = AiOperationStatus.InvalidResponse,
+                        ErrorCode = "AI_OUTPUT_TRUNCATED"
+                    };
+                }
+                else if (normalized.IsSuccess &&
                     request.StructuredOutput is not null)
                 {
                     if (!structuredOutputValidator
@@ -379,8 +388,9 @@ public sealed class AiGateway : IAiGateway, IDisposable
                 "AI_OUTPUT_LIMIT_INVALID");
         }
 
-        if (requestedLimit >
-            options.MaxOutputTokens)
+        if (requestedLimit > Math.Max(
+                options.MaxOutputTokens,
+                options.DeveloperMaxOutputTokens))
         {
             return Failure(
                 request,

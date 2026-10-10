@@ -504,6 +504,12 @@ public static class DependencyInjection
                         configuration,
                         "AI:MaxOutputTokens"),
 
+                DeveloperMaxOutputTokens =
+                    GetOptionalPositiveInt(
+                        configuration,
+                        "AI:DeveloperMaxOutputTokens",
+                        8_192),
+
                 ContextWindowTokens =
                     GetOptionalPositiveInt(
                         configuration,

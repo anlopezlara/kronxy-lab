@@ -35,6 +35,32 @@ public sealed class AiGatewayTests
         Assert.Equal(
             TimeSpan.FromSeconds(120),
             options.InferenceTimeout);
+        Assert.Equal(8_192, options.DeveloperMaxOutputTokens);
+    }
+
+    [Fact]
+    public void Options_developer_output_budget_can_be_overridden()
+    {
+        var options = new AiGatewayOptions
+        {
+            Provider = "Ollama",
+            Endpoint = "http://example.invalid",
+            Models = new Dictionary<string, string>
+            {
+                ["CodingFast"] = "model-fast",
+                ["CodingQuality"] = "model-quality",
+                ["General"] = "model-general"
+            },
+            MaxConcurrentInferences = 1,
+            ConnectionTimeout = TimeSpan.FromSeconds(1),
+            QueueWaitTimeout = TimeSpan.FromSeconds(1),
+            MaxOutputTokens = 256,
+            DeveloperMaxOutputTokens = 4_096,
+            MaxInputCharacters = 65_536,
+            MaxResponseBytes = 1_048_576
+        };
+
+        Assert.Equal(4_096, options.DeveloperMaxOutputTokens);
     }
 
     [Fact]
@@ -116,6 +142,31 @@ public sealed class AiGatewayTests
         Assert.Equal(
             1,
             provider.GenerateCalls);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_classifies_length_termination_as_output_truncation()
+    {
+        var provider = new FakeAiProvider
+        {
+            GenerateHandler = (_, physicalModel, _) => Task.FromResult(
+                new AiResponse
+                {
+                    Status = AiOperationStatus.Success,
+                    Provider = "Ollama",
+                    Content = "{\"truncated\":",
+                    PhysicalModel = physicalModel,
+                    TerminationReason = AiTerminationReason.Length
+                })
+        };
+
+        using var gateway = CreateGateway(provider);
+        AiResponse result = await gateway.GenerateAsync(CreateRequest());
+
+        Assert.Equal(AiOperationStatus.InvalidResponse, result.Status);
+        Assert.Equal(AiTerminationReason.Length, result.TerminationReason);
+        Assert.Equal("AI_OUTPUT_TRUNCATED", result.ErrorCode);
+        Assert.Equal("{\"truncated\":", result.Content);
     }
 
     [Fact]
@@ -1368,6 +1419,9 @@ public sealed class AiGatewayTests
                     TimeSpan.FromSeconds(1),
 
                 MaxOutputTokens =
+                    maxOutputTokens,
+
+                DeveloperMaxOutputTokens =
                     maxOutputTokens,
 
                 MaxInputCharacters =

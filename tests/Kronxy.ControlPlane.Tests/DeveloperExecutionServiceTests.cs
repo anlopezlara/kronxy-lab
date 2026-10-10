@@ -67,7 +67,10 @@ public sealed class DeveloperExecutionServiceTests
             await fixture.Service.ExecuteAsync(Request());
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(48_000, fixture.Context.LastRequest!.MaxCharacters);
+        Assert.InRange(
+            fixture.Context.LastRequest!.MaxCharacters,
+            1,
+            47_999);
         Assert.Contains("src/a.cs", fixture.Context.LastRequest.PriorityPaths);
         Assert.DoesNotContain(
             "src/new.cs",
@@ -124,6 +127,10 @@ public sealed class DeveloperExecutionServiceTests
         Assert.Contains("\"Exists\":true", input);
         Assert.Contains(current.Trim(), input);
         Assert.Contains(hash, input);
+        Assert.Null(fixture.Context.LastRequest);
+        Assert.Equal(
+            8_192,
+            fixture.Gateway.LastRequest.Generation.MaxOutputTokens);
         Assert.Equal(
             DeveloperChangeOperationType.ReplaceFile,
             Assert.Single(result.Proposal!.Changes).Operation);

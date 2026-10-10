@@ -17,6 +17,8 @@ namespace Kronxy.Infrastructure.Execution;
 public sealed class DeveloperExecutionService :
     IDeveloperExecutionService
 {
+    private const int ConservativeCharactersPerToken = 3;
+
     private const string SystemInstructions =
         "You are the KRONXY developer model. Return only the smallest complete JSON proposal needed for the task. " +
         "Use at most four changes; omit unnecessary files; keep summary and intent under eight words; use empty assumptions and risks unless essential; never repeat code outside content. " +
@@ -307,6 +309,18 @@ public sealed class DeveloperExecutionService :
                 remainingCharacters,
                 aiOptions.DeveloperContextCharacters);
 
+            int tokenWindowCharacters = checked(
+                (aiOptions.ContextWindowTokens -
+                    aiOptions.DeveloperMaxOutputTokens) *
+                ConservativeCharactersPerToken);
+            remainingCharacters = Math.Min(
+                remainingCharacters,
+                tokenWindowCharacters -
+                    systemInstructions.Length -
+                    prefix.Length -
+                    outputRequirements.Length -
+                    schemaCharacters);
+
             if (remainingCharacters <= 0)
             {
                 return Failure(
@@ -314,15 +328,22 @@ public sealed class DeveloperExecutionService :
                     "DEVELOPER_INPUT_LIMIT_EXCEEDED");
             }
 
-            ContextAiInputResult context =
-                await contextBuilder.BuildAsync(
-                    new ContextAiInputRequest
-                    {
-                        PackageContent = contextArtifact.Content,
-                        MaxCharacters = remainingCharacters,
-                        PriorityPaths = plan.FilesToInspect
-                    },
-                    cancellationToken).ConfigureAwait(false);
+            ContextAiInputResult context;
+            if (targetContext.Targets.Count > 0)
+            {
+                context = ContextAiInputResult.Success(string.Empty);
+            }
+            else
+            {
+                context = await contextBuilder.BuildAsync(
+                        new ContextAiInputRequest
+                        {
+                            PackageContent = contextArtifact.Content,
+                            MaxCharacters = remainingCharacters,
+                            PriorityPaths = plan.FilesToInspect
+                        },
+                        cancellationToken).ConfigureAwait(false);
+            }
 
             if (!context.IsSuccess)
             {
@@ -335,12 +356,13 @@ public sealed class DeveloperExecutionService :
                 prefix + context.Content + outputRequirements;
 
             if ((long)systemInstructions.Length +
-                    userContent.Length >
-                aiOptions.MaxInputCharacters)
+                    userContent.Length > aiOptions.MaxInputCharacters ||
+                (long)systemInstructions.Length + userContent.Length +
+                    schemaCharacters > tokenWindowCharacters)
             {
                 return Failure(
                     DeveloperExecutionFailureKind.ContextTooLarge,
-                    "DEVELOPER_INPUT_LIMIT_EXCEEDED");
+                    "DEVELOPER_CONTEXT_WINDOW_BUDGET_EXCEEDED");
             }
 
             if (request.BuildCorrection is not null)
@@ -362,7 +384,8 @@ public sealed class DeveloperExecutionService :
                             aiOptions.DeveloperInferenceTimeout,
                         Generation = new AiGenerationOptions
                         {
-                            MaxOutputTokens = aiOptions.MaxOutputTokens,
+                            MaxOutputTokens =
+                                aiOptions.DeveloperMaxOutputTokens,
                             Temperature = 0
                         },
                         StructuredOutput = new AiStructuredOutput

@@ -66,6 +66,12 @@ public sealed record AiGatewayOptions
         init;
     }
 
+    public int DeveloperMaxOutputTokens
+    {
+        get;
+        init;
+    } = 8_192;
+
     public int ContextWindowTokens
     {
         get;
@@ -201,7 +207,15 @@ public sealed record AiGatewayOptions
                 "AI MaxOutputTokens must be greater than zero.");
         }
 
-        if (ContextWindowTokens <= MaxOutputTokens)
+        if (DeveloperMaxOutputTokens <= 0)
+        {
+            throw new InvalidOperationException(
+                "AI DeveloperMaxOutputTokens must be greater than zero.");
+        }
+
+        if (ContextWindowTokens <= Math.Max(
+                MaxOutputTokens,
+                DeveloperMaxOutputTokens))
         {
             throw new InvalidOperationException(
                 "AI ContextWindowTokens must be greater than MaxOutputTokens.");
