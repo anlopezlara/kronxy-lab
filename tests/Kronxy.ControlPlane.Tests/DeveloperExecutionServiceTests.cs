@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
@@ -195,7 +196,7 @@ public sealed class DeveloperExecutionServiceTests
             targetMarker,
             StringComparison.Ordinal) + targetMarker.Length;
         int targetEnd = userContent.IndexOf(
-            "\n\nAUTHORIZED REVIEWER FEEDBACK:",
+            "\n\nFINAL OUTPUT REQUIREMENTS:",
             targetStart,
             StringComparison.Ordinal);
         using JsonDocument targets = JsonDocument.Parse(
@@ -209,6 +210,81 @@ public sealed class DeveloperExecutionServiceTests
             6_870,
             8_192);
         Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(current));
+    }
+
+    [Fact]
+    public async Task Two_target_19181_byte_pilot_has_deterministic_headroom()
+    {
+        const string sourcePath =
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor";
+        const string testPath =
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs";
+        const int targetBytes = 19_181;
+        const string fragment =
+            "<div class=\"job-detail\">@Model.JobId & @Model.RunId</div>\n";
+        string current = string.Concat(Enumerable.Repeat(
+            fragment,
+            targetBytes / fragment.Length + 1))[..targetBytes];
+        string hash = CurrentHash(current);
+        Fixture fixture = CreateFixture();
+        fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
+            new PlannerPlan
+            {
+                Objective = "Implement safely.",
+                FilesToInspect = [sourcePath],
+                CandidateFilesToModify = [sourcePath, testPath],
+                Strategy = "Add copy controls and focused tests.",
+                AcceptanceCriteria = ["Copy controls work."],
+                Risks = [],
+                ExpectedTests = [],
+                Assumptions = [],
+                Uncertainties = []
+            });
+        fixture.Reader.ContextContent = ContextPackage((sourcePath, current));
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{sourcePath}}","intent":"Add copy controls.","content":"updated","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess);
+        AiRequest sent = fixture.Gateway.LastRequest!;
+        int estimatedInputTokens = (
+            sent.SystemInstructions.Length + sent.UserContent.Length +
+            sent.StructuredOutput!.Schema.GetRawText().Length + 2) / 3;
+        int minimumOutputTokens = (
+            JsonSerializer.Serialize(
+                current,
+                new JsonSerializerOptions
+                {
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                }).Length + 512 + 2 * 256 + 2) / 3;
+        int headroom = 16_384 - 512 - estimatedInputTokens - minimumOutputTokens;
+
+        Assert.True(estimatedInputTokens <= 8_861, $"Input={estimatedInputTokens}");
+        Assert.True(minimumOutputTokens >= 6_956, $"Output={minimumOutputTokens}");
+        Assert.True(headroom > 0, $"Headroom={headroom}");
+        Assert.Equal(16_384, sent.Generation.ContextWindowTokens);
+        Assert.Equal(16_384 - 512 - estimatedInputTokens,
+            sent.Generation.MaxOutputTokens);
+        Assert.DoesNotContain("AUTHORIZED REVIEWER FEEDBACK", sent.UserContent);
+        Assert.DoesNotContain("AUTHORIZED CORRECTION EVIDENCE", sent.UserContent);
+        Assert.DoesNotContain("AUTHORIZED REPOSITORY CONTEXT", sent.UserContent);
+        const string targetMarker = "AUTHORIZED TARGET FILES:\n";
+        int targetStart = sent.UserContent.IndexOf(
+            targetMarker,
+            StringComparison.Ordinal) + targetMarker.Length;
+        int targetEnd = sent.UserContent.IndexOf(
+            "\n\nFINAL OUTPUT REQUIREMENTS:",
+            targetStart,
+            StringComparison.Ordinal);
+        using JsonDocument targets = JsonDocument.Parse(
+            sent.UserContent[targetStart..targetEnd]);
+        Assert.Equal(2, targets.RootElement.GetArrayLength());
+        Assert.Equal(current,
+            targets.RootElement[0].GetProperty("CurrentContent").GetString());
+        Assert.Contains(testPath, sent.UserContent);
     }
 
     [Fact]

@@ -33,7 +33,6 @@ public sealed class DeveloperExecutionService :
         "Use only candidate file paths from the approved plan. Implement only requested types and members; do not add convenience helpers, extension methods, blocking async calls, examples, or speculative APIs. " +
         "TARGET FILES deterministically state whether each candidate exists and include bounded authoritative content and SHA256 for existing files. Use ReplaceFile for exists=true and copy currentContentSha256 exactly into expectedContentSha256. Use CreateFile with an empty expectedContentSha256 only for exists=false. " +
         "Preserve unrelated markup, code, injected services, usings, bindings, models, actions, and UI. Make the smallest coherent change based on the actual current content; never replace the existing architecture with a guessed pattern. " +
-        "Propose only complete file creation or replacement operations grounded in the supplied plan and authorized repository context. " +
         "Do not execute commands, access files, call tools, or modify code. " +
         "KRONXY alone validates and applies your structured proposal.";
 
@@ -255,9 +254,16 @@ public sealed class DeveloperExecutionService :
                 "JOB REQUEST:\n" + request.JobRequest +
                 "\n\nAPPROVED PLANNER PLAN:\n" + planJson +
                 "\n\nAUTHORIZED TARGET FILES:\n" + targetContextJson +
-                "\n\nAUTHORIZED REVIEWER FEEDBACK:\n" + feedbackJson +
-                "\n\nAUTHORIZED CORRECTION EVIDENCE:\n" + correctionJson +
-                "\n\nAUTHORIZED REPOSITORY CONTEXT:\n";
+                (request.ReviewerFeedback is null
+                    ? string.Empty
+                    : "\n\nAUTHORIZED REVIEWER FEEDBACK:\n" + feedbackJson) +
+                (request.HumanReviewCorrection is null &&
+                 request.BuildCorrection is null
+                    ? string.Empty
+                    : "\n\nAUTHORIZED CORRECTION EVIDENCE:\n" + correctionJson) +
+                (targetContext.Targets.Count > 0
+                    ? string.Empty
+                    : "\n\nAUTHORIZED REPOSITORY CONTEXT:\n");
 
             string systemInstructions = SystemInstructions +
                 (request.HumanReviewCorrection is not null
