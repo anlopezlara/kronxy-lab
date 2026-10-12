@@ -735,7 +735,7 @@ public sealed class PlanningExecutionService :
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-    private static PlanningGuidance? BuildPlanningGuidance(
+    internal static PlanningGuidance? BuildPlanningGuidance(
         ArtifactReadResult artifact,
         PlanningExecutionRequest request)
     {
@@ -817,7 +817,7 @@ public sealed class PlanningExecutionService :
             artifact.Artifact.Sha256);
     }
 
-    private static PathCoherenceResult IsPathCoherent(
+    internal static PathCoherenceResult IsPathCoherent(
         PlannerPlan plan,
         PlanningGuidance guidance,
         string authorizedContext,
@@ -1086,7 +1086,7 @@ public sealed class PlanningExecutionService :
     private static string NormalizeSymbol(string value) =>
         new(value.Where(char.IsLetterOrDigit).ToArray());
 
-    private sealed record PlanningGuidance(
+    internal sealed record PlanningGuidance(
         string PrimaryClassification,
         IReadOnlyList<string> TargetSymbols,
         IReadOnlyList<string> ImpactedLayers,
@@ -1100,7 +1100,7 @@ public sealed class PlanningExecutionService :
         Guid DevelopmentAnalysisArtifactId,
         string DevelopmentAnalysisSha256);
 
-    private sealed record PathCoherenceResult(
+    internal sealed record PathCoherenceResult(
         bool IsValid,
         string Reason,
         string? Path,

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.IO.Compression;
 using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
@@ -79,16 +80,16 @@ public sealed class StageRecoveryEvidenceServiceTests
         var reader = new FakeArtifactReader
         {
             Handler = request =>
-                request.ArtifactType ==
-                    ArtifactType.PlanningPlan
-                    ? Success(
-                        request,
-                        JsonSerializer
-                            .SerializeToUtf8Bytes(
-                                ValidPlan()))
-                    : Success(
-                        request,
-                        "{}"u8.ToArray())
+                request.ArtifactType switch
+                {
+                    ArtifactType.PlanningPlan => Success(
+                        request, JsonSerializer.SerializeToUtf8Bytes(ValidPlan())),
+                    ArtifactType.DevelopmentAnalysis => Success(
+                        request, JsonSerializer.SerializeToUtf8Bytes(ValidAnalysis("src/a.cs"))),
+                    ArtifactType.ContextPackage => Success(
+                        request, ContextPackage("src/a.cs")),
+                    _ => Success(request, "{}"u8.ToArray())
+                }
         };
 
         var service =
@@ -116,6 +117,9 @@ public sealed class StageRecoveryEvidenceServiceTests
                 request.ArtifactType),
             request => Assert.Equal(
                 ArtifactType.ContextPackage,
+                request.ArtifactType),
+            request => Assert.Equal(
+                ArtifactType.DevelopmentAnalysis,
                 request.ArtifactType));
     }
     [Fact]
@@ -124,14 +128,17 @@ public sealed class StageRecoveryEvidenceServiceTests
         var reader = new FakeArtifactReader
         {
             Handler = request =>
-                request.ArtifactType == ArtifactType.PlanningPlan
-                    ? Success(
-                        request,
-                        JsonSerializer.SerializeToUtf8Bytes(
-                            ValidPlan()))
-                    : Success(
-                        request,
-                        "context"u8.ToArray())
+                request.ArtifactType switch
+                {
+                    ArtifactType.PlanningPlan => Success(
+                        request, JsonSerializer.SerializeToUtf8Bytes(ValidPlan())),
+                    ArtifactType.DevelopmentAnalysis => Success(
+                        request, JsonSerializer.SerializeToUtf8Bytes(
+                            ValidAnalysis("src/authoritative.cs"))),
+                    ArtifactType.ContextPackage => Success(
+                        request, ContextPackage("src/a.cs", "src/authoritative.cs")),
+                    _ => Success(request, "{}"u8.ToArray())
+                }
         };
 
         var service =
@@ -1214,7 +1221,7 @@ public sealed class StageRecoveryEvidenceServiceTests
         {
             Objective = "Recover validated planning evidence.",
             FilesToInspect = ["src/a.cs"],
-            CandidateFilesToModify = Array.Empty<string>(),
+            CandidateFilesToModify = ["src/a.cs"],
             Strategy = "Require both planning artifacts.",
             AcceptanceCriteria =
                 Array.Empty<string>(),
@@ -1223,6 +1230,43 @@ public sealed class StageRecoveryEvidenceServiceTests
             Assumptions = Array.Empty<string>(),
             Uncertainties = Array.Empty<string>()
         };
+
+    private static DevelopmentAnalysis ValidAnalysis(string targetPath) =>
+        new()
+        {
+            JobId = JobId,
+            RunId = RunId,
+            AttemptCount = 0,
+            RequestIdentity = new string('a', 64),
+            TargetSymbols = [Path.GetFileNameWithoutExtension(targetPath)],
+            ExistingDeclarations = [],
+            PrimaryClassification = DevelopmentChangeClassification.Extension,
+            ImpactedLayers = ["Application"],
+            RequestedScope = "Application-only",
+            RequiredScope = "Cross-layer",
+            ScopeCompatible = true,
+            BreakingContracts = [],
+            ArchitectureDecisionRequired = false,
+            DeveloperExecutionAllowed = true,
+            Evidence = [],
+            FilesInspected = [targetPath],
+            AnalysisVersion = "development-analysis-v5"
+        };
+
+    private static byte[] ContextPackage(params string[] paths)
+    {
+        using var output = new MemoryStream();
+        using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))
+        {
+            ZipArchiveEntry entry = archive.CreateEntry("manifest.json");
+            using Stream stream = entry.Open();
+            JsonSerializer.Serialize(stream, new
+            {
+                entries = paths.Select(path => new { path, sizeBytes = 1 })
+            });
+        }
+        return output.ToArray();
+    }
 
     private sealed class FakePriorityPathSelector :
         IPlanningPriorityPathSelector

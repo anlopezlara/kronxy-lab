@@ -544,19 +544,110 @@ public sealed class StageRecoveryEvidenceService :
             return MapReadFailure(contextRead);
         }
 
-        IReadOnlyList<string> priorityPaths =
-            priorityPathSelector.Select(
-                contextRead.Content,
-                request.JobRequest);
+        ArtifactReadResult analysisRead = await ReadAsync(
+            request,
+            ArtifactType.DevelopmentAnalysis,
+            MaxReportBytes,
+            cancellationToken);
 
-        return PlanningPriorityPathSelector
-            .HasTopFivePlanPathOverlap(
-                plan,
-                priorityPaths)
-            ? StageRecoveryResult.Completed(
-                plannerPlan: plan)
-            : StageRecoveryResult.InvalidEvidence(
+        if (!analysisRead.IsSuccess)
+            return MapReadFailure(analysisRead);
+
+        PlanningExecutionService.PlanningGuidance? guidance =
+            PlanningExecutionService.BuildPlanningGuidance(
+                analysisRead,
+                new PlanningExecutionRequest
+                {
+                    JobId = request.JobId,
+                    RunId = request.RunId,
+                    AttemptCount = request.AttemptCount,
+                    JobRequest = request.JobRequest,
+                    CorrelationId = request.CorrelationId
+                });
+
+        if (guidance is null)
+        {
+            LogPlanningCoherenceFailure(
+                request, analysisRead.Artifact, planRead.Artifact,
+                "DEVELOPMENT_ANALYSIS_INVALID",
+                "Matching valid DevelopmentAnalysis",
+                "DevelopmentAnalysis failed identity, attempt, scope, or authorization validation");
+            return StageRecoveryResult.InvalidEvidence(
                 "STAGE_RECOVERY_PLANNING_COHERENCE_INVALID");
+        }
+
+        IReadOnlySet<string> repositoryPaths =
+            PlanningPriorityPathSelector.ExtractManifestPaths(
+                contextRead.Content);
+
+        IReadOnlyList<string> priorityPaths =
+            guidance.AuthoritativeTargetFiles
+                .Concat(guidance.SupportingContextFiles)
+                .Where(path => repositoryPaths.Count == 0 ||
+                    repositoryPaths.Contains(path))
+                .Concat(priorityPathSelector.Select(
+                    contextRead.Content,
+                    request.JobRequest))
+                .Distinct(StringComparer.Ordinal)
+                .Take(24)
+                .ToArray();
+
+        string authorizedContext = string.Join('\n',
+            repositoryPaths.Select(path => $"===== FILE: {path} ====="));
+        PlanningExecutionService.PathCoherenceResult coherence =
+            PlanningExecutionService.IsPathCoherent(
+                plan,
+                guidance,
+                authorizedContext,
+                request.JobRequest,
+                repositoryPaths);
+
+        bool hasGroundingOverlap =
+            PlanningPriorityPathSelector.HasTopFivePlanPathOverlap(
+                plan,
+                priorityPaths) ||
+            coherence.HasExistingAuthoritativeTarget;
+
+        if (coherence.IsValid && hasGroundingOverlap)
+        {
+            return StageRecoveryResult.Completed(
+                plannerPlan: plan);
+        }
+
+        string failedInvariant = coherence.IsValid
+            ? "AUTHORITATIVE_OR_PRIORITY_PATH_OVERLAP"
+            : coherence.Reason;
+        string actual = coherence.Path ??
+            string.Join(',', plan.FilesToInspect
+                .Concat(plan.CandidateFilesToModify));
+        LogPlanningCoherenceFailure(
+            request, analysisRead.Artifact, planRead.Artifact,
+            failedInvariant,
+            "A valid authoritative target or top-five priority path",
+            actual);
+
+        return StageRecoveryResult.InvalidEvidence(
+            "STAGE_RECOVERY_PLANNING_COHERENCE_INVALID");
+    }
+
+    private void LogPlanningCoherenceFailure(
+        StageRecoveryRequest request,
+        ArtifactRecord? analysis,
+        ArtifactRecord? plan,
+        string failedInvariant,
+        string expected,
+        string actual)
+    {
+        logger?.LogWarning(
+            "Planning recovery coherence failed. JobId={JobId} RunId={RunId} AttemptCount={AttemptCount} DevelopmentAnalysisArtifactId={DevelopmentAnalysisArtifactId} PlanningPlanArtifactId={PlanningPlanArtifactId} FailedInvariant={FailedInvariant} Expected={Expected} Actual={Actual}",
+            request.JobId,
+            request.RunId,
+            request.AttemptCount,
+            analysis?.ArtifactId,
+            plan?.ArtifactId,
+            failedInvariant,
+            expected,
+            actual);
     }
 
     private async Task<StageRecoveryResult>
