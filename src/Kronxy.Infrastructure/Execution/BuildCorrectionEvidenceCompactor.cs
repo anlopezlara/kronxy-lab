@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using Kronxy.Application.Execution;
 using Kronxy.Application.Repositories;
 
@@ -49,7 +50,7 @@ public static class BuildCorrectionEvidenceCompactor
         if (!Directory.Exists(root) || IsLink(root))
             return BuildCorrectionEvidenceResult.Failure("DEVELOPER_BUILD_CORRECTION_SOURCE_UNSAFE");
 
-        var source = new List<object>();
+        var source = new List<GovernedFile>();
         var proposalPaths = new List<string>();
         var governedFiles = new Dictionary<string, GovernedFile>(PathComparer);
         var allowed = new HashSet<string>(
@@ -68,7 +69,7 @@ public static class BuildCorrectionEvidenceCompactor
                 return BuildCorrectionEvidenceResult.Failure("DEVELOPER_BUILD_CORRECTION_SOURCE_MISMATCH");
 
             proposalPaths.Add(relative);
-            source.Add(new { Path = relative, Content = read.Content });
+            source.Add(new GovernedFile(relative, read.Content, true));
             if (allowed.Contains(relative))
                 governedFiles[relative] = new GovernedFile(relative, read.Content, true);
         }
@@ -117,8 +118,12 @@ public static class BuildCorrectionEvidenceCompactor
                 diagnostics.Add(key, new MutableDiagnostic(code, path, lineNumber, column, message));
         }
 
-        if (diagnostics.Count == 0)
-            return BuildCorrectionEvidenceResult.Failure("DEVELOPER_BUILD_DIAGNOSTIC_MISSING");
+        string[] actionableLines = ExtractActionableLines(correction.BuildStandardOutput);
+        if (diagnostics.Count == 0 && actionableLines.Length == 0)
+            return BuildCorrectionEvidenceResult.Failure(
+                correction.BuildStandardOutput.Length > maxCharacters
+                    ? "DEVELOPER_BUILD_CORRECTION_EVIDENCE_TOO_LARGE"
+                    : "DEVELOPER_BUILD_DIAGNOSTIC_MISSING");
 
         MutableDiagnostic[] ordered = diagnostics.Values
             .OrderBy(item => proposalPaths.Contains(item.Path, PathComparer) ? 0 : 1)
@@ -132,7 +137,25 @@ public static class BuildCorrectionEvidenceCompactor
             .SelectMany(ParseDeclarations).ToArray();
         RelatedDeclaration[] related = ResolveRelatedDeclarations(ordered, declarations);
 
-        string Serialize(int included, bool includeRelated, bool includeReferences) => JsonSerializer.Serialize(new
+        object[] fullSource = source.Select(file => (object)new
+        {
+            file.Path,
+            file.Content
+        }).ToArray();
+        object[] compactSource = source.Select(file => (object)new
+        {
+            file.Path,
+            ContentSha256 = Convert.ToHexString(
+                SHA256.HashData(StrictUtf8.GetBytes(file.Content))).ToLowerInvariant(),
+            SizeBytes = StrictUtf8.GetByteCount(file.Content),
+            Excerpts = SourceExcerpts(file, ordered)
+        }).ToArray();
+
+        string Serialize(
+            int included,
+            bool includeRelated,
+            bool includeReferences,
+            bool includeFullSource) => JsonSerializer.Serialize(new
         {
             PreviousProposalPaths = proposalPaths,
             PreviousNoOpCorrection = correction.PreviousNoOpPaths.Count == 0 ? null : new
@@ -142,15 +165,25 @@ public static class BuildCorrectionEvidenceCompactor
             },
             FailedBuild = new
             {
+                correction.FailedBuildReport.JobId,
+                correction.FailedBuildReport.RunId,
+                correction.FailedBuildReport.Target,
+                correction.FailedBuildReport.Outcome,
                 correction.FailedBuildReport.ExitCode,
-                correction.FailedBuildReport.ErrorCode
+                correction.FailedBuildReport.ErrorCode,
+                BuildOutputSha256 = Convert.ToHexString(
+                    SHA256.HashData(StrictUtf8.GetBytes(
+                        correction.BuildStandardOutput))).ToLowerInvariant(),
+                BuildOutputCharacters = correction.BuildStandardOutput.Length
             },
-            EffectiveSource = source,
+            EffectiveSource = includeFullSource ? fullSource : compactSource,
             Diagnostics = ordered.Take(included).Select(item => new
             {
                 item.Code, item.Path, item.Line, item.Column, item.Message, item.Count,
+                ExactDiagnostic = $"{item.Path}({item.Line},{item.Column}): error {item.Code}: {item.Message}",
                 RelatedSymbols = includeRelated ? RelatedSymbols(item, related) : []
             }),
+            ActionableBuildLines = actionableLines,
             RelatedDeclarations = includeRelated ? related.Select(item => new
             {
                 item.Symbol,
@@ -171,31 +204,48 @@ public static class BuildCorrectionEvidenceCompactor
             OmittedUniqueDiagnostics = ordered.Length - included
         });
 
-        int kept = 0;
+        int kept = -1;
         bool keptRelated = false;
         bool keptReferences = false;
+        bool keptFullSource = false;
         string content = string.Empty;
-        foreach ((bool includeRelated, bool includeReferences) in
-                 new[] { (true, true), (true, false), (false, false) })
+        foreach ((bool includeRelated, bool includeReferences, bool includeFullSource) in
+                 new[]
+                 {
+                     (true, true, true),
+                     (true, false, true),
+                     (false, false, true),
+                     (true, true, false),
+                     (true, false, false),
+                     (false, false, false)
+                 })
         {
-            for (int count = 1; count <= ordered.Length; count++)
+            int minimumCount = ordered.Length == 0 ? 0 : 1;
+            for (int count = minimumCount; count <= ordered.Length; count++)
             {
-                string candidate = Serialize(count, includeRelated, includeReferences);
+                string candidate = Serialize(
+                    count,
+                    includeRelated,
+                    includeReferences,
+                    includeFullSource);
                 if (candidate.Length > maxCharacters)
                     break;
                 if (count > kept ||
-                    count == kept && includeRelated && !keptRelated ||
-                    count == kept && includeRelated == keptRelated && includeReferences && !keptReferences)
+                    count == kept && includeFullSource && !keptFullSource ||
+                    count == kept && includeFullSource == keptFullSource && includeRelated && !keptRelated ||
+                    count == kept && includeFullSource == keptFullSource &&
+                    includeRelated == keptRelated && includeReferences && !keptReferences)
                 {
                     kept = count;
                     keptRelated = includeRelated;
                     keptReferences = includeReferences;
+                    keptFullSource = includeFullSource;
                     content = candidate;
                 }
             }
         }
 
-        if (kept == 0)
+        if (kept < 0)
             return BuildCorrectionEvidenceResult.Failure("DEVELOPER_BUILD_CORRECTION_EVIDENCE_TOO_LARGE");
 
         int diagnosticCharacters = JsonSerializer.Serialize(
@@ -204,12 +254,75 @@ public static class BuildCorrectionEvidenceCompactor
                 item.Code, item.Path, item.Line, item.Column, item.Message, item.Count
             })).Length;
         int relatedCharacters = keptRelated
-            ? content.Length - Serialize(kept, false, false).Length
+            ? content.Length - Serialize(
+                kept,
+                false,
+                false,
+                keptFullSource).Length
             : 0;
         return BuildCorrectionEvidenceResult.Success(
             content, ordered.Length, kept,
             ordered.Sum(item => item.Count) - ordered.Length,
             diagnosticCharacters, relatedCharacters);
+    }
+
+    private static string[] ExtractActionableLines(string output)
+    {
+        string[] lines = output.Split('\n')
+            .Select(line => line.TrimEnd('\r'))
+            .ToArray();
+        var selected = new List<string>();
+        for (int index = 0; index < lines.Length; index++)
+        {
+            string line = lines[index];
+            if (CompilerError.IsMatch(line) || !IsActionableLine(line))
+                continue;
+            AddDistinct(selected, line);
+            for (int context = index + 1;
+                 context < lines.Length && context <= index + 2;
+                 context++)
+            {
+                string related = lines[context];
+                if (string.IsNullOrWhiteSpace(related) ||
+                    related.Contains("warning ", StringComparison.OrdinalIgnoreCase) ||
+                    IsActionableLine(related))
+                    break;
+                AddDistinct(selected, related);
+            }
+        }
+        return selected.ToArray();
+    }
+
+    private static bool IsActionableLine(string line) =>
+        line.Contains(": error ", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("error ", StringComparison.OrdinalIgnoreCase) ||
+        line.Contains("Build FAILED", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(line.Trim(), "FAILED", StringComparison.OrdinalIgnoreCase);
+
+    private static void AddDistinct(ICollection<string> values, string value)
+    {
+        if (!values.Contains(value, StringComparer.Ordinal))
+            values.Add(value);
+    }
+
+    private static SourceExcerpt[] SourceExcerpts(
+        GovernedFile file,
+        IReadOnlyList<MutableDiagnostic> diagnostics)
+    {
+        string[] lines = file.Content.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n');
+        return diagnostics
+            .Where(item => PathComparer.Equals(item.Path, file.Path))
+            .Select(item => Math.Clamp(item.Line, 1, lines.Length))
+            .Select(line => (Start: Math.Max(1, line - 2),
+                End: Math.Min(lines.Length, line + 2)))
+            .Distinct()
+            .OrderBy(range => range.Start)
+            .Select(range => new SourceExcerpt(
+                range.Start,
+                range.End,
+                string.Join('\n', lines[(range.Start - 1)..range.End])))
+            .ToArray();
     }
 
     private static IEnumerable<Declaration> ParseDeclarations(GovernedFile file)
@@ -327,6 +440,7 @@ public static class BuildCorrectionEvidenceCompactor
     }
 
     private sealed record GovernedFile(string Path, string Content, bool CanModify);
+    private sealed record SourceExcerpt(int StartLine, int EndLine, string Content);
     private sealed record Declaration(
         string Name, string Kind, string Tail, string Path, string Signature, bool CanModify);
     private sealed record RelatedDeclaration(

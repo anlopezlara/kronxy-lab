@@ -25,7 +25,7 @@ public sealed class DeveloperExecutionServiceTests
         DeveloperExecutionResult result =
             await fixture.Service.ExecuteAsync(Request());
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsSuccess, result.ErrorCode);
         Assert.NotNull(result.Proposal);
         Assert.NotNull(fixture.Gateway.LastRequest!.StructuredOutput);
         Assert.Equal(
@@ -800,7 +800,7 @@ public sealed class DeveloperExecutionServiceTests
 
         DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsSuccess, result.ErrorCode);
         Assert.Equal(1, fixture.Gateway.CallCount);
         string input = fixture.Gateway.LastRequest!.UserContent;
         Assert.Contains("CS0050", input);
@@ -812,6 +812,120 @@ public sealed class DeveloperExecutionServiceTests
         Assert.True(input.Length < stdout.Length);
         Assert.True(input.Length <= 65_536);
         Assert.Equal(2, fixture.Store.Requests.Count);
+    }
+
+    [Fact]
+    public async Task KRX_008030_sized_warning_heavy_evidence_reaches_ai_with_all_errors()
+    {
+        const string sourcePath =
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor";
+        const string testPath =
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs";
+        string source = string.Join('\n', Enumerable.Range(1, 220)
+            .Select(line => $"line {line:D3} " + new string('x', 75))) + "\n";
+        string tests = "public sealed class JobDetailTests {}\n" + new string('t', 2_100);
+        Fixture fixture = CreateFixture();
+        DeveloperExecutionRequest request = BuildCorrectionRequest();
+        string root = request.Repository.RepositoryPath;
+        string sourceFullPath = Path.Combine(root, sourcePath);
+        string testFullPath = Path.Combine(root, testPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(sourceFullPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(testFullPath)!);
+        File.WriteAllText(sourceFullPath, source);
+        File.WriteAllText(testFullPath, tests);
+        ValidatedDeveloperChange[] originalChanges =
+        [
+            new(DeveloperChangeOperationType.ReplaceFile, sourcePath,
+                "Add copy controls.", source, new string('a', 64),
+                Encoding.UTF8.GetByteCount(source)),
+            new(DeveloperChangeOperationType.CreateFile, testPath,
+                "Add focused tests.", tests, string.Empty,
+                Encoding.UTF8.GetByteCount(tests))
+        ];
+        string[] errors =
+        [
+            $"{sourcePath}(17,40): error CS1503: Argument 1: cannot convert from 'System.Guid' to 'string?'",
+            $"{sourcePath}(204,15): error CS0103: The name 'JSRuntime' does not exist in the current context",
+            $"{sourcePath}(209,35): error CS1503: Argument 1: cannot convert from 'System.Guid' to 'string?'",
+            $"{sourcePath}(210,19): error CS0103: The name 'JSRuntime' does not exist in the current context"
+        ];
+        string stdout = string.Join('\n',
+            Enumerable.Repeat("warning CS8618: inherited warning", 2_200)
+                .Concat(errors)
+                .Concat(["Build FAILED."]));
+        request = request with
+        {
+            BuildCorrection = request.BuildCorrection! with
+            {
+                OriginalProposal = request.BuildCorrection.OriginalProposal with
+                {
+                    Changes = originalChanges
+                },
+                BuildStandardOutput = stdout
+            }
+        };
+        fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
+            new PlannerPlan
+            {
+                Objective = "Implement safely.",
+                FilesToInspect = [sourcePath],
+                CandidateFilesToModify = [sourcePath, testPath],
+                Strategy = "Correct build errors.",
+                AcceptanceCriteria = ["Build succeeds."],
+                Risks = [], ExpectedTests = [], Assumptions = [], Uncertainties = []
+            });
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Fix copy controls.","changes":[{"operation":"ReplaceFile","relativePath":"{{sourcePath}}","intent":"Fix compiler errors.","content":"corrected\n","expectedContentSha256":""}],"assumptions":[],"risks":[]}
+            """);
+
+        string rawBefore = request.BuildCorrection.BuildStandardOutput;
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fixture.Gateway.CallCount);
+        Assert.Equal(rawBefore, request.BuildCorrection.BuildStandardOutput);
+        string input = fixture.Gateway.LastRequest!.UserContent;
+        Assert.All(errors, error =>
+        {
+            string code = error.Contains("CS1503", StringComparison.Ordinal)
+                ? "CS1503"
+                : "CS0103";
+            Assert.Contains(code, input);
+        });
+        Assert.Contains("\"Line\":17", input);
+        Assert.Contains("\"Line\":204", input);
+        Assert.Contains("\"Line\":209", input);
+        Assert.Contains("\"Line\":210", input);
+        Assert.Contains("Build FAILED.", input);
+        Assert.DoesNotContain("inherited warning", input);
+        const string evidenceMarker = "AUTHORIZED CORRECTION EVIDENCE:\n";
+        int evidenceStart = input.IndexOf(evidenceMarker, StringComparison.Ordinal) +
+            evidenceMarker.Length;
+        int evidenceEnd = input.IndexOf(
+            "\n\nFINAL OUTPUT REQUIREMENTS:", evidenceStart,
+            StringComparison.Ordinal);
+        Assert.InRange(evidenceEnd - evidenceStart, 1, 8_188);
+    }
+
+    [Fact]
+    public async Task Oversized_warning_only_build_output_fails_closed()
+    {
+        DeveloperExecutionRequest request = BuildCorrectionRequest();
+        DeveloperBuildCorrectionContext correction = request.BuildCorrection! with
+        {
+            BuildStandardOutput = string.Join('\n',
+                Enumerable.Repeat("warning CS8618: inherited warning", 1_000))
+        };
+
+        BuildCorrectionEvidenceResult result =
+            await BuildCorrectionEvidenceCompactor.CreateAsync(
+                correction, request.Repository, 8_188);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            "DEVELOPER_BUILD_CORRECTION_EVIDENCE_TOO_LARGE",
+            result.ErrorCode);
     }
 
     [Fact]
