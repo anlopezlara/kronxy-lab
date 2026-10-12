@@ -79,6 +79,16 @@ public sealed class JobRequestHttpValidationTests
     }
 
     [Fact]
+    public async Task Valid_promote_request_reaches_governed_application_operation()
+    {
+        await using HttpHost host = await HttpHost.StartAsync();
+        HttpResponseMessage response = await host.Client.PostAsJsonAsync(
+            $"api/jobs/{NormalJobId}/promote",
+            new { actor = "tester", correlationId = "valid-promote" });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Unknown_job_with_valid_request_returns_governed_4xx()
     {
         await using HttpHost host = await HttpHost.StartAsync();
@@ -229,6 +239,10 @@ public sealed class JobRequestHttpValidationTests
             CancellationToken cancellationToken = default) => Respond(jobId);
 
         public Task<JobOperationResult> ApproveHumanReviewAsync(
+            Guid jobId, string actor, string correlationId,
+            CancellationToken cancellationToken = default) => Respond(jobId);
+
+        public Task<JobOperationResult> PromoteAsync(
             Guid jobId, string actor, string correlationId,
             CancellationToken cancellationToken = default) => Respond(jobId);
 

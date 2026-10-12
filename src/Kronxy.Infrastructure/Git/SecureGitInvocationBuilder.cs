@@ -2,7 +2,8 @@ namespace Kronxy.Infrastructure.Git;
 
 internal sealed record SecureGitInvocation(
     string WorkingDirectory,
-    IReadOnlyList<string> Arguments);
+    IReadOnlyList<string> Arguments,
+    IReadOnlyDictionary<string, string>? Environment = null);
 
 internal static class SecureGitInvocationBuilder
 {
@@ -90,6 +91,17 @@ internal static class SecureGitInvocationBuilder
                     "--no-textconv",
                     "HEAD",
                     "--"),
+
+            SecureGitOperation.StagePaths => BuildPaths(request, "add", "--all", "--"),
+            SecureGitOperation.WriteTree => NoParameters(request, "write-tree"),
+            SecureGitOperation.CommitTree => BuildCommitTree(request),
+            SecureGitOperation.UpdateRef => BuildUpdateRef(request),
+            SecureGitOperation.ResolveTree => BuildObjectQuery(request, "^{tree}"),
+            SecureGitOperation.ResolveParent => BuildObjectQuery(request, "^"),
+            SecureGitOperation.ReadTree => BuildCommitOnly(request, "read-tree"),
+            SecureGitOperation.CheckoutIndexPaths =>
+                BuildPaths(request, "checkout-index", "--force", "--"),
+            SecureGitOperation.ChangedPaths => BuildChangedPaths(request),
 
             _ => null
         };
@@ -229,6 +241,67 @@ internal static class SecureGitInvocationBuilder
             Array.AsReadOnly(arguments));
     }
 
+    private static SecureGitInvocation? BuildPaths(
+        SecureGitRequest request, params string[] prefix)
+    {
+        if (!Only(request, paths: true) || request.Paths is not { Count: > 0 and <= 100 } ||
+            request.Paths.Any(path => !IsSafeRelativePath(path))) return null;
+        return Invocation(request, [.. prefix, .. request.Paths]);
+    }
+
+    private static SecureGitInvocation? BuildCommitOnly(
+        SecureGitRequest request, string command)
+    {
+        if (!Only(request, commit: true) || !IsObjectId(request.Commit)) return null;
+        return Invocation(request, command, request.Commit!);
+    }
+
+    private static SecureGitInvocation? BuildObjectQuery(
+        SecureGitRequest request, string suffix)
+    {
+        if (!Only(request, commit: true) || !IsObjectId(request.Commit)) return null;
+        return Invocation(request, "rev-parse", "--verify", "--end-of-options",
+            request.Commit! + suffix);
+    }
+
+    private static SecureGitInvocation? BuildChangedPaths(SecureGitRequest request)
+    {
+        if (!Only(request, commit: true) || !IsObjectId(request.Commit)) return null;
+        return Invocation(request, "diff-tree", "--no-commit-id", "--name-only", "-r",
+            request.Commit!, "--");
+    }
+
+    private static SecureGitInvocation? BuildUpdateRef(SecureGitRequest request)
+    {
+        if (!Only(request, reference: true, commit: true, oldCommit: true) ||
+            !IsSafeHeadReference(request.Reference) || !IsObjectId(request.Commit) ||
+            !IsObjectId(request.OldCommit)) return null;
+        return Invocation(request, "update-ref", request.Reference!, request.Commit!,
+            request.OldCommit!);
+    }
+
+    private static SecureGitInvocation? BuildCommitTree(SecureGitRequest request)
+    {
+        if (!Only(request, commit: true, oldCommit: true, message: true, actor: true, recordedAtUtc: true) ||
+            !IsObjectId(request.Commit) || string.IsNullOrWhiteSpace(request.Message) ||
+            request.Message.Length > 500 || !SafeText(request.Message) ||
+            string.IsNullOrWhiteSpace(request.Actor) || request.Actor.Length > 200 ||
+            !SafeText(request.Actor) || request.RecordedAtUtc is null) return null;
+        string timestamp = request.RecordedAtUtc.Value.ToUniversalTime().ToString("O");
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["GIT_AUTHOR_NAME"] = request.Actor!,
+            ["GIT_AUTHOR_EMAIL"] = "operator@kronxy.invalid",
+            ["GIT_AUTHOR_DATE"] = timestamp,
+            ["GIT_COMMITTER_NAME"] = "KRONXY",
+            ["GIT_COMMITTER_EMAIL"] = "control-plane@kronxy.invalid",
+            ["GIT_COMMITTER_DATE"] = timestamp
+        };
+        return new SecureGitInvocation(Path.GetFullPath(request.WorkingDirectory),
+            Array.AsReadOnly(new[] { "commit-tree", request.Commit!, "-p", request.OldCommit!, "-m", request.Message! }),
+            environment);
+    }
+
     private static bool TryValidateCommon(
         SecureGitRequest? request)
     {
@@ -265,7 +338,12 @@ internal static class SecureGitInvocationBuilder
         bool reference = false,
         bool branch = false,
         bool worktreePath = false,
-        bool commit = false)
+        bool commit = false,
+        bool oldCommit = false,
+        bool paths = false,
+        bool message = false,
+        bool actor = false,
+        bool recordedAtUtc = false)
     {
         return
             (reference
@@ -282,7 +360,12 @@ internal static class SecureGitInvocationBuilder
 
             (commit
                 ? request.Commit is not null
-                : request.Commit is null);
+                : request.Commit is null) &&
+            (oldCommit ? request.OldCommit is not null : request.OldCommit is null) &&
+            (paths ? request.Paths is not null : request.Paths is null) &&
+            (message ? request.Message is not null : request.Message is null) &&
+            (actor ? request.Actor is not null : request.Actor is null) &&
+            (recordedAtUtc ? request.RecordedAtUtc is not null : request.RecordedAtUtc is null);
     }
 
     private static bool IsSafeReference(
@@ -295,6 +378,19 @@ internal static class SecureGitInvocationBuilder
             value.IndexOfAny(
                 ['\0', '\r', '\n']) < 0;
     }
+
+    private static bool IsSafeHeadReference(string? value) =>
+        value is not null && value.StartsWith("refs/heads/", StringComparison.Ordinal) &&
+        IsSafeBranch(value[11..]);
+
+    private static bool IsSafeRelativePath(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 512 &&
+        value[0] != '-' && !Path.IsPathFullyQualified(value) &&
+        value.IndexOfAny(['\0', '\r', '\n', '\\']) < 0 &&
+        value.Split('/').All(segment => segment.Length > 0 && segment is not "." and not "..");
+
+    private static bool SafeText(string value) =>
+        value.IndexOfAny(['\0', '\r', '\n']) < 0;
 
     private static bool IsSafeBranch(
         string? value)

@@ -350,6 +350,113 @@ public sealed class RepositoryManagerTests
         Assert.False(result.IsSuccess);
     }
 
+    [Fact]
+    public async Task Source_promotion_prepares_single_verified_commit_and_is_idempotent()
+    {
+        using var fixture = new RepositoryFixture();
+        WorkspaceHandle workspace = await fixture.CreateWorkspaceAsync("KRX-009001");
+        string baseline = fixture.Head();
+        RepositoryWorktreeHandle worktree = (await fixture.Manager.PrepareWorktreeAsync(workspace, baseline)).Value!;
+        await File.WriteAllTextAsync(Path.Combine(worktree.RepositoryPath, "tracked.txt"), "approved");
+
+        RepositoryOperationResult<RepositoryPreparedCommit> first = await fixture.Manager.PrepareCommitAsync(
+            workspace, baseline, ["tracked.txt"], "approved mutation", "operator", DateTimeOffset.UnixEpoch);
+        RepositoryOperationResult<RepositoryPreparedCommit> second = await fixture.Manager.PrepareCommitAsync(
+            workspace, baseline, ["tracked.txt"], "approved mutation", "operator", DateTimeOffset.UnixEpoch);
+
+        Assert.True(first.IsSuccess); Assert.True(second.IsSuccess);
+        Assert.Equal(first.Value, second.Value);
+        Assert.Equal(baseline, fixture.Git(worktree.RepositoryPath, "rev-parse", first.Value!.CommitSha + "^").Trim());
+        Assert.Equal(first.Value.TreeSha, fixture.Git(worktree.RepositoryPath, "rev-parse", first.Value.CommitSha + "^{tree}").Trim());
+        Assert.Equal(first.Value.CommitSha, fixture.Git(worktree.RepositoryPath, "rev-parse", first.Value.JobRef).Trim());
+    }
+
+    [Fact]
+    public async Task Source_promotion_prepare_rejects_unexpected_workspace_path()
+    {
+        using var fixture = new RepositoryFixture();
+        WorkspaceHandle workspace = await fixture.CreateWorkspaceAsync("KRX-009002");
+        string baseline = fixture.Head();
+        RepositoryWorktreeHandle worktree = (await fixture.Manager.PrepareWorktreeAsync(workspace, baseline)).Value!;
+        await File.WriteAllTextAsync(Path.Combine(worktree.RepositoryPath, "unexpected.txt"), "no");
+        var result = await fixture.Manager.PrepareCommitAsync(workspace, baseline,
+            ["tracked.txt"], "approved", "operator", DateTimeOffset.UnixEpoch);
+        Assert.False(result.IsSuccess);
+        Assert.Equal("SOURCE_PROMOTION_UNEXPECTED_WORKSPACE_MUTATION", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Source_promotion_fast_forwards_target_and_repeat_is_idempotent()
+    {
+        using var fixture = new RepositoryFixture();
+        WorkspaceHandle workspace = await fixture.CreateWorkspaceAsync("KRX-009003");
+        string baseline = fixture.Head();
+        RepositoryWorktreeHandle worktree = (await fixture.Manager.PrepareWorktreeAsync(workspace, baseline)).Value!;
+        await File.WriteAllTextAsync(Path.Combine(worktree.RepositoryPath, "tracked.txt"), "promoted");
+        RepositoryPreparedCommit prepared = (await fixture.Manager.PrepareCommitAsync(workspace, baseline,
+            ["tracked.txt"], "approved", "operator", DateTimeOffset.UnixEpoch)).Value!;
+        RepositoryTargetRef target = (await fixture.Manager.GetAuthoritativeTargetRefAsync()).Value!;
+
+        var first = await fixture.Manager.PromoteAsync(target.RefName, baseline, prepared.CommitSha,
+            prepared.TreeSha, prepared.JobRef, ["tracked.txt"]);
+        var second = await fixture.Manager.PromoteAsync(target.RefName, baseline, prepared.CommitSha,
+            prepared.TreeSha, prepared.JobRef, ["tracked.txt"]);
+
+        Assert.True(first.IsSuccess); Assert.False(first.Value!.AlreadyPromoted);
+        Assert.True(second.IsSuccess); Assert.True(second.Value!.AlreadyPromoted);
+        Assert.Equal(prepared.CommitSha, fixture.Head());
+        Assert.Equal("promoted", await File.ReadAllTextAsync(Path.Combine(fixture.AuthoritativeRepository, "tracked.txt")));
+    }
+
+    [Fact]
+    public async Task Source_promotion_rejects_tree_or_job_ref_mismatch()
+    {
+        using var fixture = new RepositoryFixture();
+        WorkspaceHandle workspace = await fixture.CreateWorkspaceAsync("KRX-009004");
+        string baseline = fixture.Head();
+        RepositoryWorktreeHandle worktree = (await fixture.Manager.PrepareWorktreeAsync(workspace, baseline)).Value!;
+        await File.WriteAllTextAsync(Path.Combine(worktree.RepositoryPath, "tracked.txt"), "approved");
+        RepositoryPreparedCommit prepared = (await fixture.Manager.PrepareCommitAsync(workspace, baseline,
+            ["tracked.txt"], "approved", "operator", DateTimeOffset.UnixEpoch)).Value!;
+        RepositoryTargetRef target = (await fixture.Manager.GetAuthoritativeTargetRefAsync()).Value!;
+
+        var wrongTree = await fixture.Manager.PromoteAsync(target.RefName, baseline, prepared.CommitSha,
+            baseline, prepared.JobRef, ["tracked.txt"]);
+        var wrongRef = await fixture.Manager.PromoteAsync(target.RefName, baseline, prepared.CommitSha,
+            prepared.TreeSha, "refs/heads/kronxy/jobs/missing", ["tracked.txt"]);
+
+        Assert.Equal("SOURCE_PROMOTION_PREPARED_COMMIT_MISMATCH", wrongTree.ErrorCode);
+        Assert.Equal("SOURCE_PROMOTION_PREPARED_COMMIT_MISMATCH", wrongRef.ErrorCode);
+        Assert.Equal(baseline, fixture.Head());
+    }
+
+    [Fact]
+    public async Task Two_promotions_from_same_base_allow_only_first()
+    {
+        using var fixture = new RepositoryFixture();
+        string baseline = fixture.Head();
+        async Task<RepositoryPreparedCommit> Prepare(string id, string content)
+        {
+            WorkspaceHandle workspace = await fixture.CreateWorkspaceAsync(id);
+            RepositoryWorktreeHandle worktree = (await fixture.Manager.PrepareWorktreeAsync(workspace, baseline)).Value!;
+            await File.WriteAllTextAsync(Path.Combine(worktree.RepositoryPath, "tracked.txt"), content);
+            return (await fixture.Manager.PrepareCommitAsync(workspace, baseline, ["tracked.txt"],
+                content, "operator", DateTimeOffset.UnixEpoch)).Value!;
+        }
+        RepositoryPreparedCommit first = await Prepare("KRX-009005", "first");
+        RepositoryPreparedCommit second = await Prepare("KRX-009006", "second");
+        RepositoryTargetRef target = (await fixture.Manager.GetAuthoritativeTargetRefAsync()).Value!;
+
+        var winner = await fixture.Manager.PromoteAsync(target.RefName, baseline, first.CommitSha,
+            first.TreeSha, first.JobRef, ["tracked.txt"]);
+        var loser = await fixture.Manager.PromoteAsync(target.RefName, baseline, second.CommitSha,
+            second.TreeSha, second.JobRef, ["tracked.txt"]);
+
+        Assert.True(winner.IsSuccess);
+        Assert.Equal("SOURCE_PROMOTION_TARGET_DRIFT", loser.ErrorCode);
+        Assert.Equal(first.CommitSha, fixture.Head());
+    }
+
     private sealed class RepositoryFixture :
         IDisposable
     {

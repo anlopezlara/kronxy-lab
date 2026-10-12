@@ -18,6 +18,8 @@ public sealed class RepositoryManager : IRepositoryManager
 
     private static readonly ConcurrentDictionary<Guid, SemaphoreSlim>
         JobLocks = new();
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim>
+        TargetLocks = new(StringComparer.Ordinal);
 
     private readonly string authoritativeRepositoryRoot;
     private readonly string workspaceRoot;
@@ -374,6 +376,198 @@ public sealed class RepositoryManager : IRepositoryManager
                 "REPOSITORY_DIFF_STAT_FAILED",
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task<RepositoryOperationResult<RepositoryPreparedCommit>> PrepareCommitAsync(
+        WorkspaceHandle workspace, string expectedBaseHead,
+        IReadOnlyList<string> expectedChangedPaths, string message, string actor,
+        DateTimeOffset recordedAtUtc, CancellationToken cancellationToken = default)
+    {
+        if (!TryValidateRequest(workspace, out string repositoryPath, out string branch) ||
+            !IsObjectId(expectedBaseHead) || expectedChangedPaths is not { Count: > 0 and <= 100 } ||
+            expectedChangedPaths.Any(path => !IsSafeRelativePath(path)) ||
+            expectedChangedPaths.Distinct(StringComparer.Ordinal).Count() != expectedChangedPaths.Count)
+            return RepositoryOperationResult<RepositoryPreparedCommit>.Failure(
+                RepositoryFailureKind.InvalidRequest, "SOURCE_PROMOTION_INVALID_REQUEST");
+
+        SemaphoreSlim gate = JobLocks.GetOrAdd(workspace.JobId, static _ => new(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            RepositoryOperationResult<RepositoryWorktreeHandle>? safety =
+                await ValidateSafetyAsync(workspace, repositoryPath, cancellationToken)
+                    .ConfigureAwait(false);
+            if (safety is not null)
+                return RepositoryOperationResult<RepositoryPreparedCommit>.Failure(
+                    safety.FailureKind, safety.ErrorCode);
+            RepositoryOperationResult<RepositoryWorktreeHandle> recovered =
+                await ValidateExistingWorktreeAsync(workspace, repositoryPath, branch,
+                    RepositoryWorktreeOperationKind.Recovered, cancellationToken)
+                    .ConfigureAwait(false);
+            if (!recovered.IsSuccess || recovered.Value is null)
+                return RepositoryOperationResult<RepositoryPreparedCommit>.Failure(
+                    recovered.FailureKind, recovered.ErrorCode);
+
+            string head = recovered.Value.Head;
+            string jobRef = $"refs/heads/{branch}";
+            if (!string.Equals(head, expectedBaseHead, StringComparison.OrdinalIgnoreCase))
+            {
+                RepositoryOperationResult<string> parent = await ResolveObjectAsync(
+                    repositoryPath, head, SecureGitOperation.ResolveParent, cancellationToken);
+                RepositoryOperationResult<string> tree = await ResolveObjectAsync(
+                    repositoryPath, head, SecureGitOperation.ResolveTree, cancellationToken);
+                RepositoryOperationResult<RepositoryStatus> status = await GetStatusAsync(
+                    workspace, cancellationToken).ConfigureAwait(false);
+                GitCommandResult changedPaths = await RunGitAsync(repositoryPath,
+                    SecureGitOperation.ChangedPaths, cancellationToken, commit: head)
+                    .ConfigureAwait(false);
+                HashSet<string> committedPaths = changedPaths.StandardOutput.Split('\n',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToHashSet(StringComparer.Ordinal);
+                if (parent.IsSuccess && tree.IsSuccess && status.IsSuccess && status.Value!.IsClean &&
+                    changedPaths.IsSuccess && committedPaths.SetEquals(expectedChangedPaths) &&
+                    string.Equals(parent.Value, expectedBaseHead, StringComparison.OrdinalIgnoreCase))
+                    return RepositoryOperationResult<RepositoryPreparedCommit>.Success(
+                        new(head, tree.Value!, parent.Value!, jobRef));
+                return RepositoryOperationResult<RepositoryPreparedCommit>.Failure(
+                    RepositoryFailureKind.BranchConflict, "SOURCE_PROMOTION_JOB_REF_MISMATCH");
+            }
+
+            RepositoryOperationResult<IReadOnlyList<ObservedRepositoryChange>> observed =
+                await GetObservedChangesAsync(workspace, cancellationToken).ConfigureAwait(false);
+            if (!observed.IsSuccess || !observed.Value!.Select(change => change.RelativePath)
+                    .ToHashSet(StringComparer.Ordinal).SetEquals(expectedChangedPaths))
+                return RepositoryOperationResult<RepositoryPreparedCommit>.Failure(
+                    RepositoryFailureKind.DirtyWorktree, "SOURCE_PROMOTION_UNEXPECTED_WORKSPACE_MUTATION");
+
+            GitCommandResult stage = await RunGitAsync(repositoryPath,
+                SecureGitOperation.StagePaths, cancellationToken, paths: expectedChangedPaths)
+                .ConfigureAwait(false);
+            if (!stage.IsSuccess) return PromotionFailure<RepositoryPreparedCommit>(
+                "SOURCE_PROMOTION_STAGE_FAILED");
+
+            GitCommandResult writeTree = await RunGitAsync(repositoryPath,
+                SecureGitOperation.WriteTree, cancellationToken).ConfigureAwait(false);
+            if (!writeTree.IsSuccess) return PromotionFailure<RepositoryPreparedCommit>(
+                "SOURCE_PROMOTION_TREE_FAILED");
+            string treeSha = ParseSingleLine(writeTree.StandardOutput).ToLowerInvariant();
+
+            GitCommandResult commitTree = await RunGitAsync(repositoryPath,
+                SecureGitOperation.CommitTree, cancellationToken, commit: treeSha,
+                oldCommit: expectedBaseHead, message: message, actor: actor,
+                recordedAtUtc: recordedAtUtc).ConfigureAwait(false);
+            if (!commitTree.IsSuccess) return PromotionFailure<RepositoryPreparedCommit>(
+                "SOURCE_PROMOTION_COMMIT_FAILED");
+            string commitSha = ParseSingleLine(commitTree.StandardOutput).ToLowerInvariant();
+
+            GitCommandResult update = await RunGitAsync(repositoryPath,
+                SecureGitOperation.UpdateRef, cancellationToken, reference: jobRef,
+                commit: commitSha, oldCommit: expectedBaseHead).ConfigureAwait(false);
+            if (!update.IsSuccess) return PromotionFailure<RepositoryPreparedCommit>(
+                "SOURCE_PROMOTION_JOB_REF_CAS_FAILED");
+
+            RepositoryOperationResult<string> verifiedTree = await ResolveObjectAsync(
+                repositoryPath, commitSha, SecureGitOperation.ResolveTree, cancellationToken);
+            RepositoryOperationResult<string> verifiedParent = await ResolveObjectAsync(
+                repositoryPath, commitSha, SecureGitOperation.ResolveParent, cancellationToken);
+            if (!verifiedTree.IsSuccess || !verifiedParent.IsSuccess ||
+                !string.Equals(verifiedTree.Value, treeSha, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(verifiedParent.Value, expectedBaseHead, StringComparison.OrdinalIgnoreCase))
+                return PromotionFailure<RepositoryPreparedCommit>(
+                    "SOURCE_PROMOTION_COMMIT_VERIFICATION_FAILED");
+            return RepositoryOperationResult<RepositoryPreparedCommit>.Success(
+                new(commitSha, treeSha, expectedBaseHead, jobRef));
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<RepositoryOperationResult<RepositoryTargetRef>>
+        GetAuthoritativeTargetRefAsync(CancellationToken cancellationToken = default)
+    {
+        GitCommandResult branch = await RunGitAsync(authoritativeRepositoryRoot,
+            SecureGitOperation.CurrentBranch, cancellationToken).ConfigureAwait(false);
+        if (!branch.IsSuccess) return RepositoryOperationResult<RepositoryTargetRef>.Failure(
+            RepositoryFailureKind.BranchConflict, "SOURCE_PROMOTION_TARGET_REF_UNAVAILABLE");
+        string shortName = ParseSingleLine(branch.StandardOutput);
+        if (!IsSafeBranchName(shortName)) return RepositoryOperationResult<RepositoryTargetRef>.Failure(
+            RepositoryFailureKind.InvalidReference, "SOURCE_PROMOTION_TARGET_REF_INVALID");
+        RepositoryOperationResult<string> head = await ResolveCommitAsync(
+            authoritativeRepositoryRoot, "HEAD", cancellationToken).ConfigureAwait(false);
+        return head.IsSuccess
+            ? RepositoryOperationResult<RepositoryTargetRef>.Success(
+                new($"refs/heads/{shortName}", head.Value!))
+            : RepositoryOperationResult<RepositoryTargetRef>.Failure(head.FailureKind, head.ErrorCode);
+    }
+
+    public async Task<RepositoryOperationResult<RepositoryPromotionResult>> PromoteAsync(
+        string targetRef, string expectedTargetHead, string preparedCommitSha,
+        string expectedCommitTree, string jobRef, IReadOnlyList<string> governedPaths,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsSafeHeadReference(targetRef) || !IsObjectId(expectedTargetHead) ||
+            !IsObjectId(preparedCommitSha) || !IsObjectId(expectedCommitTree) ||
+            !IsSafeHeadReference(jobRef) || !jobRef.StartsWith("refs/heads/kronxy/jobs/", StringComparison.Ordinal) ||
+            governedPaths is not { Count: > 0 and <= 100 } ||
+            governedPaths.Any(path => !IsSafeRelativePath(path)))
+            return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                RepositoryFailureKind.InvalidRequest, "SOURCE_PROMOTION_INVALID_REQUEST");
+        SemaphoreSlim gate = TargetLocks.GetOrAdd(targetRef, static _ => new(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            RepositoryOperationResult<string> jobCommit = await ResolveCommitAsync(
+                authoritativeRepositoryRoot, jobRef, cancellationToken).ConfigureAwait(false);
+            RepositoryOperationResult<string> commitTree = await ResolveObjectAsync(
+                authoritativeRepositoryRoot, preparedCommitSha, SecureGitOperation.ResolveTree,
+                cancellationToken).ConfigureAwait(false);
+            RepositoryOperationResult<string> commitParent = await ResolveObjectAsync(
+                authoritativeRepositoryRoot, preparedCommitSha, SecureGitOperation.ResolveParent,
+                cancellationToken).ConfigureAwait(false);
+            if (!jobCommit.IsSuccess || !commitTree.IsSuccess || !commitParent.IsSuccess ||
+                !string.Equals(jobCommit.Value, preparedCommitSha, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(commitTree.Value, expectedCommitTree, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(commitParent.Value, expectedTargetHead, StringComparison.OrdinalIgnoreCase))
+                return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                    RepositoryFailureKind.BranchConflict, "SOURCE_PROMOTION_PREPARED_COMMIT_MISMATCH");
+
+            RepositoryOperationResult<RepositoryTargetRef> target =
+                await GetAuthoritativeTargetRefAsync(cancellationToken).ConfigureAwait(false);
+            if (!target.IsSuccess || target.Value is null || target.Value.RefName != targetRef)
+                return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                    RepositoryFailureKind.BranchConflict, "SOURCE_PROMOTION_TARGET_REF_MISMATCH");
+            if (string.Equals(target.Value.Head, preparedCommitSha, StringComparison.OrdinalIgnoreCase))
+            {
+                RepositoryOperationResult<bool> sync = await SyncAuthoritativeWorktreeAsync(
+                    preparedCommitSha, governedPaths, cancellationToken).ConfigureAwait(false);
+                return sync.IsSuccess
+                    ? RepositoryOperationResult<RepositoryPromotionResult>.Success(
+                        new(expectedTargetHead, preparedCommitSha, true))
+                    : RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                        sync.FailureKind, sync.ErrorCode);
+            }
+            if (!string.Equals(target.Value.Head, expectedTargetHead, StringComparison.OrdinalIgnoreCase))
+                return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                    RepositoryFailureKind.BranchConflict, "SOURCE_PROMOTION_TARGET_DRIFT");
+            if (!await AuthoritativePathsSafeAsync(governedPaths, cancellationToken)
+                    .ConfigureAwait(false))
+                return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                    RepositoryFailureKind.DirtyWorktree, "SOURCE_PROMOTION_TARGET_WORKTREE_CONFLICT");
+
+            GitCommandResult update = await RunGitAsync(authoritativeRepositoryRoot,
+                SecureGitOperation.UpdateRef, cancellationToken, reference: targetRef,
+                commit: preparedCommitSha, oldCommit: expectedTargetHead).ConfigureAwait(false);
+            if (!update.IsSuccess)
+                return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                    RepositoryFailureKind.BranchConflict, "SOURCE_PROMOTION_TARGET_DRIFT");
+            RepositoryOperationResult<bool> synchronized = await SyncAuthoritativeWorktreeAsync(
+                preparedCommitSha, governedPaths, cancellationToken).ConfigureAwait(false);
+            if (!synchronized.IsSuccess)
+                return RepositoryOperationResult<RepositoryPromotionResult>.Failure(
+                    synchronized.FailureKind, synchronized.ErrorCode);
+            return RepositoryOperationResult<RepositoryPromotionResult>.Success(
+                new(expectedTargetHead, preparedCommitSha, false));
+        }
+        finally { gate.Release(); }
     }
 
     public async Task<
@@ -1042,7 +1236,12 @@ public sealed class RepositoryManager : IRepositoryManager
             string? reference = null,
             string? branch = null,
             string? worktreePath = null,
-            string? commit = null)
+            string? commit = null,
+            string? oldCommit = null,
+            IReadOnlyList<string>? paths = null,
+            string? message = null,
+            string? actor = null,
+            DateTimeOffset? recordedAtUtc = null)
     {
         SecureGitResult result =
             await secureGitExecutor
@@ -1065,6 +1264,12 @@ public sealed class RepositoryManager : IRepositoryManager
 
                         Commit =
                             commit,
+
+                        OldCommit = oldCommit,
+                        Paths = paths,
+                        Message = message,
+                        Actor = actor,
+                        RecordedAtUtc = recordedAtUtc,
 
                         Timeout =
                             GitTimeout,
@@ -1096,6 +1301,83 @@ public sealed class RepositoryManager : IRepositoryManager
             result.Outcome ==
                 SecureGitOutcome.StartFailure);
     }
+
+    private async Task<RepositoryOperationResult<string>> ResolveObjectAsync(
+        string workingDirectory, string commit, SecureGitOperation operation,
+        CancellationToken cancellationToken)
+    {
+        GitCommandResult result = await RunGitAsync(workingDirectory, operation,
+            cancellationToken, commit: commit).ConfigureAwait(false);
+        if (!result.IsSuccess) return RepositoryOperationResult<string>.Failure(
+            RepositoryFailureKind.GitFailure, "SOURCE_PROMOTION_OBJECT_VERIFICATION_FAILED");
+        string value = ParseSingleLine(result.StandardOutput).ToLowerInvariant();
+        return IsObjectId(value)
+            ? RepositoryOperationResult<string>.Success(value)
+            : RepositoryOperationResult<string>.Failure(
+                RepositoryFailureKind.GitFailure, "SOURCE_PROMOTION_INVALID_OBJECT_ID");
+    }
+
+    private async Task<bool> AuthoritativePathsSafeAsync(
+        IReadOnlyList<string> governedPaths, CancellationToken cancellationToken)
+    {
+        GitCommandResult status = await RunGitAsync(authoritativeRepositoryRoot,
+            SecureGitOperation.Status, cancellationToken).ConfigureAwait(false);
+        if (!status.IsSuccess) return false;
+        HashSet<string> governed = governedPaths.ToHashSet(StringComparer.Ordinal);
+        foreach (string line in status.StandardOutput.Split('\n',
+            StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (line.Length < 4 || (line[0] != ' ' && line[0] != '?')) return false;
+            string path = line[3..].Trim().Replace('\\', '/');
+            if (governed.Contains(path)) return false;
+        }
+        return true;
+    }
+
+    private async Task<RepositoryOperationResult<bool>> SyncAuthoritativeWorktreeAsync(
+        string commit, IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        GitCommandResult readTree = await RunGitAsync(authoritativeRepositoryRoot,
+            SecureGitOperation.ReadTree, cancellationToken, commit: commit).ConfigureAwait(false);
+        if (!readTree.IsSuccess) return RepositoryOperationResult<bool>.Failure(
+            RepositoryFailureKind.GitFailure, "SOURCE_PROMOTION_TARGET_INDEX_SYNC_FAILED");
+        GitCommandResult checkout = await RunGitAsync(authoritativeRepositoryRoot,
+            SecureGitOperation.CheckoutIndexPaths, cancellationToken, paths: paths)
+            .ConfigureAwait(false);
+        if (!checkout.IsSuccess) return RepositoryOperationResult<bool>.Failure(
+            RepositoryFailureKind.GitFailure, "SOURCE_PROMOTION_TARGET_WORKTREE_SYNC_FAILED");
+        RepositoryOperationResult<string> target = await ResolveCommitAsync(
+            authoritativeRepositoryRoot, "HEAD", cancellationToken).ConfigureAwait(false);
+        return target.IsSuccess && string.Equals(target.Value, commit,
+                StringComparison.OrdinalIgnoreCase)
+            ? RepositoryOperationResult<bool>.Success(true)
+            : RepositoryOperationResult<bool>.Failure(
+                RepositoryFailureKind.GitFailure, "SOURCE_PROMOTION_TARGET_VERIFY_FAILED");
+    }
+
+    private static RepositoryOperationResult<T> PromotionFailure<T>(string code) =>
+        RepositoryOperationResult<T>.Failure(RepositoryFailureKind.GitFailure, code);
+
+    private static bool IsObjectId(string? value) =>
+        value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
+
+    private static bool IsSafeRelativePath(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 512 &&
+        !Path.IsPathFullyQualified(value) && value.IndexOfAny(['\0', '\r', '\n', '\\']) < 0 &&
+        value.Split('/').All(segment => segment.Length > 0 && segment is not "." and not "..");
+
+    private static bool IsSafeBranchName(string value) =>
+        value.Length is > 0 and <= 255 && value[0] != '-' &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) ||
+            character is '/' or '-' or '_' or '.') &&
+        !value.Contains("..", StringComparison.Ordinal) &&
+        !value.Contains("//", StringComparison.Ordinal) &&
+        !value.Contains("@{", StringComparison.Ordinal) &&
+        !value.EndsWith(".lock", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSafeHeadReference(string value) =>
+        value.StartsWith("refs/heads/", StringComparison.Ordinal) &&
+        IsSafeBranchName(value[11..]);
 
     private static RepositoryOperationResult<
         RepositoryWorktreeHandle>

@@ -3009,7 +3009,8 @@ public sealed class JobApplicationTests
                 bool gatePass = true,
                 RecoveryStage? missing = null,
                 DeveloperProposalLineage lineage =
-                        DeveloperProposalLineage.HumanReviewCorrection)
+                        DeveloperProposalLineage.HumanReviewCorrection,
+                bool sourceMutation = false)
         {
                 Guid runId = new DeterministicJobRunIdProvider().Create(job.Id, job.AttemptCount);
                 DeveloperChangeOperationType operation = lineage ==
@@ -3023,7 +3024,7 @@ public sealed class JobApplicationTests
                     .ToLowerInvariant();
                 var proposal = new ValidatedDeveloperProposal(
                         "approval proposal",
-                        [new ValidatedDeveloperChange(
+                        sourceMutation ? [new ValidatedDeveloperChange(
                                 operation,
                                 "src/generated.cs",
                                 "approval",
@@ -3031,7 +3032,7 @@ public sealed class JobApplicationTests
                                 operation == DeveloperChangeOperationType.ReplaceFile
                                         ? new string('b', 64)
                                         : string.Empty,
-                                content.Length)],
+                                content.Length)] : [],
                         [], [], content.Length, content.Length + 100);
                 var criterion = new DeterministicAcceptanceCriterionResult(
                         new DeterministicAcceptanceCriterion(
@@ -3056,7 +3057,7 @@ public sealed class JobApplicationTests
                         job.Id,
                         runId,
                         job.BaseRepositoryHead!,
-                        [new ObservedChangeManifestEntry(
+                        sourceMutation ? [new ObservedChangeManifestEntry(
                                 "src/generated.cs",
                                 operation == DeveloperChangeOperationType.CreateFile
                                         ? ObservedRepositoryChangeKind.Created
@@ -3070,7 +3071,7 @@ public sealed class JobApplicationTests
                                 operation == DeveloperChangeOperationType.ReplaceFile
                                         ? new string('b', 64)
                                         : null,
-                                "PASS")],
+                                "PASS")] : [],
                         job.AttemptCount,
                         lineage == DeveloperProposalLineage.GovernedHumanCorrection
                                 ? "governed-human-correction:approval-governed"
@@ -3105,12 +3106,12 @@ public sealed class JobApplicationTests
                         Actor = "human-review",
                         CorrelationId = "approval-governed",
                         RequestSha256 = governedEvidence.RequestSha256,
-                        Changes = [new AppliedFileChange(
+                        Changes = sourceMutation ? [new AppliedFileChange(
                                 operation,
                                 "src/generated.cs",
                                 new string('b', 64),
                                 contentSha,
-                                content.Length)],
+                                content.Length)] : [],
                         RecordedAtUtc = DateTimeOffset.UtcNow
                 };
                 RecoveryStage reviewerStage = lineage ==

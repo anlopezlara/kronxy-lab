@@ -45,6 +45,7 @@ public sealed class KronxyApiClient(HttpClient httpClient, IOperatorIdentity ide
     public Task<OperationResultDto> RetryPendingAsync(Guid jobId, string reason, CancellationToken cancellationToken = default) => ReasonActionAsync(jobId, "retry-pending", "retry-pending", reason, cancellationToken);
     public Task<OperationResultDto> CancelJobAsync(Guid jobId, CancellationToken cancellationToken = default) => ActionAsync(jobId, "cancel", "cancel", cancellationToken);
     public Task<OperationResultDto> ApproveHumanReviewAsync(Guid jobId, CancellationToken cancellationToken = default) => ActionAsync(jobId, "human-review/approve", "human-review-approve", cancellationToken);
+    public Task<OperationResultDto> PromoteJobAsync(Guid jobId, CancellationToken cancellationToken = default) => ActionAsync(jobId, "promote", "promote", cancellationToken);
 
     public Task<OperationResultDto> RequestHumanReviewChangesAsync(Guid jobId, IReadOnlyList<HumanReviewCorrectionDto> corrections, CancellationToken cancellationToken = default) =>
         PostGovernedAsync<OperationResultDto>($"api/jobs/{jobId:D}/human-review/changes-required", "human-review-changes-required", correlationId => new { requiredCorrections = corrections, actor = identity.Actor, correlationId }, cancellationToken);

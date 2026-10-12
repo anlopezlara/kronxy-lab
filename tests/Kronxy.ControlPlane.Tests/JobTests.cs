@@ -90,6 +90,38 @@ public sealed class JobTests
 		Assert.True(job.IsTerminal);
 	}
 
+	[Fact]
+	public void Mutating_approval_enters_pending_promotion()
+	{
+		Job job = CreateAtWaitingHuman();
+		Result result = job.TransitionTo(JobState.PendingPromotion, UtcNow, "prepared", "operator", "corr");
+		Assert.True(result.IsSuccess);
+		Assert.Equal(JobState.PendingPromotion, job.State);
+		Assert.False(job.IsTerminal);
+	}
+
+	[Fact]
+	public void Pending_promotion_cannot_complete_without_promoted_evidence()
+	{
+		Job job = CreateAtWaitingHuman();
+		Assert.True(job.TransitionTo(JobState.PendingPromotion, UtcNow, "prepared", "operator", "corr").IsSuccess);
+		Result result = job.TransitionTo(JobState.Completed, UtcNow, "invalid", "operator", "corr");
+		Assert.True(result.IsFailure);
+		Assert.Equal(JobErrors.SourcePromotionEvidenceRequired, result.Error);
+		Assert.Equal(JobState.PendingPromotion, job.State);
+	}
+
+	[Fact]
+	public void Pending_promotion_completes_after_promoted_evidence_is_validated()
+	{
+		Job job = CreateAtWaitingHuman();
+		Assert.True(job.TransitionTo(JobState.PendingPromotion, UtcNow, "prepared", "operator", "corr").IsSuccess);
+		Result result = job.TransitionTo(JobState.Completed, UtcNow, "promoted", "operator", "corr",
+			promotionEvidenceValidated: true);
+		Assert.True(result.IsSuccess);
+		Assert.Equal(JobState.Completed, job.State);
+	}
+
 	[Theory]
 	[InlineData(new object[] { JobState.Failed })]
 	[InlineData(new object[] { JobState.Cancelled })]

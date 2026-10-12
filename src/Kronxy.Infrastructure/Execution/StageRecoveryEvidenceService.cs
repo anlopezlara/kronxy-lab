@@ -289,7 +289,7 @@ public sealed class StageRecoveryEvidenceService :
                             value.AttemptCount == request.AttemptCount &&
                             value.Decision == HumanReviewDecision.Approved &&
                             !string.IsNullOrWhiteSpace(value.Actor) &&
-                            value.CorrelationId == request.CorrelationId &&
+                            !string.IsNullOrWhiteSpace(value.CorrelationId) &&
                             IsSha256(value.ReviewerReviewSha256) &&
                             IsSha256(value.DeterministicAcceptanceGateSha256) &&
                             Enum.IsDefined(value.EffectiveProposalLineage) &&
@@ -298,7 +298,19 @@ public sealed class StageRecoveryEvidenceService :
                             IsSha256(value.BuildReportSha256) &&
                             IsSha256(value.TestReportSha256) &&
                             IsSha256(value.EffectiveSourceSnapshotSha256),
-                        cancellationToken),
+                        cancellationToken,
+                        value => StageRecoveryResult.Completed(
+                            humanReviewApprovalEvidence: value)),
+
+                RecoveryStage.SourcePromotionPrepared =>
+                    await CheckSourcePromotionAsync(request,
+                        ArtifactType.SourcePromotionPreparedEvidence,
+                        SourcePromotionStatus.Prepared, cancellationToken),
+
+                RecoveryStage.SourcePromotionPromoted =>
+                    await CheckSourcePromotionAsync(request,
+                        ArtifactType.SourcePromotionPromotedEvidence,
+                        SourcePromotionStatus.Promoted, cancellationToken),
 
                 _ =>
                     StageRecoveryResult.Failure(
@@ -327,6 +339,37 @@ public sealed class StageRecoveryEvidenceService :
                 "STAGE_RECOVERY_FAILED");
         }
     }
+
+    private Task<StageRecoveryResult> CheckSourcePromotionAsync(
+        StageRecoveryRequest request, ArtifactType artifactType,
+        SourcePromotionStatus status, CancellationToken cancellationToken) =>
+        CheckReportAsync<SourcePromotionEvidence>(request, artifactType,
+            value => value.SchemaVersion == 1 && value.JobId == request.JobId &&
+                value.RunId == request.RunId && value.AttemptCount == request.AttemptCount &&
+                value.Status == status && !string.IsNullOrWhiteSpace(value.ExternalId) &&
+                IsGitObjectId(value.BaseRepositoryHead) &&
+                IsSha256(value.ApprovedSourceSnapshotSha256) &&
+                IsSha256(value.ObservedChangesSha256) &&
+                IsSha256(value.BuildReportSha256) && IsSha256(value.TestReportSha256) &&
+                IsSha256(value.ReviewerReviewSha256) &&
+                IsSha256(value.HumanReviewApprovalEvidenceSha256) &&
+                IsGitObjectId(value.CommitSha) && IsGitObjectId(value.CommitTreeSha) &&
+                value.JobRef.StartsWith("refs/heads/kronxy/jobs/", StringComparison.Ordinal) &&
+                value.TargetRef.StartsWith("refs/heads/", StringComparison.Ordinal) &&
+                IsGitObjectId(value.ExpectedTargetHead) &&
+                value.ExpectedTargetHead == value.BaseRepositoryHead &&
+                (status == SourcePromotionStatus.Prepared ||
+                    (IsGitObjectId(value.PreviousTargetHead) &&
+                     IsGitObjectId(value.ResultingTargetHead) &&
+                     value.PreviousTargetHead == value.ExpectedTargetHead &&
+                     value.ResultingTargetHead == value.CommitSha)) &&
+                !string.IsNullOrWhiteSpace(value.IdempotencyKey) &&
+                value.GovernedPaths is { Count: > 0 and <= 100 } &&
+                value.GovernedPaths.Distinct(StringComparer.Ordinal).Count() == value.GovernedPaths.Count &&
+                value.GovernedPaths.All(path => !string.IsNullOrWhiteSpace(path) &&
+                    !Path.IsPathFullyQualified(path) && !path.Contains("..", StringComparison.Ordinal)),
+            cancellationToken, value => StageRecoveryResult.Completed(
+                sourcePromotionEvidence: value));
 
     private void LogFailure(
         StageRecoveryRequest request,
@@ -1637,6 +1680,10 @@ public sealed class StageRecoveryEvidenceService :
 
     private static bool IsSha256(string? value) =>
         value is { Length: 64 } && value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsGitObjectId(string? value) =>
+        value is { Length: 40 or 64 } && value.All(character =>
             character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static string HashContent(string content) =>

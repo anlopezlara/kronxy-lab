@@ -289,6 +289,10 @@ internal sealed class SecureGitExecutor :
             "GIT_CONFIG_GLOBAL"] =
             "/dev/null";
 
+        if (invocation.Environment is not null)
+            foreach ((string key, string value) in invocation.Environment)
+                startInfo.Environment[key] = value;
+
         startInfo.ArgumentList.Add(
             "--no-pager");
 

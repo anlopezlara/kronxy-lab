@@ -49,6 +49,7 @@ public sealed class KronxyApiClientTests
     [InlineData("advance", "/api/jobs/10000000-0000-4000-8000-000000000001/advance")]
     [InlineData("cancel", "/api/jobs/10000000-0000-4000-8000-000000000001/cancel")]
     [InlineData("approve", "/api/jobs/10000000-0000-4000-8000-000000000001/human-review/approve")]
+    [InlineData("promote", "/api/jobs/10000000-0000-4000-8000-000000000001/promote")]
     [InlineData("supersede", "/api/jobs/10000000-0000-4000-8000-000000000001/reviewer/human-review-correction/supersede")]
     public async Task Simple_action_posts_expected_route_once(string action, string route)
     {
@@ -59,6 +60,7 @@ public sealed class KronxyApiClientTests
             "advance" => await client.AdvanceJobAsync(jobId),
             "cancel" => await client.CancelJobAsync(jobId),
             "approve" => await client.ApproveHumanReviewAsync(jobId),
+            "promote" => await client.PromoteJobAsync(jobId),
             _ => await client.SupersedeReviewerCorrectionAsync(jobId)
         };
         HttpRequestMessage request = Assert.Single(handler.Requests);
@@ -155,6 +157,10 @@ public sealed class KronxyApiClientTests
         AllowedActionDto visible = Assert.Single(OperatorPresentation.VisibleActions(values));
         Assert.Equal("Human Review Approve", OperatorPresentation.ActionLabel(visible.Action));
     }
+
+    [Fact]
+    public void Promote_uses_governed_operator_label() =>
+        Assert.Equal("Promote Approved Source", OperatorPresentation.ActionLabel("promote"));
 
     [Fact]
     public async Task Health_contract_renders_safe_status_fields()

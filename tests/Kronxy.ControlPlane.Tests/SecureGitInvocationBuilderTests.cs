@@ -343,6 +343,43 @@ public sealed class SecureGitInvocationBuilderTests
                 }));
     }
 
+    [Fact]
+    public void Promotion_update_ref_is_compare_and_swap_only()
+    {
+        SecureGitInvocation invocation = Assert.IsType<SecureGitInvocation>(
+            SecureGitInvocationBuilder.Build(Request(SecureGitOperation.UpdateRef) with
+            { Reference = "refs/heads/main", Commit = Commit, OldCommit = new string('b', 40) }));
+        Assert.Equal(["update-ref", "refs/heads/main", Commit, new string('b', 40)], invocation.Arguments);
+    }
+
+    [Fact]
+    public void Promotion_commit_tree_has_deterministic_noninteractive_identity()
+    {
+        SecureGitInvocation invocation = Assert.IsType<SecureGitInvocation>(
+            SecureGitInvocationBuilder.Build(Request(SecureGitOperation.CommitTree) with
+            { Commit = Commit, OldCommit = new string('b', 40), Message = "approved", Actor = "operator", RecordedAtUtc = DateTimeOffset.UnixEpoch }));
+        Assert.Equal(["commit-tree", Commit, "-p", new string('b', 40), "-m", "approved"], invocation.Arguments);
+        Assert.Equal("operator", invocation.Environment!["GIT_AUTHOR_NAME"]);
+        Assert.Equal("KRONXY", invocation.Environment["GIT_COMMITTER_NAME"]);
+    }
+
+    [Theory]
+    [InlineData("../outside.cs")]
+    [InlineData("/absolute.cs")]
+    [InlineData("-option")]
+    public void Promotion_stage_rejects_unsafe_paths(string path)
+    {
+        Assert.Null(SecureGitInvocationBuilder.Build(Request(SecureGitOperation.StagePaths) with
+        { Paths = [path] }));
+    }
+
+    [Fact]
+    public void Promotion_changed_paths_is_bounded_to_commit()
+    {
+        SecureGitInvocation invocation = Build(SecureGitOperation.ChangedPaths, commit: Commit);
+        Assert.Equal(["diff-tree", "--no-commit-id", "--name-only", "-r", Commit, "--"], invocation.Arguments);
+    }
+
     private static SecureGitInvocation Build(
         SecureGitOperation operation,
         string? reference = null,

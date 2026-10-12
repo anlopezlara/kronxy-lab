@@ -763,6 +763,12 @@ public sealed class FileSystemArtifactStore : IArtifactStore
             ArtifactType.HumanReviewApprovalEvidence =>
                 new("human-review", "approval.json"),
 
+            ArtifactType.SourcePromotionPreparedEvidence =>
+                new("source-promotion", "prepared.json"),
+
+            ArtifactType.SourcePromotionPromotedEvidence =>
+                new("source-promotion", "promoted.json"),
+
             ArtifactType.GovernedHumanCorrectionRequest =>
                 new("human-correction", VersionedFileName(
                     "request.json", correlationId)),

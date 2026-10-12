@@ -67,6 +67,8 @@ public static class JobWorkflow
             (JobState.Reviewing, JobState.Developing) => true,
 
             (JobState.WaitingHuman, JobState.Completed) => true,
+            (JobState.WaitingHuman, JobState.PendingPromotion) => true,
+            (JobState.PendingPromotion, JobState.Completed) => true,
             (JobState.WaitingHuman, JobState.Rejected) => true,
             (JobState.WaitingHuman, JobState.Developing) => true,
 
@@ -86,6 +88,7 @@ public static class JobWorkflow
             "humanReviewApprove" or "humanReviewChangesRequired" or "humanCorrection" =>
                 job.State == JobState.WaitingHuman,
             "architectureDecision" => job.State == JobState.WaitingHuman,
+            "promote" => job.State == JobState.PendingPromotion,
             "reviewerHumanReviewCorrectionSupersede" => job.State == JobState.Reviewing,
             _ => false
         };

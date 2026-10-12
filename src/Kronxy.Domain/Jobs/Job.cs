@@ -150,7 +150,8 @@ public sealed class Job : Entity
 	                JobErrors.BaseRepositoryHeadAlreadyPinned);
 	}
 
-	public Result TransitionTo(JobState targetState, DateTime utcNow, string reason, string actor, string correlationId)
+	public Result TransitionTo(JobState targetState, DateTime utcNow, string reason, string actor, string correlationId,
+		bool promotionEvidenceValidated = false)
 	{
 		if (State == targetState)
 		{
@@ -163,6 +164,11 @@ public sealed class Job : Entity
 		if (targetState == JobState.RetryPending && AttemptCount >= Limits.MaxAttempts)
 		{
 			return Result.Failure(JobErrors.MaxAttemptsExceeded);
+		}
+		if (State == JobState.PendingPromotion && targetState == JobState.Completed &&
+			!promotionEvidenceValidated)
+		{
+			return Result.Failure(JobErrors.SourcePromotionEvidenceRequired);
 		}
 		if (!IsAllowedTransition(State, targetState))
 		{

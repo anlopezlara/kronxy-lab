@@ -106,7 +106,7 @@ public sealed class OperatorJobService : IOperatorJobService
         if (job is null) return null;
         string[] names = ["advance", "resume", "retryPending", "cancel", "humanReviewApprove",
             "humanReviewChangesRequired", "architectureDecision", "humanCorrection",
-            "reviewerHumanReviewCorrectionSupersede"];
+            "reviewerHumanReviewCorrectionSupersede", "promote"];
         return names.Select(name => new OperatorAllowedAction(name,
             JobWorkflow.IsOperatorActionAllowed(job, name),
             JobWorkflow.IsOperatorActionAllowed(job, name) ? null : "JOB_ACTION_NOT_ALLOWED_IN_CURRENT_STATE")).ToArray();

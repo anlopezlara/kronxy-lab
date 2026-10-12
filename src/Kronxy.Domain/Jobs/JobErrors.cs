@@ -12,6 +12,10 @@ public static class JobErrors
 
 	public static readonly Error MaxAttemptsExceeded = new Error("Job.MaxAttemptsExceeded", "The maximum number of job attempts has been reached.");
 
+	public static readonly Error SourcePromotionEvidenceRequired = new(
+		"Job.SourcePromotionEvidenceRequired",
+		"A pending source promotion requires valid promoted evidence before completion.");
+
 	public static Error InvalidTransition(JobState from, JobState to)
 	{
 		return new Error("Job.InvalidTransition", $"Transition from {from} to {to} is not allowed.");

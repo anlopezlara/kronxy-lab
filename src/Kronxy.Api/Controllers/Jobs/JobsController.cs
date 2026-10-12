@@ -162,6 +162,17 @@ public sealed class JobsController : ControllerBase
         return ToOperationResponse(result);
     }
 
+    [HttpPost("{jobId:guid}/promote")]
+    public async Task<IActionResult> Promote(
+        Guid jobId,
+        JobActionRequest request,
+        CancellationToken cancellationToken)
+    {
+        JobOperationResult result = await _jobOrchestrator.PromoteAsync(
+            jobId, request.Actor, request.CorrelationId, cancellationToken);
+        return ToOperationResponse(result);
+    }
+
     [HttpPost("{jobId:guid}/human-correction")]
     public async Task<IActionResult> ApplyGovernedHumanCorrection(
         Guid jobId,

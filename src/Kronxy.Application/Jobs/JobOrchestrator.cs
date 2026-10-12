@@ -60,6 +60,7 @@ public sealed class JobOrchestrator : IJobOrchestrator
         private readonly IArtifactMetadataRepository? _artifactMetadataRepository;
         private readonly IDeveloperProposalPolicy? _developerProposalPolicy;
         private readonly IDevelopmentAnalysisService? _developmentAnalysisService;
+        private readonly IRepositoryManager? _repositoryManager;
 
         public JobOrchestrator(
                 IJobRepository jobRepository,
@@ -85,7 +86,8 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 IArtifactStore? artifactStore = null,
                 IArtifactMetadataRepository? artifactMetadataRepository = null,
                 IDeveloperProposalPolicy? developerProposalPolicy = null,
-                IDevelopmentAnalysisService? developmentAnalysisService = null)
+                IDevelopmentAnalysisService? developmentAnalysisService = null,
+                IRepositoryManager? repositoryManager = null)
         {
                 _jobRepository =
                         jobRepository ??
@@ -183,6 +185,7 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 _artifactMetadataRepository = artifactMetadataRepository;
                 _developerProposalPolicy = developerProposalPolicy;
                 _developmentAnalysisService = developmentAnalysisService;
+                _repositoryManager = repositoryManager;
         }
 
         public async Task<JobOperationResult> RequestHumanReviewCorrectionAsync(
@@ -295,6 +298,60 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 JobOperationResult? existingFailure = RecoveryFailure(existing);
                 if (existingFailure is not null) return existingFailure;
 
+                StageRecoveryResult existingPrepared = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.SourcePromotionPrepared,
+                        correlationId, cancellationToken);
+                JobOperationResult? preparedFailure = RecoveryFailure(existingPrepared);
+                if (preparedFailure is not null) return preparedFailure;
+
+                if (job.State == JobState.PendingPromotion)
+                        return existingPrepared.IsCompleted
+                                ? JobOperationResult.Success()
+                                : JobOperationResult.Failure(
+                                        JobOperationKind.InvalidTransition,
+                                        JobApplicationErrors.StageRecoveryFailed);
+
+                if (job.State == JobState.WaitingHuman && existingPrepared.IsCompleted &&
+                    existingPrepared.SourcePromotionEvidence is { } recoveredPromotion)
+                {
+                        if (_repositoryManager is null)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.OperationalFailure,
+                                        JobApplicationErrors.SourcePromotionFailed);
+                        ExecutionPlaneLifecycleResult recoveredWorkspace =
+                                await _executionPlaneLifecycle.RecoverAsync(
+                                        job.Id, job.ExternalId, cancellationToken);
+                        if (!recoveredWorkspace.IsSuccess || recoveredWorkspace.Session is null)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.RetryableFailure,
+                                        JobApplicationErrors.ExecutionPlanePreparationFailed);
+                        RepositoryOperationResult<RepositoryPreparedCommit> verified =
+                                await _repositoryManager.PrepareCommitAsync(
+                                        recoveredWorkspace.Session.Workspace,
+                                        recoveredPromotion.BaseRepositoryHead,
+                                        recoveredPromotion.GovernedPaths,
+                                        $"KRONXY {job.ExternalId}: approved source mutation",
+                                        recoveredPromotion.Actor,
+                                        recoveredPromotion.RecordedAtUtc,
+                                        cancellationToken);
+                        if (!verified.IsSuccess || verified.Value is null ||
+                            !string.Equals(verified.Value.CommitSha, recoveredPromotion.CommitSha, StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(verified.Value.TreeSha, recoveredPromotion.CommitTreeSha, StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(verified.Value.JobRef, recoveredPromotion.JobRef, StringComparison.Ordinal))
+                                return PromotionFailure(verified.ErrorCode.Length == 0
+                                        ? "SOURCE_PROMOTION_PREPARED_COMMIT_MISMATCH"
+                                        : verified.ErrorCode);
+                        Result recoveredPending = job.TransitionTo(
+                                JobState.PendingPromotion, _clock.UtcNow,
+                                "Recovered approved source mutation awaiting governed promotion.",
+                                actor, correlationId);
+                        if (recoveredPending.IsFailure)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.InvalidTransition, recoveredPending.Error);
+                        await _unitOfWork.SaveChangesAsync(cancellationToken);
+                        return JobOperationResult.Success();
+                }
+
                 if (job.State == JobState.Completed)
                         return existing.IsCompleted
                                 ? JobOperationResult.Success()
@@ -306,7 +363,6 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                 JobOperationKind.InvalidTransition,
                                 JobApplicationErrors.StageRecoveryFailed);
 
-                if (!existing.IsCompleted)
                 {
                         EffectiveGovernedCorrectionResolution governedResolution =
                                 await ResolveEffectiveGovernedCorrectionAsync(
@@ -401,7 +457,8 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                         JobOperationKind.PermanentFailure,
                                         JobApplicationErrors.ReviewerEvidenceInvalid);
 
-                        var evidence = new HumanReviewApprovalEvidence
+                        HumanReviewApprovalEvidence evidence =
+                                existing.HumanReviewApprovalEvidence ?? new HumanReviewApprovalEvidence
                         {
                                 JobId = job.Id,
                                 RunId = runId,
@@ -423,7 +480,9 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                         Hash(effectiveSource),
                                 RecordedAtUtc = _clock.UtcNow
                         };
-                        ArtifactWriteResult write = await _artifactStore.WriteAsync(
+                        ArtifactWriteResult? write = existing.IsCompleted
+                                ? null
+                                : await _artifactStore.WriteAsync(
                                 new ArtifactWriteRequest
                                 {
                                         JobId = job.Id,
@@ -432,10 +491,108 @@ public sealed class JobOrchestrator : IJobOrchestrator
                                         Content = JsonSerializer.SerializeToUtf8Bytes(evidence),
                                         CorrelationId = correlationId
                                 }, cancellationToken);
-                        if (!write.IsSuccess)
+                        if (write is not null && !write.IsSuccess)
                                 return JobOperationResult.Failure(
                                         JobOperationKind.PermanentFailure,
                                         JobApplicationErrors.StageRecoveryFailed);
+
+                        if (observed.ObservedChangeManifest.Entries.Count > 0)
+                        {
+                                string approvalEvidenceSha = Hash(evidence);
+                                if (_repositoryManager is null ||
+                                    string.IsNullOrWhiteSpace(job.BaseRepositoryHead))
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.PermanentFailure,
+                                                JobApplicationErrors.StageRecoveryFailed);
+
+                                ExecutionPlaneLifecycleResult workspace =
+                                        await _executionPlaneLifecycle.RecoverAsync(
+                                                job.Id, job.ExternalId, cancellationToken);
+                                if (!workspace.IsSuccess || workspace.Session is null)
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.RetryableFailure,
+                                                JobApplicationErrors.ExecutionPlanePreparationFailed);
+
+                                RepositoryOperationResult<RepositoryTargetRef> target =
+                                        await _repositoryManager.GetAuthoritativeTargetRefAsync(
+                                                cancellationToken);
+                                if (!target.IsSuccess || target.Value is null)
+                                        return PromotionFailure(target.ErrorCode);
+                                if (!string.Equals(target.Value.Head, job.BaseRepositoryHead,
+                                        StringComparison.OrdinalIgnoreCase))
+                                        return PromotionFailure("SOURCE_PROMOTION_TARGET_DRIFT");
+
+                                string[] paths = observed.ObservedChangeManifest.Entries
+                                        .Select(entry => entry.RelativePath)
+                                        .Order(StringComparer.Ordinal)
+                                        .ToArray();
+                                RepositoryOperationResult<RepositoryPreparedCommit> prepared =
+                                        await _repositoryManager.PrepareCommitAsync(
+                                                workspace.Session.Workspace,
+                                                job.BaseRepositoryHead,
+                                                paths,
+                                                $"KRONXY {job.ExternalId}: approved source mutation",
+                                                actor,
+                                                evidence.RecordedAtUtc,
+                                                cancellationToken);
+                                if (!prepared.IsSuccess || prepared.Value is null)
+                                        return PromotionFailure(prepared.ErrorCode);
+
+                                string idempotencyKey = HashContent(string.Join('|',
+                                        job.Id, runId, job.AttemptCount, approvalEvidenceSha,
+                                        target.Value.RefName));
+                                var promotion = new SourcePromotionEvidence
+                                {
+                                        JobId = job.Id,
+                                        ExternalId = job.ExternalId,
+                                        RunId = runId,
+                                        AttemptCount = job.AttemptCount,
+                                        CorrelationId = correlationId,
+                                        BaseRepositoryHead = job.BaseRepositoryHead,
+                                        ApprovedSourceSnapshotSha256 = Hash(effectiveSource),
+                                        ObservedChangesSha256 = Hash(observed.ObservedChangeManifest),
+                                        BuildReportSha256 = Hash(build.BuildReport),
+                                        TestReportSha256 = Hash(test.TestReport),
+                                        ReviewerReviewSha256 = Hash(review),
+                                        HumanReviewApprovalEvidenceSha256 = approvalEvidenceSha,
+                                        CommitSha = prepared.Value.CommitSha,
+                                        CommitTreeSha = prepared.Value.TreeSha,
+                                        JobRef = prepared.Value.JobRef,
+                                        TargetRef = target.Value.RefName,
+                                        ExpectedTargetHead = job.BaseRepositoryHead,
+                                        PreviousTargetHead = string.Empty,
+                                        ResultingTargetHead = string.Empty,
+                                        PromotionMode = "ExplicitFastForwardCas",
+                                        Status = SourcePromotionStatus.Prepared,
+                                        Actor = actor,
+                                        RecordedAtUtc = _clock.UtcNow,
+                                        IdempotencyKey = idempotencyKey,
+                                        GovernedPaths = paths
+                                };
+                                ArtifactWriteResult promotionWrite = await _artifactStore.WriteAsync(
+                                        new ArtifactWriteRequest
+                                        {
+                                                JobId = job.Id,
+                                                RunId = runId,
+                                                ArtifactType = ArtifactType.SourcePromotionPreparedEvidence,
+                                                Content = JsonSerializer.SerializeToUtf8Bytes(promotion),
+                                                CorrelationId = correlationId
+                                        }, cancellationToken);
+                                if (!promotionWrite.IsSuccess)
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.PermanentFailure,
+                                                JobApplicationErrors.StageRecoveryFailed);
+
+                                Result pending = job.TransitionTo(
+                                        JobState.PendingPromotion, _clock.UtcNow,
+                                        "Approved source mutation committed and awaiting governed promotion.",
+                                        actor, correlationId);
+                                if (pending.IsFailure)
+                                        return JobOperationResult.Failure(
+                                                JobOperationKind.InvalidTransition, pending.Error);
+                                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                                return JobOperationResult.Success();
+                        }
                 }
 
                 Result transition = job.TransitionTo(
@@ -448,6 +605,139 @@ public sealed class JobOrchestrator : IJobOrchestrator
                         return JobOperationResult.Failure(
                                 JobOperationKind.InvalidTransition,
                                 transition.Error);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                return JobOperationResult.Success();
+        }
+
+        public async Task<JobOperationResult> PromoteAsync(
+                Guid jobId,
+                string actor,
+                string correlationId,
+                CancellationToken cancellationToken = default)
+        {
+                if (jobId == Guid.Empty || !ValidGovernedActionIdentity(actor, correlationId))
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.SourcePromotionFailed);
+
+                Job? job = await _jobRepository.GetByIdAsync(jobId, cancellationToken);
+                if (job is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.NotFound);
+                if (_artifactStore is null || _repositoryManager is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.OperationalFailure,
+                                JobApplicationErrors.SourcePromotionFailed);
+
+                Guid runId = _jobRunIdProvider.Create(job.Id, job.AttemptCount);
+                StageRecoveryResult promoted = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.SourcePromotionPromoted,
+                        correlationId, cancellationToken);
+                JobOperationResult? promotedFailure = RecoveryFailure(promoted);
+                if (promotedFailure is not null) return promotedFailure;
+
+                if (job.State == JobState.Completed)
+                {
+                        SourcePromotionEvidence? completedEvidence = promoted.SourcePromotionEvidence;
+                        if (!promoted.IsCompleted || completedEvidence is null)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.InvalidTransition,
+                                        JobApplicationErrors.SourcePromotionFailed);
+                        RepositoryOperationResult<RepositoryTargetRef> completedTarget =
+                                await _repositoryManager.GetAuthoritativeTargetRefAsync(cancellationToken);
+                        if (!completedTarget.IsSuccess || completedTarget.Value is null ||
+                            !string.Equals(completedTarget.Value.RefName, completedEvidence.TargetRef,
+                                StringComparison.Ordinal))
+                                return PromotionFailure(completedTarget.ErrorCode.Length == 0
+                                        ? "SOURCE_PROMOTION_TARGET_REF_MISMATCH"
+                                        : completedTarget.ErrorCode);
+                        RepositoryOperationResult<RepositoryPromotionResult> completedVerification =
+                                await _repositoryManager.PromoteAsync(
+                                        completedEvidence.TargetRef,
+                                        completedEvidence.ExpectedTargetHead,
+                                        completedEvidence.CommitSha,
+                                        completedEvidence.CommitTreeSha,
+                                        completedEvidence.JobRef,
+                                        completedEvidence.GovernedPaths,
+                                        cancellationToken);
+                        return completedVerification.IsSuccess
+                                ? JobOperationResult.Success()
+                                : PromotionFailure(completedVerification.ErrorCode);
+                }
+                if (job.State != JobState.PendingPromotion)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.InvalidTransition,
+                                JobApplicationErrors.SourcePromotionFailed);
+
+                StageRecoveryResult prepared = await CheckRecoveryEvidenceAsync(
+                        job, runId, RecoveryStage.SourcePromotionPrepared,
+                        correlationId, cancellationToken);
+                JobOperationResult? preparedFailure = RecoveryFailure(prepared);
+                if (preparedFailure is not null) return preparedFailure;
+                SourcePromotionEvidence? evidence = prepared.SourcePromotionEvidence;
+                if (!prepared.IsCompleted || evidence is null)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.PermanentFailure,
+                                JobApplicationErrors.SourcePromotionFailed);
+
+                SourcePromotionEvidence activeEvidence = promoted.SourcePromotionEvidence ?? evidence;
+                        RepositoryOperationResult<RepositoryTargetRef> target =
+                                await _repositoryManager.GetAuthoritativeTargetRefAsync(cancellationToken);
+                        if (!target.IsSuccess || target.Value is null ||
+                            !string.Equals(target.Value.RefName, activeEvidence.TargetRef, StringComparison.Ordinal))
+                                return PromotionFailure(target.ErrorCode.Length == 0
+                                        ? "SOURCE_PROMOTION_TARGET_REF_MISMATCH"
+                                        : target.ErrorCode);
+
+                        RepositoryOperationResult<RepositoryPromotionResult> result =
+                                await _repositoryManager.PromoteAsync(
+                                        activeEvidence.TargetRef,
+                                        activeEvidence.ExpectedTargetHead,
+                                        activeEvidence.CommitSha,
+                                        activeEvidence.CommitTreeSha,
+                                        activeEvidence.JobRef,
+                                        activeEvidence.GovernedPaths,
+                                        cancellationToken);
+                        if (!result.IsSuccess || result.Value is null)
+                                return PromotionFailure(result.ErrorCode);
+
+                if (!promoted.IsCompleted)
+                {
+                        SourcePromotionEvidence promotedEvidence = activeEvidence with
+                        {
+                                CorrelationId = correlationId,
+                                PreviousTargetHead = result.Value.PreviousHead,
+                                ResultingTargetHead = result.Value.ResultingHead,
+                                Status = SourcePromotionStatus.Promoted,
+                                Actor = actor,
+                                RecordedAtUtc = _clock.UtcNow
+                        };
+                        ArtifactWriteResult write = await _artifactStore.WriteAsync(
+                                new ArtifactWriteRequest
+                                {
+                                        JobId = job.Id,
+                                        RunId = runId,
+                                        ArtifactType = ArtifactType.SourcePromotionPromotedEvidence,
+                                        Content = JsonSerializer.SerializeToUtf8Bytes(promotedEvidence),
+                                        CorrelationId = correlationId
+                                }, cancellationToken);
+                        if (!write.IsSuccess)
+                                return JobOperationResult.Failure(
+                                        JobOperationKind.OperationalFailure,
+                                        JobApplicationErrors.SourcePromotionFailed);
+                }
+
+                Result transition = job.TransitionTo(
+                        JobState.Completed,
+                        _clock.UtcNow,
+                        "Governed source promotion completed.",
+                        actor,
+                        correlationId,
+                        promotionEvidenceValidated: true);
+                if (transition.IsFailure)
+                        return JobOperationResult.Failure(
+                                JobOperationKind.InvalidTransition, transition.Error);
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
                 return JobOperationResult.Success();
         }
@@ -3564,8 +3854,9 @@ public sealed class JobOrchestrator : IJobOrchestrator
         private static bool ProposalMatchesObserved(
                 ValidatedDeveloperProposal proposal,
                 ObservedChangeManifest observed) =>
-                proposal.Changes.Count > 0 &&
-                proposal.Changes.All(change =>
+                proposal.Changes.Count == 0
+                    ? observed.Entries.Count == 0
+                    : proposal.Changes.All(change =>
                         observed.Entries.Any(entry =>
                                 string.Equals(
                                         entry.RelativePath,
@@ -4118,4 +4409,15 @@ public sealed class JobOrchestrator : IJobOrchestrator
                 correlationId.Length <= 200 &&
                 actor.IndexOfAny(['\0', '\r', '\n']) < 0 &&
                 correlationId.IndexOfAny(['\0', '\r', '\n']) < 0;
+
+        private static JobOperationResult PromotionFailure(string? diagnosticCode) =>
+                JobOperationResult.Failure(
+                        string.Equals(diagnosticCode, "SOURCE_PROMOTION_TARGET_DRIFT", StringComparison.Ordinal) ||
+                        string.Equals(diagnosticCode, "SOURCE_PROMOTION_TARGET_WORKTREE_CONFLICT", StringComparison.Ordinal)
+                                ? JobOperationKind.InvalidTransition
+                                : JobOperationKind.OperationalFailure,
+                        JobApplicationErrors.SourcePromotionFailed,
+                        string.IsNullOrWhiteSpace(diagnosticCode)
+                                ? "SOURCE_PROMOTION_FAILED"
+                                : diagnosticCode);
 }

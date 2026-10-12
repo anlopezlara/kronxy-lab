@@ -32,6 +32,7 @@ public static class OperatorPresentation
         "humanReviewChangesRequired" => "Human Review Changes Required",
         "architectureDecision" => "Architecture Decision",
         "humanCorrection" => "Human Correction",
+        "promote" => "Promote Approved Source",
         "reviewerHumanReviewCorrectionSupersede" => "Reviewer Correction Supersede",
         _ => string.Concat(action.Select((character, index) => index > 0 && char.IsUpper(character)
             ? $" {character}" : character.ToString()))

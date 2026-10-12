@@ -51,6 +51,21 @@ public sealed record ObservedRepositoryChange(
     ObservedRepositoryChangeKind ChangeKind,
     string RelativePath);
 
+public sealed record RepositoryPreparedCommit(
+    string CommitSha,
+    string TreeSha,
+    string ParentSha,
+    string JobRef);
+
+public sealed record RepositoryTargetRef(
+    string RefName,
+    string Head);
+
+public sealed record RepositoryPromotionResult(
+    string PreviousHead,
+    string ResultingHead,
+    bool AlreadyPromoted);
+
 public sealed record RepositoryOperationResult<T>(
     T? Value,
     RepositoryFailureKind FailureKind,
@@ -116,4 +131,26 @@ public interface IRepositoryManager
         CleanupWorktreeAsync(
             WorkspaceHandle workspace,
             CancellationToken cancellationToken = default);
+
+    Task<RepositoryOperationResult<RepositoryPreparedCommit>> PrepareCommitAsync(
+        WorkspaceHandle workspace,
+        string expectedBaseHead,
+        IReadOnlyList<string> expectedChangedPaths,
+        string message,
+        string actor,
+        DateTimeOffset recordedAtUtc,
+        CancellationToken cancellationToken = default);
+
+    Task<RepositoryOperationResult<RepositoryTargetRef>>
+        GetAuthoritativeTargetRefAsync(
+            CancellationToken cancellationToken = default);
+
+    Task<RepositoryOperationResult<RepositoryPromotionResult>> PromoteAsync(
+        string targetRef,
+        string expectedTargetHead,
+        string preparedCommitSha,
+        string expectedCommitTree,
+        string jobRef,
+        IReadOnlyList<string> governedPaths,
+        CancellationToken cancellationToken = default);
 }

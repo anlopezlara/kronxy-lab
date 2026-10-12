@@ -14,7 +14,16 @@ internal enum SecureGitOperation
     Status = 100,
     StatusNull = 105,
     Diff = 110,
-    DiffStat = 120
+    DiffStat = 120,
+    StagePaths = 130,
+    WriteTree = 140,
+    CommitTree = 150,
+    UpdateRef = 160,
+    ResolveTree = 170,
+    ResolveParent = 180,
+    ReadTree = 190,
+    CheckoutIndexPaths = 200,
+    ChangedPaths = 210
 }
 
 internal sealed record SecureGitRequest
@@ -30,6 +39,11 @@ internal sealed record SecureGitRequest
     public string? WorktreePath { get; init; }
 
     public string? Commit { get; init; }
+    public string? OldCommit { get; init; }
+    public IReadOnlyList<string>? Paths { get; init; }
+    public string? Message { get; init; }
+    public string? Actor { get; init; }
+    public DateTimeOffset? RecordedAtUtc { get; init; }
 
     public TimeSpan Timeout { get; init; } =
         TimeSpan.FromSeconds(30);

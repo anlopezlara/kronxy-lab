@@ -37,7 +37,9 @@ public enum RecoveryStage
     ObservedGovernedHumanCorrection = 66,
     BuildGovernedHumanCorrection = 67,
     TestGovernedHumanCorrection = 68,
-    BuildGovernedHumanCorrectionFailure = 69
+    BuildGovernedHumanCorrectionFailure = 69,
+    SourcePromotionPrepared = 70,
+    SourcePromotionPromoted = 71
 }
 
 public enum DeveloperProposalLineage
@@ -93,7 +95,9 @@ public sealed record StageRecoveryResult(
     GovernedHumanCorrectionReceipt? GovernedHumanCorrectionReceipt = null,
     DevelopmentAnalysis? DevelopmentAnalysis = null,
     ArtifactRecord? DevelopmentAnalysisArtifact = null,
-    ArchitectureDecisionEvidence? ArchitectureDecision = null)
+    ArchitectureDecisionEvidence? ArchitectureDecision = null,
+    SourcePromotionEvidence? SourcePromotionEvidence = null,
+    HumanReviewApprovalEvidence? HumanReviewApprovalEvidence = null)
 {
     public bool IsCompleted =>
         Status == StageRecoveryStatus.Completed;
@@ -112,7 +116,9 @@ public sealed record StageRecoveryResult(
         GovernedHumanCorrectionReceipt? governedHumanCorrectionReceipt = null,
         DevelopmentAnalysis? developmentAnalysis = null,
         ArtifactRecord? developmentAnalysisArtifact = null,
-        ArchitectureDecisionEvidence? architectureDecision = null) =>
+        ArchitectureDecisionEvidence? architectureDecision = null,
+        SourcePromotionEvidence? sourcePromotionEvidence = null,
+        HumanReviewApprovalEvidence? humanReviewApprovalEvidence = null) =>
         new(
             StageRecoveryStatus.Completed,
             string.Empty,
@@ -129,7 +135,9 @@ public sealed record StageRecoveryResult(
             governedHumanCorrectionReceipt,
             developmentAnalysis,
             developmentAnalysisArtifact,
-            architectureDecision);
+            architectureDecision,
+            sourcePromotionEvidence,
+            humanReviewApprovalEvidence);
 
     public static StageRecoveryResult FailedBuild(
         BuildExecutionReport report,

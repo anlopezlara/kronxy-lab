@@ -352,5 +352,8 @@ public sealed class ObservedChangeEvidenceServiceTests : IDisposable
         public Task<RepositoryOperationResult<string>> GetDiffAsync(WorkspaceHandle w,CancellationToken c=default)=>throw new NotSupportedException();
         public Task<RepositoryOperationResult<string>> GetDiffStatAsync(WorkspaceHandle w,CancellationToken c=default)=>throw new NotSupportedException();
         public Task<RepositoryOperationResult<RepositoryWorktreeHandle>> CleanupWorktreeAsync(WorkspaceHandle w,CancellationToken c=default)=>throw new NotSupportedException();
+        public Task<RepositoryOperationResult<RepositoryPreparedCommit>> PrepareCommitAsync(WorkspaceHandle w,string h,IReadOnlyList<string> p,string m,string a,DateTimeOffset d,CancellationToken c=default)=>throw new NotSupportedException();
+        public Task<RepositoryOperationResult<RepositoryTargetRef>> GetAuthoritativeTargetRefAsync(CancellationToken c=default)=>throw new NotSupportedException();
+        public Task<RepositoryOperationResult<RepositoryPromotionResult>> PromoteAsync(string r,string h,string s,string t,string j,IReadOnlyList<string> p,CancellationToken c=default)=>throw new NotSupportedException();
     }
 }

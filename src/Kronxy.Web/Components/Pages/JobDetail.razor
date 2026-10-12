@@ -143,6 +143,7 @@ else if (_job is not null)
                 "retryPending" => await Api.RetryPendingAsync(JobId, _reason.Trim()),
                 "cancel" => await Api.CancelJobAsync(JobId),
                 "humanReviewApprove" => await Api.ApproveHumanReviewAsync(JobId),
+                "promote" => await Api.PromoteJobAsync(JobId),
                 "humanReviewChangesRequired" => await Api.RequestHumanReviewChangesAsync(JobId, [new(_correctionPath.Trim(), _correctionInstruction.Trim())]),
                 "architectureDecision" => await Api.ResolveArchitectureDecisionAsync(JobId, new((ArchitectureDecisionDto)_architectureDecision, _reason.Trim(), _followUpRequired, _followUpDescription?.Trim())),
                 "reviewerHumanReviewCorrectionSupersede" => await Api.SupersedeReviewerCorrectionAsync(JobId),

@@ -20,6 +20,7 @@ public interface IKronxyApiClient
     Task<OperationResultDto> RetryPendingAsync(Guid jobId, string reason, CancellationToken cancellationToken = default);
     Task<OperationResultDto> CancelJobAsync(Guid jobId, CancellationToken cancellationToken = default);
     Task<OperationResultDto> ApproveHumanReviewAsync(Guid jobId, CancellationToken cancellationToken = default);
+    Task<OperationResultDto> PromoteJobAsync(Guid jobId, CancellationToken cancellationToken = default);
     Task<OperationResultDto> RequestHumanReviewChangesAsync(Guid jobId,
         IReadOnlyList<HumanReviewCorrectionDto> corrections, CancellationToken cancellationToken = default);
     Task<OperationResultDto> ResolveArchitectureDecisionAsync(Guid jobId,

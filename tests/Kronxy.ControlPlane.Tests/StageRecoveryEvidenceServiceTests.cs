@@ -1216,6 +1216,62 @@ public sealed class StageRecoveryEvidenceServiceTests
             CorrelationId = "recovery-test"
         };
 
+    [Theory]
+    [InlineData(RecoveryStage.SourcePromotionPrepared, SourcePromotionStatus.Prepared)]
+    [InlineData(RecoveryStage.SourcePromotionPromoted, SourcePromotionStatus.Promoted)]
+    public async Task Source_promotion_evidence_recovers_only_with_verified_identity(
+        RecoveryStage stage, SourcePromotionStatus status)
+    {
+        SourcePromotionEvidence evidence = PromotionEvidence(status);
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => Success(request, JsonSerializer.SerializeToUtf8Bytes(evidence))
+        };
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(reader, Options())
+            .CheckAsync(Request(stage));
+        Assert.True(result.IsCompleted);
+        Assert.Equal(evidence.CommitSha, result.SourcePromotionEvidence!.CommitSha);
+        Assert.Equal(evidence.Status, result.SourcePromotionEvidence.Status);
+        Assert.Equal(evidence.GovernedPaths, result.SourcePromotionEvidence.GovernedPaths);
+    }
+
+    [Theory]
+    [InlineData("job")]
+    [InlineData("tree")]
+    [InlineData("target")]
+    public async Task Source_promotion_evidence_mismatch_fails_closed(string mismatch)
+    {
+        SourcePromotionEvidence evidence = PromotionEvidence(SourcePromotionStatus.Promoted) with
+        {
+            JobId = mismatch == "job" ? Guid.NewGuid() : JobId,
+            CommitTreeSha = mismatch == "tree" ? "invalid" : new string('c', 40),
+            ResultingTargetHead = mismatch == "target" ? new string('d', 40) : new string('b', 40)
+        };
+        var reader = new FakeArtifactReader
+        {
+            Handler = request => Success(request, JsonSerializer.SerializeToUtf8Bytes(evidence))
+        };
+        StageRecoveryResult result = await new StageRecoveryEvidenceService(reader, Options())
+            .CheckAsync(Request(RecoveryStage.SourcePromotionPromoted));
+        Assert.Equal(StageRecoveryStatus.InvalidEvidence, result.Status);
+    }
+
+    private static SourcePromotionEvidence PromotionEvidence(SourcePromotionStatus status) => new()
+    {
+        JobId = JobId, ExternalId = "KRX-009999", RunId = RunId, AttemptCount = 0,
+        CorrelationId = "approval", BaseRepositoryHead = new string('a', 40),
+        ApprovedSourceSnapshotSha256 = new string('a', 64), ObservedChangesSha256 = new string('b', 64),
+        BuildReportSha256 = new string('c', 64), TestReportSha256 = new string('d', 64),
+        ReviewerReviewSha256 = new string('e', 64), HumanReviewApprovalEvidenceSha256 = new string('f', 64),
+        CommitSha = new string('b', 40), CommitTreeSha = new string('c', 40),
+        JobRef = "refs/heads/kronxy/jobs/krx-009999-abc", TargetRef = "refs/heads/main",
+        ExpectedTargetHead = new string('a', 40),
+        PreviousTargetHead = status == SourcePromotionStatus.Promoted ? new string('a', 40) : string.Empty,
+        ResultingTargetHead = status == SourcePromotionStatus.Promoted ? new string('b', 40) : string.Empty,
+        PromotionMode = "ExplicitFastForwardCas", Status = status, Actor = "operator",
+        RecordedAtUtc = DateTimeOffset.UnixEpoch, IdempotencyKey = "stable", GovernedPaths = ["src/a.cs"]
+    };
+
     private static PlannerPlan ValidPlan() =>
         new()
         {

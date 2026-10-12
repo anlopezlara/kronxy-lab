@@ -68,6 +68,8 @@ public enum ArtifactType
     TestGovernedHumanCorrectionStandardOutput = 120,
     TestGovernedHumanCorrectionStandardError = 121,
     TestGovernedHumanCorrectionResults = 122,
+    SourcePromotionPreparedEvidence = 123,
+    SourcePromotionPromotedEvidence = 124,
 
     RestoreReport = 30,
     RestoreStandardOutput = 31,

@@ -98,4 +98,8 @@ public static class JobApplicationErrors
             "Jobs.StageRecoveryFailed",
             "Persisted stage evidence could not be safely recovered.");
 
+    public static readonly Error SourcePromotionFailed = new(
+        "Job.SourcePromotionFailed",
+        "The governed source promotion could not be completed safely.");
+
 }

@@ -145,6 +145,7 @@ public sealed class OperatorApiTests
     [InlineData(JobState.Building, "advance")]
     [InlineData(JobState.WaitingHuman, "humanReviewApprove")]
     [InlineData(JobState.RetryPending, "resume")]
+    [InlineData(JobState.PendingPromotion, "promote")]
     public async Task Allowed_actions_are_derived_from_server_workflow(JobState state, string expected)
     {
         Job job = JobInState(state);
@@ -205,6 +206,8 @@ public sealed class OperatorApiTests
         }
         if (target == JobState.Completed)
             Assert.True(job.TransitionTo(target, DateTime.UtcNow, "complete", "test", "complete").IsSuccess);
+        if (target == JobState.PendingPromotion)
+            Assert.True(job.TransitionTo(target, DateTime.UtcNow, "prepared", "test", "prepared").IsSuccess);
         return job;
     }
 
@@ -260,6 +263,7 @@ public sealed class OperatorApiTests
         public Task<JobOperationResult> ApplyGovernedHumanCorrectionAsync(Guid id, GovernedHumanCorrectionRequest request, CancellationToken token = default) => Ok();
         public Task<JobOperationResult> SupersedeHumanReviewCorrectionReviewAsync(Guid id, string actor, string correlationId, CancellationToken token = default) => Ok();
         public Task<JobOperationResult> ApproveHumanReviewAsync(Guid id, string actor, string correlationId, CancellationToken token = default) => Ok();
+        public Task<JobOperationResult> PromoteAsync(Guid id, string actor, string correlationId, CancellationToken token = default) => Ok();
         public Task<JobOperationResult> ResolveArchitectureDecisionAsync(Guid id, ArchitectureDecisionRequest request, CancellationToken token = default) => Ok();
         public JobState? DetermineNextState(JobState currentState) => JobWorkflow.DetermineNextAutomaticState(currentState);
     }

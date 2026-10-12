@@ -12,6 +12,7 @@ public enum JobState
 	Reviewing = 70,
 	WaitingHuman = 80,
 	Completed = 90,
+	PendingPromotion = 95,
 	WaitingAi = 100,
 	RetryPending = 110,
 	Failed = 200,
