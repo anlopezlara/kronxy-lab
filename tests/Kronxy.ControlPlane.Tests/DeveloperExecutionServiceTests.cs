@@ -88,12 +88,6 @@ public sealed class DeveloperExecutionServiceTests
                 "FINAL OUTPUT REQUIREMENTS:",
                 StringComparison.Ordinal);
         Assert.True(finalRequirementsIndex > contextIndex);
-        Assert.Contains(
-            "Do not repeat the repository, plan, request, or code.",
-            sent.UserContent);
-        Assert.Contains(
-            "Each change content must contain exactly one file.",
-            sent.UserContent);
         Assert.Contains("- src/new.cs", sent.UserContent);
         Assert.DoesNotContain(
             "- src/a.cs",
@@ -171,6 +165,50 @@ public sealed class DeveloperExecutionServiceTests
         int outputTokens = fixture.Gateway.LastRequest!.Generation.MaxOutputTokens!.Value;
         Assert.InRange(outputTokens, 2_048, 8_191);
         Assert.Equal(16_384, fixture.Gateway.LastRequest.Generation.ContextWindowTokens);
+    }
+
+    [Fact]
+    public async Task Representative_19181_byte_target_fits_without_truncation()
+    {
+        const string path = "src/new.cs";
+        const int targetBytes = 19_181;
+        const string fragment =
+            "<div class=\"job-detail\">@Model.JobId & @Model.RunId</div>\n";
+        string current = string.Concat(Enumerable.Repeat(
+            fragment,
+            targetBytes / fragment.Length + 1))[..targetBytes];
+        string hash = CurrentHash(current);
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, current));
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Preserve and update file.","content":"updated","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fixture.Gateway.CallCount);
+        string userContent = fixture.Gateway.LastRequest!.UserContent;
+        const string targetMarker = "AUTHORIZED TARGET FILES:\n";
+        int targetStart = userContent.IndexOf(
+            targetMarker,
+            StringComparison.Ordinal) + targetMarker.Length;
+        int targetEnd = userContent.IndexOf(
+            "\n\nAUTHORIZED REVIEWER FEEDBACK:",
+            targetStart,
+            StringComparison.Ordinal);
+        using JsonDocument targets = JsonDocument.Parse(
+            userContent[targetStart..targetEnd]);
+        Assert.Equal(
+            current,
+            targets.RootElement[0].GetProperty("CurrentContent").GetString());
+        Assert.Equal(16_384, fixture.Gateway.LastRequest.Generation.ContextWindowTokens);
+        Assert.InRange(
+            fixture.Gateway.LastRequest.Generation.MaxOutputTokens!.Value,
+            6_870,
+            8_192);
+        Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(current));
     }
 
     [Fact]

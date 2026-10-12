@@ -285,14 +285,6 @@ public sealed class DeveloperExecutionService :
             string outputRequirements =
                 "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
                 "Return only compact JSON matching the schema. " +
-                "Do not repeat the repository, plan, request, or code.\n" +
-                "Each change content must contain exactly one file. " +
-                "Never concatenate candidate files or invent extension classes, helpers, repository operations, examples, or blocking async calls.\n" +
-                "Use a summary and intents of at most eight words. " +
-                "Use empty assumptions and risks unless a critical item is required. " +
-                "For CreateFile use an empty expectedContentSha256.\n" +
-                "For every target with exists=true use ReplaceFile and set expectedContentSha256 to its currentContentSha256. " +
-                "Never use CreateFile for an existing target or ReplaceFile for a missing target.\n" +
                 correctionRequirements +
                 "Use only these candidate paths:\n- " +
                 string.Join(

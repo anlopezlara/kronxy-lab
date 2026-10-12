@@ -36,6 +36,7 @@ public sealed class PlanningExecutionService :
         "Do not propose modifying existing reference-pattern files unless the JOB REQUEST explicitly requests those modifications. " +
         "Keep objective directly grounded in the JOB REQUEST. " +
         "For each behavioral acceptance criterion, provide an acceptanceTestMappings entry whose requirement exactly matches the acceptance criterion and whose testName is the fully qualified test result name expected from TRX evidence. Leave a requirement unmapped only when it cannot be proven deterministically; it will remain NotProven. " +
+        "When a mapped test is new, include an explicit candidate .cs file under its existing test-project root; an existing mapped test needs no writable test candidate. " +
         "The objective must be a concise restatement of the JOB REQUEST and must reuse at least two significant non-generic terms exactly as they appear in the JOB REQUEST. Do not replace those grounding terms only with synonyms. " +
         "Return a concise implementation plan grounded only in the supplied context.";
 
@@ -451,6 +452,19 @@ public sealed class PlanningExecutionService :
                 context.Content,
                 request.JobRequest,
                 repositoryPaths);
+
+            if (pathCoherence.IsValid && plan.AcceptanceTestMappings.Count > 0)
+            {
+                PathCoherenceResult acceptanceTestCoherence =
+                    AreAcceptanceTestsCoherent(
+                    plan,
+                    guidance.RequiredScope,
+                    repositoryPaths);
+                if (!acceptanceTestCoherence.IsValid)
+                {
+                    pathCoherence = acceptanceTestCoherence;
+                }
+            }
 
             bool hasGroundingOverlap = PlanningPriorityPathSelector
                     .HasTopFivePlanPathOverlap(plan, priorityPaths) ||
@@ -931,6 +945,65 @@ public sealed class PlanningExecutionService :
         }
 
         return PathCoherenceResult.Valid(hasExistingAuthoritativeTarget);
+    }
+
+    internal static PathCoherenceResult AreAcceptanceTestsCoherent(
+        PlannerPlan plan,
+        string requiredScope,
+        IReadOnlySet<string> repositoryPaths)
+    {
+        foreach (PlannerAcceptanceTest mapping in plan.AcceptanceTestMappings)
+        {
+            string[] testNameParts = mapping.TestName.Split(
+                '.',
+                StringSplitOptions.RemoveEmptyEntries);
+            if (testNameParts.Length < 3)
+            {
+                return PathCoherenceResult.Invalid(
+                    "ACCEPTANCE_TEST_NAME_INVALID",
+                    mapping.TestName);
+            }
+
+            string? projectFile = repositoryPaths
+                .Where(path =>
+                    path.StartsWith("tests/", StringComparison.Ordinal) &&
+                    path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(path =>
+                    Path.GetFileNameWithoutExtension(path).Length)
+                .FirstOrDefault(path => mapping.TestName.StartsWith(
+                    Path.GetFileNameWithoutExtension(path) + ".",
+                    StringComparison.Ordinal));
+            if (projectFile is null)
+            {
+                return PathCoherenceResult.Invalid(
+                    "ACCEPTANCE_TEST_PROJECT_UNKNOWN",
+                    mapping.TestName);
+            }
+
+            string projectRoot = projectFile[..(projectFile.LastIndexOf('/') + 1)];
+            string className = testNameParts[^2];
+            string expectedFile = projectRoot + className + ".cs";
+            if (repositoryPaths.Any(path =>
+                    path.StartsWith(projectRoot, StringComparison.Ordinal) &&
+                    (string.Equals(path, expectedFile, StringComparison.Ordinal) ||
+                     path.EndsWith('/' + className + ".cs", StringComparison.Ordinal))))
+            {
+                continue;
+            }
+
+            string? writableTest = plan.CandidateFilesToModify.FirstOrDefault(path =>
+                path.StartsWith(projectRoot, StringComparison.Ordinal) &&
+                path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                IsWithinRequiredScope(path, requiredScope));
+            if (writableTest is null)
+            {
+                return PathCoherenceResult.Invalid(
+                    "ACCEPTANCE_TEST_PATH_NOT_WRITABLE",
+                    expectedFile);
+            }
+        }
+
+        return PathCoherenceResult.Valid(false);
     }
 
     private static HashSet<string> NormalizeKnownPaths(

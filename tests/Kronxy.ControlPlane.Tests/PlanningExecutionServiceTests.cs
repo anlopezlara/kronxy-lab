@@ -120,6 +120,9 @@ public sealed class PlanningExecutionServiceTests
             "candidateFilesToModify may include a new path only when the JOB REQUEST explicitly asks",
             sent.SystemInstructions);
         Assert.Contains(
+            "When a mapped test is new, include an explicit candidate .cs file under its existing test-project root",
+            sent.SystemInstructions);
+        Assert.Contains(
             "Do not propose modifying existing reference-pattern files unless the JOB REQUEST explicitly requests",
             sent.SystemInstructions);
     }
@@ -1039,6 +1042,117 @@ public sealed class PlanningExecutionServiceTests
 
         Assert.True(result.IsSuccess);
     }
+
+    [Fact]
+    public void Existing_mapped_test_does_not_require_writable_test_candidate()
+    {
+        PlannerPlan plan = MappedTestPlan(
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"]);
+        HashSet<string> inventory = TestInventory(
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs");
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Web-only", inventory);
+
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void New_mapped_test_without_writable_test_candidate_is_rejected()
+    {
+        PlannerPlan plan = MappedTestPlan(
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"]);
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Web-only", TestInventory());
+
+        Assert.False(result.IsValid);
+        Assert.Equal("ACCEPTANCE_TEST_PATH_NOT_WRITABLE", result.Reason);
+    }
+
+    [Fact]
+    public void New_mapped_test_with_matching_writable_test_candidate_is_accepted()
+    {
+        PlannerPlan plan = MappedTestPlan(
+        [
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs"
+        ]);
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Web-only", TestInventory());
+
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void New_mapped_test_in_unrelated_test_project_is_rejected()
+    {
+        PlannerPlan plan = MappedTestPlan(
+        [
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.ControlPlane.Tests/JobDetailTests.cs"
+        ]);
+        HashSet<string> inventory = TestInventory(
+            "tests/Kronxy.ControlPlane.Tests/Kronxy.ControlPlane.Tests.csproj");
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Web-only", inventory);
+
+        Assert.False(result.IsValid);
+        Assert.Equal("ACCEPTANCE_TEST_PATH_NOT_WRITABLE", result.Reason);
+    }
+
+    [Fact]
+    public void New_mapped_test_outside_required_scope_is_rejected()
+    {
+        PlannerPlan plan = MappedTestPlan(
+        [
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs"
+        ]);
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Domain-only", TestInventory());
+
+        Assert.False(result.IsValid);
+        Assert.Equal("ACCEPTANCE_TEST_PATH_NOT_WRITABLE", result.Reason);
+    }
+
+    private static PlannerPlan MappedTestPlan(
+        IReadOnlyList<string> candidateFiles) => new()
+    {
+        Objective = "Add Job Detail copy controls.",
+        FilesToInspect = ["src/Kronxy.Web/Components/Pages/JobDetail.razor"],
+        CandidateFilesToModify = candidateFiles,
+        Strategy = "Add a new focused frontend test.",
+        AcceptanceCriteria = ["JobId copy works."],
+        Risks = [],
+        ExpectedTests = ["Kronxy.Web.Tests.JobDetailTests.JobIdCopyWorks"],
+        AcceptanceTestMappings =
+        [
+            new PlannerAcceptanceTest
+            {
+                Requirement = "JobId copy works.",
+                TestName = "Kronxy.Web.Tests.JobDetailTests.JobIdCopyWorks"
+            }
+        ],
+        Assumptions = [],
+        Uncertainties = []
+    };
+
+    private static HashSet<string> TestInventory(params string[] additional) =>
+        new(
+        [
+            "tests/Kronxy.Web.Tests/Kronxy.Web.Tests.csproj",
+            .. additional
+        ],
+        StringComparer.Ordinal);
 
     [Theory]
     [InlineData(true, 1)]
