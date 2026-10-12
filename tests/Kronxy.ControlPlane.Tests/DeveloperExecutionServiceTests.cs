@@ -108,6 +108,7 @@ public sealed class DeveloperExecutionServiceTests
         const string current = "public sealed class Existing {}\n";
         string hash = CurrentHash(current);
         Fixture fixture = CreateFixture();
+        fixture.MetadataBinder.ReplaceHash = hash;
         fixture.Reader.ContextContent = ContextPackage((path, current));
         fixture.Gateway.Response = SuccessResponse(
             $$"""
@@ -154,6 +155,7 @@ public sealed class DeveloperExecutionServiceTests
             340));
         string hash = CurrentHash(current);
         Fixture fixture = CreateFixture();
+        fixture.MetadataBinder.ReplaceHash = hash;
         fixture.Reader.ContextContent = ContextPackage((path, current));
         fixture.Gateway.Response = SuccessResponse(
             $$"""
@@ -180,6 +182,7 @@ public sealed class DeveloperExecutionServiceTests
             targetBytes / fragment.Length + 1))[..targetBytes];
         string hash = CurrentHash(current);
         Fixture fixture = CreateFixture();
+        fixture.MetadataBinder.ReplaceHash = hash;
         fixture.Reader.ContextContent = ContextPackage((path, current));
         fixture.Gateway.Response = SuccessResponse(
             $$"""
@@ -227,6 +230,7 @@ public sealed class DeveloperExecutionServiceTests
             targetBytes / fragment.Length + 1))[..targetBytes];
         string hash = CurrentHash(current);
         Fixture fixture = CreateFixture();
+        fixture.MetadataBinder.ReplaceHash = hash;
         fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
             new PlannerPlan
             {
@@ -285,6 +289,126 @@ public sealed class DeveloperExecutionServiceTests
         Assert.Equal(current,
             targets.RootElement[0].GetProperty("CurrentContent").GetString());
         Assert.Contains(testPath, sent.UserContent);
+    }
+
+    [Fact]
+    public async Task Mixed_existing_and_new_targets_bind_authoritative_metadata()
+    {
+        const string sourcePath =
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor";
+        const string testPath =
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs";
+        const string current = "<p>@Model.JobId</p>\n";
+        string hash = CurrentHash(current);
+        Fixture fixture = CreateFixture();
+        fixture.MetadataBinder.ReplaceHash = hash;
+        fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
+            new PlannerPlan
+            {
+                Objective = "Implement safely.",
+                FilesToInspect = [sourcePath],
+                CandidateFilesToModify = [sourcePath, testPath],
+                Strategy = "Add controls and tests.",
+                AcceptanceCriteria = ["Copy controls work."],
+                Risks = [],
+                ExpectedTests = [],
+                Assumptions = [],
+                Uncertainties = []
+            });
+        fixture.Reader.ContextContent = ContextPackage((sourcePath, current));
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Add copy controls.","changes":[{"operation":"ReplaceFile","relativePath":"{{sourcePath}}","intent":"Add copy controls.","content":"<p>updated</p>\n","expectedContentSha256":"new_sha256_here"},{"operation":"CreateFile","relativePath":"{{testPath}}","intent":"Add focused tests.","content":"public sealed class JobDetailTests {}\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess);
+        Assert.Collection(
+            result.Proposal!.Changes,
+            change =>
+            {
+                Assert.Equal(sourcePath, change.RelativePath);
+                Assert.Equal(hash, change.ExpectedContentSha256);
+            },
+            change =>
+            {
+                Assert.Equal(testPath, change.RelativePath);
+                Assert.Empty(change.ExpectedContentSha256);
+            });
+    }
+
+    [Fact]
+    public async Task Workspace_drift_is_rejected_before_bound_metadata_is_accepted()
+    {
+        const string path = "src/new.cs";
+        const string authoritative = "class Existing {}\n";
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, authoritative));
+        fixture.MetadataBinder.ReplaceHash = CurrentHash("class Drifted {}\n");
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Update existing file.","content":"class Existing { }\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_EXPECTED_CONTENT_SHA_INVALID", result.ErrorCode);
+        Assert.Equal(0, fixture.Policy.CallCount);
+    }
+
+    [Fact]
+    public async Task Placeholder_hash_does_not_bypass_authoritative_target_paths()
+    {
+        const string path = "src/new.cs";
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, "class Existing {}\n"));
+        fixture.Gateway.Response = SuccessResponse(
+            """
+            {"summary":"Modify outside file.","changes":[{"operation":"ReplaceFile","relativePath":"src/outside.cs","intent":"Modify outside file.","content":"class Outside {}\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT", result.ErrorCode);
+        Assert.Equal(0, fixture.MetadataBinder.CallCount);
+    }
+
+    [Fact]
+    public async Task ReplaceFile_for_missing_authoritative_target_is_rejected()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage();
+        fixture.Gateway.Response = SuccessResponse(
+            """
+            {"summary":"Replace missing file.","changes":[{"operation":"ReplaceFile","relativePath":"src/new.cs","intent":"Replace missing file.","content":"class NewType {}\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_REPLACE_MISSING_FILE_REJECTED", result.ErrorCode);
+        Assert.Equal(0, fixture.MetadataBinder.CallCount);
+    }
+
+    [Fact]
+    public async Task Duplicate_target_operations_are_rejected_before_binding()
+    {
+        const string path = "src/new.cs";
+        Fixture fixture = CreateFixture();
+        fixture.Reader.ContextContent = ContextPackage((path, "class Existing {}\n"));
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Duplicate target changes.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"First target change.","content":"class Existing { }\n","expectedContentSha256":"new_sha256_here"},{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Second target change.","content":"class Existing { int Value; }\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_PATH_DUPLICATE", result.ErrorCode);
+        Assert.Equal(0, fixture.MetadataBinder.CallCount);
     }
 
     [Fact]

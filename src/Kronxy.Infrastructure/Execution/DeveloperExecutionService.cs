@@ -494,7 +494,8 @@ public sealed class DeveloperExecutionService :
 
             string? targetOperationError = ValidateTargetOperations(
                 proposal,
-                targetContext.Targets);
+                targetContext.Targets,
+                validateBoundMetadata: false);
             if (targetOperationError is not null)
             {
                 return await PolicyFailureAsync(
@@ -527,6 +528,19 @@ public sealed class DeveloperExecutionService :
             }
 
             DeveloperProposal normalizedProposal = binding.Proposal;
+
+            targetOperationError = ValidateTargetOperations(
+                normalizedProposal,
+                targetContext.Targets,
+                validateBoundMetadata: true);
+            if (targetOperationError is not null)
+            {
+                return await PolicyFailureAsync(
+                    request,
+                    response,
+                    targetOperationError,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             DeveloperProposalPolicyResult validated =
                 proposalPolicy.Validate(normalizedProposal);
@@ -803,7 +817,8 @@ public sealed class DeveloperExecutionService :
 
     private static string? ValidateTargetOperations(
         DeveloperProposal proposal,
-        IReadOnlyList<DeveloperTargetContext> targets)
+        IReadOnlyList<DeveloperTargetContext> targets,
+        bool validateBoundMetadata)
     {
         if (targets.Count == 0)
         {
@@ -812,11 +827,17 @@ public sealed class DeveloperExecutionService :
 
         Dictionary<string, DeveloperTargetContext> byPath = targets
             .ToDictionary(target => target.RelativePath, StringComparer.OrdinalIgnoreCase);
+        var proposedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (DeveloperChangeOperation change in proposal.Changes)
         {
             if (!byPath.TryGetValue(change.RelativePath, out DeveloperTargetContext? target))
             {
                 return "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT";
+            }
+
+            if (!proposedPaths.Add(change.RelativePath))
+            {
+                return "DEVELOPER_PATH_DUPLICATE";
             }
 
             if (target.Exists && change.Operation != DeveloperChangeOperationType.ReplaceFile)
@@ -829,9 +850,12 @@ public sealed class DeveloperExecutionService :
                 return "DEVELOPER_REPLACE_MISSING_FILE_REJECTED";
             }
 
-            if (target.Exists && !string.Equals(
+            if (validateBoundMetadata &&
+                !string.Equals(
                     change.ExpectedContentSha256,
-                    target.CurrentContentSha256,
+                    target.Exists
+                        ? target.CurrentContentSha256
+                        : string.Empty,
                     StringComparison.Ordinal))
             {
                 return "DEVELOPER_EXPECTED_CONTENT_SHA_INVALID";
