@@ -45,6 +45,8 @@ public sealed record TestExecutionReport(
     DateTime EndedOnUtc,
     TimeSpan Duration)
 {
+    public IReadOnlyList<string> PassedTests { get; init; } = [];
+
     public bool IsSuccess =>
         Outcome == ToolExecutionOutcome.Completed &&
         ExitCode == 0;

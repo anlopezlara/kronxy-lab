@@ -1,6 +1,8 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Execution;
 using Kronxy.Infrastructure.Artifacts;
@@ -115,23 +117,6 @@ public sealed class TestExecutionService :
                         cancellationToken)
                     .ConfigureAwait(false);
 
-            byte[] reportBytes =
-                JsonSerializer.SerializeToUtf8Bytes(
-                    report,
-                    ReportJsonOptions);
-
-            ArtifactWriteResult reportWrite =
-                await WriteArtifactAsync(
-                        request,
-                        request.IsGovernedHumanCorrection
-                            ? ArtifactType.TestGovernedHumanCorrectionReport
-                            : request.IsHumanReviewCorrection
-                            ? ArtifactType.TestHumanReviewCorrectionReport
-                            : ArtifactType.TestReport,
-                        reportBytes,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
             ArtifactRecord? stdoutArtifact =
                 SuccessfulArtifact(
                     stdoutWrite);
@@ -140,22 +125,17 @@ public sealed class TestExecutionService :
                 SuccessfulArtifact(
                     stderrWrite);
 
-            ArtifactRecord? reportArtifact =
-                SuccessfulArtifact(
-                    reportWrite);
-
             ArtifactWriteResult? evidenceFailure =
                 FirstFailure(
                     stdoutWrite,
-                    stderrWrite,
-                    reportWrite);
+                    stderrWrite);
 
             if (evidenceFailure is not null)
             {
                 return ArtifactFailure(
                     evidenceFailure,
                     report,
-                    reportArtifact,
+                    null,
                     null,
                     stdoutArtifact,
                     stderrArtifact);
@@ -172,12 +152,14 @@ public sealed class TestExecutionService :
 
             if (!executionProducedTestResults)
             {
+                ArtifactWriteResult reportWrite = await WriteReportAsync(
+                    request, report, cancellationToken).ConfigureAwait(false);
                 return TestExecutionResult.Failure(
                     toolFailure,
                     GetToolErrorCode(
                         toolResult),
                     report,
-                    reportArtifact,
+                    SuccessfulArtifact(reportWrite),
                     null,
                     stdoutArtifact,
                     stderrArtifact);
@@ -188,6 +170,16 @@ public sealed class TestExecutionService :
                         request,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+            if (trx.PassedTests is not null)
+                report = report with { PassedTests = trx.PassedTests };
+
+            ArtifactWriteResult finalReportWrite = await WriteReportAsync(
+                request, report, cancellationToken).ConfigureAwait(false);
+            ArtifactRecord? reportArtifact = SuccessfulArtifact(finalReportWrite);
+            if (!finalReportWrite.IsSuccess || reportArtifact is null)
+                return ArtifactFailure(finalReportWrite, report, reportArtifact, null,
+                    stdoutArtifact, stderrArtifact);
 
             if (!trx.IsSuccess)
             {
@@ -544,7 +536,8 @@ public sealed class TestExecutionService :
             }
 
             return TestResultsReadResult.Success(
-                zipContent);
+                zipContent,
+                ParsePassedTests(trxContents));
         }
         catch (OperationCanceledException)
             when (cancellationToken
@@ -566,6 +559,48 @@ public sealed class TestExecutionService :
                     .TestResultsUnsafe,
                 "TEST_RESULTS_READ_FAILED");
         }
+    }
+
+    private Task<ArtifactWriteResult>
+        WriteReportAsync(
+            TestExecutionRequest request,
+            TestExecutionReport report,
+            CancellationToken cancellationToken) =>
+        WriteArtifactAsync(
+            request,
+            request.IsGovernedHumanCorrection
+                ? ArtifactType.TestGovernedHumanCorrectionReport
+                : request.IsHumanReviewCorrection
+                ? ArtifactType.TestHumanReviewCorrectionReport
+                : ArtifactType.TestReport,
+            JsonSerializer.SerializeToUtf8Bytes(report, ReportJsonOptions),
+            cancellationToken);
+
+    private static IReadOnlyList<string> ParsePassedTests(
+        IReadOnlyList<byte[]> trxContents)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (byte[] content in trxContents)
+        {
+            using var stream = new MemoryStream(content, writable: false);
+            using XmlReader reader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                MaxCharactersInDocument = content.LongLength
+            });
+            XDocument document = XDocument.Load(reader, LoadOptions.None);
+            foreach (XElement result in document.Descendants()
+                .Where(element => element.Name.LocalName == "UnitTestResult" &&
+                    string.Equals((string?)element.Attribute("outcome"), "Passed",
+                        StringComparison.OrdinalIgnoreCase)))
+            {
+                string? name = (string?)result.Attribute("testName");
+                if (!string.IsNullOrWhiteSpace(name) && name.Length <= 1000)
+                    names.Add(name);
+            }
+        }
+        return names.Order(StringComparer.Ordinal).ToArray();
     }
 
     private Task<ArtifactWriteResult>
@@ -790,6 +825,7 @@ public sealed class TestExecutionService :
 
     private sealed record TestResultsReadResult(
         byte[]? Content,
+        IReadOnlyList<string>? PassedTests,
         TestExecutionFailureKind FailureKind,
         string ErrorCode)
     {
@@ -799,9 +835,11 @@ public sealed class TestExecutionService :
             Content is not null;
 
         public static TestResultsReadResult Success(
-            byte[] content) =>
+            byte[] content,
+            IReadOnlyList<string> passedTests) =>
             new(
                 content,
+                passedTests,
                 TestExecutionFailureKind.None,
                 string.Empty);
 
@@ -809,6 +847,7 @@ public sealed class TestExecutionService :
             TestExecutionFailureKind failureKind,
             string errorCode) =>
             new(
+                null,
                 null,
                 failureKind,
                 errorCode);

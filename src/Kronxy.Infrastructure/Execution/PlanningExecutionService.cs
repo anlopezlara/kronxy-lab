@@ -35,6 +35,7 @@ public sealed class PlanningExecutionService :
         "candidateFilesToModify may include a new path only when the JOB REQUEST explicitly asks to create that file or type under an authorized path. " +
         "Do not propose modifying existing reference-pattern files unless the JOB REQUEST explicitly requests those modifications. " +
         "Keep objective directly grounded in the JOB REQUEST. " +
+        "For each behavioral acceptance criterion, provide an acceptanceTestMappings entry whose requirement exactly matches the acceptance criterion and whose testName is the fully qualified test result name expected from TRX evidence. Leave a requirement unmapped only when it cannot be proven deterministically; it will remain NotProven. " +
         "The objective must be a concise restatement of the JOB REQUEST and must reuse at least two significant non-generic terms exactly as they appear in the JOB REQUEST. Do not replace those grounding terms only with synonyms. " +
         "Return a concise implementation plan grounded only in the supplied context.";
 

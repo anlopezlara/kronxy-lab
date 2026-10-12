@@ -33,6 +33,12 @@ public sealed class PlannerContractTests
               "expectedTests": [
                 "Run the applicable unit tests."
               ],
+              "acceptanceTestMappings": [
+                {
+                  "requirement": "The solution builds.",
+                  "testName": "Kronxy.Tests.BuildTests.SolutionBuilds"
+                }
+              ],
               "assumptions": [],
               "uncertainties": []
             }
@@ -56,6 +62,7 @@ public sealed class PlannerContractTests
             plan.Objective);
         Assert.Single(plan.FilesToInspect);
         Assert.Single(plan.CandidateFilesToModify);
+        Assert.Single(plan.AcceptanceTestMappings);
     }
 
     [Fact]

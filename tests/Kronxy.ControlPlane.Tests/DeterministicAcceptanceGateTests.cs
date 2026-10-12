@@ -93,7 +93,7 @@ public sealed class DeterministicAcceptanceGateTests
         snapshot = snapshot with { Files = [first, .. snapshot.Files.Skip(1)] };
 
         DeterministicAcceptanceGateResult result = new DeterministicAcceptanceGate()
-            .Evaluate(Request(), Plan(), snapshot);
+            .Evaluate(Request(), Plan(), snapshot, SuccessfulTestReport());
 
         Assert.False(result.IsSuccess);
         Assert.Contains(result.Criteria, criterion =>
@@ -108,7 +108,7 @@ public sealed class DeterministicAcceptanceGateTests
             DeveloperProposalLineage.Original, [Source(ErrorsPath, Errors())]);
 
         DeterministicAcceptanceGateResult result = new DeterministicAcceptanceGate()
-            .Evaluate(Request(), plan, snapshot);
+            .Evaluate(Request(), plan, snapshot, SuccessfulTestReport());
 
         Assert.False(result.IsSuccess);
         Assert.Contains(result.Criteria, criterion =>
@@ -138,7 +138,59 @@ public sealed class DeterministicAcceptanceGateTests
 
     private static DeterministicAcceptanceGateResult Evaluate(
         string model, string? errors = null) => new DeterministicAcceptanceGate()
-        .Evaluate(Request(), Plan(), Snapshot(model, errors));
+        .Evaluate(Request(), Plan(), Snapshot(model, errors), SuccessfulTestReport());
+
+    [Fact]
+    public void Behavioral_requirement_with_only_file_exists_is_not_proven()
+    {
+        PlannerPlan plan = Plan() with
+        {
+            AcceptanceCriteria = ["JobId can be copied from Job Detail."],
+            AcceptanceTestMappings = []
+        };
+
+        DeterministicAcceptanceGateResult result = new DeterministicAcceptanceGate()
+            .Evaluate("Add copy behavior", plan, Snapshot(Model()), SuccessfulTestReport());
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains(result.Criteria, item =>
+            item.Criterion.Kind == DeterministicCriterionKind.SemanticRequirement &&
+            item.Status == DeterministicCriterionStatus.NotProven);
+
+        ReviewerReview reconciled = ReviewerExecutionService
+            .ReconcileDeterministicEvidence(new ReviewerReview
+            {
+                Decision = ReviewerDecision.Approved,
+                Findings = [], RequiredCorrections = [],
+                RiskAssessment = "low", Summary = "model approved"
+            }, result);
+        Assert.Equal(ReviewerDecision.ChangesRequired, reconciled.Decision);
+        Assert.Contains(reconciled.Findings, finding =>
+            finding.Category == "DeterministicAcceptance");
+    }
+
+    [Fact]
+    public void Behavioral_requirement_with_mapped_passing_test_is_proven()
+    {
+        const string requirement = "JobId can be copied from Job Detail.";
+        const string testName = "Kronxy.Web.Tests.JobDetailTests.CopiesJobId";
+        PlannerPlan plan = Plan() with
+        {
+            AcceptanceCriteria = [requirement],
+            AcceptanceTestMappings = [new PlannerAcceptanceTest
+                { Requirement = requirement, TestName = testName }]
+        };
+        TestExecutionReport report = SuccessfulTestReport() with
+            { PassedTests = [testName] };
+
+        DeterministicAcceptanceGateResult result = new DeterministicAcceptanceGate()
+            .Evaluate("Add copy behavior", plan, Snapshot(Model()), report);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(result.Criteria, item =>
+            item.Criterion.Kind == DeterministicCriterionKind.PassingTest &&
+            item.Status == DeterministicCriterionStatus.Passed);
+    }
 
     private static ReviewerEffectiveSourceSnapshot Snapshot(
         string model, string? errors = null) => new(JobId, RunId,
@@ -159,9 +211,13 @@ public sealed class DeterministicAcceptanceGateTests
         Objective = "Create module", FilesToInspect = [],
         CandidateFilesToModify = [ModelPath, ErrorsPath, RepositoryPath],
         Strategy = "Follow conventions",
-        AcceptanceCriteria = ["ProjectId is mandatory", "architecture follows conventions"],
+        AcceptanceCriteria = ["ProjectId is mandatory"],
         Risks = [], ExpectedTests = [], Assumptions = [], Uncertainties = []
     };
+
+    private static TestExecutionReport SuccessfulTestReport() => new(
+        JobId, RunId, "Kronxy.sln", ToolExecutionOutcome.Completed, 0,
+        string.Empty, DateTime.UtcNow, DateTime.UtcNow, TimeSpan.Zero);
 
     private static string Request() => """
         REQUIRED FIRST-CLASS FIELDS

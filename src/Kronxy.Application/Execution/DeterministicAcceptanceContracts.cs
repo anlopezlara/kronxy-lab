@@ -5,14 +5,20 @@ public enum DeterministicCriterionKind
     FileExists = 10,
     CSharpPropertyExists = 20,
     CSharpMethodExists = 30,
-    StringLiteralExists = 40
+    StringLiteralExists = 40,
+    PassingTest = 50,
+    SemanticRequirement = 60
 }
 
 public enum DeterministicCriterionStatus
 {
-    Pass = 10,
-    Fail = 20,
-    Unevaluable = 30
+    Passed = 10,
+    Pass = Passed,
+    Failed = 20,
+    Fail = Failed,
+    NotProven = 30,
+    Unevaluable = NotProven,
+    NotApplicable = 40
 }
 
 public sealed record DeterministicAcceptanceCriterion(
@@ -20,12 +26,19 @@ public sealed record DeterministicAcceptanceCriterion(
     DeterministicCriterionKind Kind,
     string RelativePath,
     string Expected,
-    string SourceRequirement);
+    string SourceRequirement)
+{
+    public string Requirement => SourceRequirement;
+    public string VerificationMethod => Kind.ToString();
+}
 
 public sealed record DeterministicAcceptanceCriterionResult(
     DeterministicAcceptanceCriterion Criterion,
     DeterministicCriterionStatus Status,
-    string Evidence);
+    string Evidence)
+{
+    public string Actual { get; init; } = string.Empty;
+}
 
 public sealed record DeterministicAcceptanceGateResult(
     IReadOnlyList<DeterministicAcceptanceCriterionResult> Criteria,
@@ -33,7 +46,9 @@ public sealed record DeterministicAcceptanceGateResult(
 {
     public bool IsSuccess =>
         Criteria.Count > 0 &&
-        Criteria.All(result => result.Status == DeterministicCriterionStatus.Pass);
+        Criteria.All(result => result.Status is
+            DeterministicCriterionStatus.Passed or
+            DeterministicCriterionStatus.NotApplicable);
 }
 
 public interface IDeterministicAcceptanceGate
@@ -41,5 +56,6 @@ public interface IDeterministicAcceptanceGate
     DeterministicAcceptanceGateResult Evaluate(
         string jobRequest,
         PlannerPlan plan,
-        ReviewerEffectiveSourceSnapshot snapshot);
+        ReviewerEffectiveSourceSnapshot snapshot,
+        TestExecutionReport testReport);
 }

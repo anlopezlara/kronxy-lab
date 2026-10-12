@@ -26,6 +26,10 @@ public sealed class TestExecutionServiceTests
             result.IsSuccess);
 
         Assert.Equal(
+            ["Kronxy.Tests.CopyTests.CopiesJobId", "Kronxy.Tests.CopyTests.CopiesRunId"],
+            result.Report!.PassedTests);
+
+        Assert.Equal(
             1,
             fixture.Executor.CallCount);
 
@@ -325,13 +329,26 @@ public sealed class TestExecutionServiceTests
                 Path.Combine(
                     resultsDirectory,
                     "a.trx"),
-                "<TestRun id=\"KRONXY-A\" />");
+                """
+                <TestRun id="KRONXY-A">
+                  <Results>
+                    <UnitTestResult testName="Kronxy.Tests.CopyTests.CopiesJobId" outcome="Passed" />
+                    <UnitTestResult testName="Kronxy.Tests.CopyTests.Fails" outcome="Failed" />
+                  </Results>
+                </TestRun>
+                """);
 
             File.WriteAllText(
                 Path.Combine(
                     resultsDirectory,
                     "b.trx"),
-                "<TestRun id=\"KRONXY-B\" />");
+                """
+                <TestRun id="KRONXY-B">
+                  <Results>
+                    <UnitTestResult testName="Kronxy.Tests.CopyTests.CopiesRunId" outcome="Passed" />
+                  </Results>
+                </TestRun>
+                """);
         }
 
         DateTime started =

@@ -1068,6 +1068,7 @@ public sealed class DeveloperExecutionService :
         plan.AcceptanceCriteria is not null &&
         plan.Risks is not null &&
         plan.ExpectedTests is not null &&
+        plan.AcceptanceTestMappings is not null &&
         plan.Assumptions is not null &&
         plan.Uncertainties is not null;
 

@@ -9,7 +9,8 @@ public sealed class DeterministicAcceptanceGate : IDeterministicAcceptanceGate
     public DeterministicAcceptanceGateResult Evaluate(
         string jobRequest,
         PlannerPlan plan,
-        ReviewerEffectiveSourceSnapshot snapshot)
+        ReviewerEffectiveSourceSnapshot snapshot,
+        TestExecutionReport testReport)
     {
         IReadOnlyList<DeterministicAcceptanceCriterion> criteria =
             DeterministicCriteriaParser.Parse(jobRequest, plan);
@@ -18,35 +19,56 @@ public sealed class DeterministicAcceptanceGate : IDeterministicAcceptanceGate
             .GroupBy(file => Normalize(file.RelativePath), StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() == 1)
             .ToDictionary(group => group.Key, group => group.Single(), StringComparer.OrdinalIgnoreCase);
+        HashSet<string> passedTests = testReport.IsSuccess
+            ? testReport.PassedTests.ToHashSet(StringComparer.Ordinal)
+            : [];
 
         foreach (DeterministicAcceptanceCriterion criterion in criteria)
         {
+            if (criterion.Kind == DeterministicCriterionKind.SemanticRequirement)
+            {
+                results.Add(Result(criterion, DeterministicCriterionStatus.NotProven,
+                    "SEMANTIC_REQUIREMENT_HAS_NO_DETERMINISTIC_VERIFICATION",
+                    "No deterministic evidence was mapped."));
+                continue;
+            }
+
+            if (criterion.Kind == DeterministicCriterionKind.PassingTest)
+            {
+                bool passed = passedTests.Contains(criterion.Expected);
+                results.Add(Result(criterion,
+                    passed ? DeterministicCriterionStatus.Passed : DeterministicCriterionStatus.NotProven,
+                    passed ? $"test:{criterion.Expected}:passed" : "MAPPED_TEST_NOT_RECORDED_AS_PASSED",
+                    passed ? criterion.Expected : string.Join(',', passedTests.Order())));
+                continue;
+            }
+
             string path = Normalize(criterion.RelativePath);
             if (!files.TryGetValue(path, out ReviewerEffectiveSourceFile? file))
             {
-                results.Add(Result(criterion, DeterministicCriterionStatus.Fail,
-                    "FILE_NOT_PRESENT_IN_EFFECTIVE_SOURCE"));
+                results.Add(Result(criterion, DeterministicCriterionStatus.Failed,
+                    "FILE_NOT_PRESENT_IN_EFFECTIVE_SOURCE", path));
                 continue;
             }
 
             if (!ValidSource(file))
             {
-                results.Add(Result(criterion, DeterministicCriterionStatus.Unevaluable,
-                    "EFFECTIVE_SOURCE_HASH_OR_SIZE_MISMATCH"));
+                results.Add(Result(criterion, DeterministicCriterionStatus.NotProven,
+                    "EFFECTIVE_SOURCE_HASH_OR_SIZE_MISMATCH", file.Sha256));
                 continue;
             }
 
             if (criterion.Kind == DeterministicCriterionKind.FileExists)
             {
-                results.Add(Result(criterion, DeterministicCriterionStatus.Pass,
-                    $"sha256:{file.Sha256}"));
+                results.Add(Result(criterion, DeterministicCriterionStatus.Passed,
+                    $"sha256:{file.Sha256}", path));
                 continue;
             }
 
             if (!CSharpTokens.TryParse(file.Content, out CSharpTokens? tokens))
             {
-                results.Add(Result(criterion, DeterministicCriterionStatus.Unevaluable,
-                    "CSHARP_SOURCE_COULD_NOT_BE_TOKENIZED"));
+                results.Add(Result(criterion, DeterministicCriterionStatus.NotProven,
+                    "CSHARP_SOURCE_COULD_NOT_BE_TOKENIZED", path));
                 continue;
             }
             CSharpTokens parsed = tokens!;
@@ -62,17 +84,14 @@ public sealed class DeterministicAcceptanceGate : IDeterministicAcceptanceGate
                 _ => false
             };
             results.Add(Result(criterion,
-                present ? DeterministicCriterionStatus.Pass : DeterministicCriterionStatus.Fail,
-                present ? "SYMBOL_PRESENT" : "SYMBOL_ABSENT"));
+                present ? DeterministicCriterionStatus.Passed : DeterministicCriterionStatus.Failed,
+                present ? "SYMBOL_PRESENT" : "SYMBOL_ABSENT",
+                present ? criterion.Expected : string.Empty));
         }
 
-        string[] semantic = plan.AcceptanceCriteria
-            .Where(criterion => !criteria.Any(deterministic =>
-                string.Equals(deterministic.SourceRequirement, criterion,
-                    StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrWhiteSpace(deterministic.Expected) &&
-                 criterion.Contains(deterministic.Expected,
-                    StringComparison.OrdinalIgnoreCase))))
+        string[] semantic = results
+            .Where(result => result.Criterion.Kind == DeterministicCriterionKind.SemanticRequirement)
+            .Select(result => result.Criterion.SourceRequirement)
             .ToArray();
         return new DeterministicAcceptanceGateResult(results, semantic);
     }
@@ -89,7 +108,8 @@ public sealed class DeterministicAcceptanceGate : IDeterministicAcceptanceGate
     private static DeterministicAcceptanceCriterionResult Result(
         DeterministicAcceptanceCriterion criterion,
         DeterministicCriterionStatus status,
-        string evidence) => new(criterion, status, evidence);
+        string evidence,
+        string actual) => new(criterion, status, evidence) { Actual = actual };
 
     private static string Normalize(string value) =>
         (value ?? string.Empty).Replace('\\', '/').Trim();
@@ -120,7 +140,46 @@ public sealed class DeterministicAcceptanceGate : IDeterministicAcceptanceGate
             AddMethods(criteria, sections, entityPath);
             AddErrorCodes(criteria, sections.GetValueOrDefault("DOMAIN ERRORS"), errorsPath);
             AddRepositoryMethods(criteria, sections.GetValueOrDefault("REPOSITORY CONTRACT"), repositoryPath);
+            AddSemanticCriteria(criteria, plan);
             return criteria;
+        }
+
+        private static void AddSemanticCriteria(
+            List<DeterministicAcceptanceCriterion> criteria,
+            PlannerPlan plan)
+        {
+            foreach (string requirement in plan.AcceptanceCriteria
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                PlannerAcceptanceTest? mapping = plan.AcceptanceTestMappings
+                    .SingleOrDefault(candidate => string.Equals(
+                        candidate.Requirement, requirement,
+                        StringComparison.OrdinalIgnoreCase));
+                if (mapping is not null && !string.IsNullOrWhiteSpace(mapping.TestName))
+                {
+                    criteria.Add(Criterion(
+                        DeterministicCriterionKind.PassingTest,
+                        string.Empty,
+                        mapping.TestName.Trim(),
+                        requirement));
+                    continue;
+                }
+
+                bool alreadyProven = criteria.Any(candidate =>
+                    candidate.Kind is not DeterministicCriterionKind.FileExists &&
+                    (string.Equals(candidate.SourceRequirement, requirement,
+                        StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrWhiteSpace(candidate.Expected) &&
+                      requirement.Contains(candidate.Expected,
+                        StringComparison.OrdinalIgnoreCase))));
+                if (!alreadyProven)
+                    criteria.Add(Criterion(
+                        DeterministicCriterionKind.SemanticRequirement,
+                        string.Empty,
+                        requirement,
+                        requirement));
+            }
         }
 
         private static void AddFields(List<DeterministicAcceptanceCriterion> criteria,

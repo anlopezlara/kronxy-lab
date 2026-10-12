@@ -68,6 +68,11 @@ public sealed class PlannerPlanPolicy :
                 "PLANNING_PATH_DUPLICATE");
         }
 
+        if (!ValidAcceptanceMappings(plan))
+        {
+            return Failure("PLANNING_ACCEPTANCE_MAPPING_INVALID");
+        }
+
         return PlannerPlanPolicyResult.Success();
     }
 
@@ -127,6 +132,25 @@ public sealed class PlannerPlanPolicy :
         return paths.Any(
             path =>
                 !unique.Add(path));
+    }
+
+    private static bool ValidAcceptanceMappings(PlannerPlan plan)
+    {
+        if (plan.AcceptanceTestMappings is null ||
+            plan.AcceptanceTestMappings.Any(mapping =>
+                mapping is null ||
+                string.IsNullOrWhiteSpace(mapping.Requirement) ||
+                string.IsNullOrWhiteSpace(mapping.TestName) ||
+                mapping.Requirement.Length > 4000 ||
+                mapping.TestName.Length > 1000 ||
+                !plan.AcceptanceCriteria.Contains(mapping.Requirement,
+                    StringComparer.Ordinal)))
+            return false;
+
+        return plan.AcceptanceTestMappings
+            .Select(mapping => mapping.Requirement)
+            .Distinct(StringComparer.Ordinal)
+            .Count() == plan.AcceptanceTestMappings.Count;
     }
 
     private static bool IsValidRelativePath(

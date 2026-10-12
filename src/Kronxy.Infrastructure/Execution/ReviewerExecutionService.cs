@@ -50,7 +50,8 @@ public sealed class ReviewerExecutionService : IReviewerExecutionService
         {
             DeterministicAcceptanceGateResult deterministicGate =
                 deterministicAcceptanceGate.Evaluate(
-                    request.JobRequest, request.Plan, request.EffectiveSourceSnapshot);
+                    request.JobRequest, request.Plan, request.EffectiveSourceSnapshot,
+                    request.TestReport);
             string content = JsonSerializer.Serialize(new
             {
                 originalRequest = request.JobRequest,
@@ -183,7 +184,7 @@ public sealed class ReviewerExecutionService : IReviewerExecutionService
         DeterministicAcceptanceGateResult gate)
     {
         DeterministicAcceptanceCriterionResult[] passed = gate.Criteria
-            .Where(result => result.Status == DeterministicCriterionStatus.Pass)
+            .Where(result => result.Status == DeterministicCriterionStatus.Passed)
             .ToArray();
         bool Contradicts(string text) => passed.Any(result =>
             text.Contains(result.Criterion.Expected, StringComparison.OrdinalIgnoreCase) &&
@@ -197,7 +198,9 @@ public sealed class ReviewerExecutionService : IReviewerExecutionService
             corrections.Length != review.RequiredCorrections.Count;
 
         DeterministicAcceptanceCriterionResult[] failed = gate.Criteria
-            .Where(result => result.Status != DeterministicCriterionStatus.Pass).ToArray();
+            .Where(result => result.Status is not (
+                DeterministicCriterionStatus.Passed or
+                DeterministicCriterionStatus.NotApplicable)).ToArray();
         if (failed.Length > 0)
         {
             findings = findings.Concat(failed.Select(result => new ReviewerFinding

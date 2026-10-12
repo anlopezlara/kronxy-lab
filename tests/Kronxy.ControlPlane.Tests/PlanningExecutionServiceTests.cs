@@ -159,6 +159,7 @@ public sealed class PlanningExecutionServiceTests
                       "expectedTests": [
                         "Run project tests."
                       ],
+                      "acceptanceTestMappings": [],
                       "assumptions": [],
                       "uncertainties": []
                     }
@@ -854,6 +855,7 @@ public sealed class PlanningExecutionServiceTests
                       "acceptanceCriteria": ["Build succeeds."],
                       "risks": [],
                       "expectedTests": ["Run tests."],
+                      "acceptanceTestMappings": [],
                       "assumptions": [],
                       "uncertainties": []
                     }
@@ -1234,6 +1236,7 @@ public sealed class PlanningExecutionServiceTests
                       "expectedTests": [
                         "Run focused Domain tests."
                       ],
+                      "acceptanceTestMappings": [],
                       "assumptions": [],
                       "uncertainties": []
                     }
@@ -1322,6 +1325,7 @@ public sealed class PlanningExecutionServiceTests
                       "expectedTests": [
                         "Run focused Domain tests."
                       ],
+                      "acceptanceTestMappings": [],
                       "assumptions": [],
                       "uncertainties": []
                     }

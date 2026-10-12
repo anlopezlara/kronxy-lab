@@ -3,6 +3,15 @@ using System.Text.Json.Serialization;
 
 namespace Kronxy.Application.Execution;
 
+public sealed record PlannerAcceptanceTest
+{
+    [JsonPropertyName("requirement")]
+    public required string Requirement { get; init; }
+
+    [JsonPropertyName("testName")]
+    public required string TestName { get; init; }
+}
+
 public sealed record PlannerPlan
 {
     [JsonPropertyName("objective")]
@@ -47,6 +56,13 @@ public sealed record PlannerPlan
         get;
         init;
     }
+
+    [JsonPropertyName("acceptanceTestMappings")]
+    public IReadOnlyList<PlannerAcceptanceTest> AcceptanceTestMappings
+    {
+        get;
+        init;
+    } = [];
 
     [JsonPropertyName("assumptions")]
     public required IReadOnlyList<string> Assumptions
@@ -106,6 +122,18 @@ public static class PlannerContractSchema
                 "type": "string"
               }
             },
+            "acceptanceTestMappings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "requirement": { "type": "string" },
+                  "testName": { "type": "string" }
+                },
+                "required": ["requirement", "testName"],
+                "additionalProperties": false
+              }
+            },
             "assumptions": {
               "type": "array",
               "items": {
@@ -127,6 +155,7 @@ public static class PlannerContractSchema
             "acceptanceCriteria",
             "risks",
             "expectedTests",
+            "acceptanceTestMappings",
             "assumptions",
             "uncertainties"
           ],
