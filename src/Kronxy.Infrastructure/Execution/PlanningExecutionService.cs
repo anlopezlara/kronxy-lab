@@ -187,11 +187,27 @@ public sealed class PlanningExecutionService :
                     artifact.ErrorCode);
             }
 
+            IReadOnlySet<string> repositoryPaths =
+                PlanningPriorityPathSelector.ExtractManifestPaths(
+                    artifact.Content);
+            string[] knownTestProjectRoots = repositoryPaths
+                .Where(path =>
+                    path.StartsWith("tests/", StringComparison.Ordinal) &&
+                    path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                .Select(path => path[..(path.LastIndexOf('/') + 1)])
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
             string prefix =
                 "JOB REQUEST:\n" +
                 request.JobRequest +
                 "\n\nAUTHORITATIVE DEVELOPMENT ANALYSIS:\n" +
                 JsonSerializer.Serialize(guidance) +
+                "\n\nKNOWN TEST PROJECT ROOTS:\n" +
+                (knownTestProjectRoots.Length == 0
+                    ? "(none)"
+                    : string.Join('\n', knownTestProjectRoots)) +
                 "\n\nAUTHORIZED REPOSITORY CONTEXT:\n";
 
             string requestReminder =
@@ -226,10 +242,6 @@ public sealed class PlanningExecutionService :
                     PlanningExecutionFailureKind.ContextTooLarge,
                     "PLANNING_INPUT_LIMIT_EXCEEDED");
             }
-
-            IReadOnlySet<string> repositoryPaths =
-                PlanningPriorityPathSelector.ExtractManifestPaths(
-                    artifact.Content);
 
             IEnumerable<string> resolvedExistingPaths =
                 repositoryPaths.Count == 0
@@ -453,7 +465,10 @@ public sealed class PlanningExecutionService :
                 request.JobRequest,
                 repositoryPaths);
 
-            if (pathCoherence.IsValid && plan.AcceptanceTestMappings.Count > 0)
+            if (pathCoherence.IsValid &&
+                (plan.AcceptanceTestMappings.Count > 0 ||
+                 plan.CandidateFilesToModify.Any(path =>
+                     path.StartsWith("tests/", StringComparison.Ordinal))))
             {
                 PathCoherenceResult acceptanceTestCoherence =
                     AreAcceptanceTestsCoherent(
@@ -952,6 +967,7 @@ public sealed class PlanningExecutionService :
         string requiredScope,
         IReadOnlySet<string> repositoryPaths)
     {
+        var justifiedTestProjectRoots = new HashSet<string>(StringComparer.Ordinal);
         foreach (PlannerAcceptanceTest mapping in plan.AcceptanceTestMappings)
         {
             string[] testNameParts = mapping.TestName.Split(
@@ -991,6 +1007,8 @@ public sealed class PlanningExecutionService :
                 continue;
             }
 
+            justifiedTestProjectRoots.Add(projectRoot);
+
             string? writableTest = plan.CandidateFilesToModify.FirstOrDefault(path =>
                 path.StartsWith(projectRoot, StringComparison.Ordinal) &&
                 path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
@@ -1001,6 +1019,17 @@ public sealed class PlanningExecutionService :
                     "ACCEPTANCE_TEST_PATH_NOT_WRITABLE",
                     expectedFile);
             }
+        }
+
+        string? unjustifiedTestCandidate = plan.CandidateFilesToModify
+            .Where(path => path.StartsWith("tests/", StringComparison.Ordinal))
+            .FirstOrDefault(path => !justifiedTestProjectRoots.Any(root =>
+                path.StartsWith(root, StringComparison.Ordinal)));
+        if (unjustifiedTestCandidate is not null)
+        {
+            return PathCoherenceResult.Invalid(
+                "ACCEPTANCE_TEST_PATH_UNMAPPED",
+                unjustifiedTestCandidate);
         }
 
         return PathCoherenceResult.Valid(false);

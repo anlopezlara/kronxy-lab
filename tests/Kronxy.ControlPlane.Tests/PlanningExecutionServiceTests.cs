@@ -897,14 +897,13 @@ public sealed class PlanningExecutionServiceTests
     {
         Fixture fixture = PilotFixture();
         fixture.Gateway.Response = PlanResponse(
-            "Add Job Detail copy controls.",
+            "Web-only add Job Detail copy controls with focused frontend tests.",
             [
                 "src/Kronxy.Web/Components/Pages/JobDetail.razor",
                 "tests/Kronxy.Web.Tests/KronxyApiClientTests.cs"
             ],
             [
-                "src/Kronxy.Web/Components/Pages/JobDetail.razor",
-                "tests/Kronxy.Web.Tests/KronxyApiClientTests.cs"
+                "src/Kronxy.Web/Components/Pages/JobDetail.razor"
             ]);
 
         PlanningExecutionResult result = await fixture.Service.ExecuteAsync(PilotRequest());
@@ -1032,11 +1031,22 @@ public sealed class PlanningExecutionServiceTests
                 Strategy = "Add a new focused test in the existing frontend test project.",
                 AcceptanceCriteria = ["Copy controls work."],
                 Risks = [],
-                ExpectedTests = ["Run frontend tests."],
+                ExpectedTests = ["Kronxy.Web.Tests.JobDetailDiagnosticsTests.CopyControlsWork"],
+                AcceptanceTestMappings =
+                [
+                    new PlannerAcceptanceTest
+                    {
+                        Requirement = "Copy controls work.",
+                        TestName = "Kronxy.Web.Tests.JobDetailDiagnosticsTests.CopyControlsWork"
+                    }
+                ],
                 Assumptions = [],
                 Uncertainties = []
             })
         };
+        fixture.Reader.Result = ContextPackage(
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.Web.Tests/Kronxy.Web.Tests.csproj");
 
         PlanningExecutionResult result = await fixture.Service.ExecuteAsync(PilotRequest());
 
@@ -1122,6 +1132,60 @@ public sealed class PlanningExecutionServiceTests
 
         Assert.False(result.IsValid);
         Assert.Equal("ACCEPTANCE_TEST_PATH_NOT_WRITABLE", result.Reason);
+    }
+
+    [Fact]
+    public void Test_candidate_without_acceptance_mapping_is_rejected()
+    {
+        PlannerPlan plan = MappedTestPlan(
+        [
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.Web.Tests/JobDetailTests.cs"
+        ]) with { AcceptanceTestMappings = [] };
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Web-only", TestInventory());
+
+        Assert.False(result.IsValid);
+        Assert.Equal("ACCEPTANCE_TEST_PATH_UNMAPPED", result.Reason);
+    }
+
+    [Fact]
+    public async Task Pilot_inventory_exposes_exact_known_web_test_project_root()
+    {
+        Fixture fixture = PilotFixture();
+        fixture.Reader.Result = ContextPackage(
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.Web.Tests/Kronxy.Web.Tests.csproj");
+        fixture.Gateway.Response = PlanResponse(
+            "Web-only add Job Detail copy controls with focused frontend tests.",
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"],
+            ["src/Kronxy.Web/Components/Pages/JobDetail.razor"]);
+
+        PlanningExecutionResult result =
+            await fixture.Service.ExecuteAsync(PilotRequest());
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        Assert.Contains(
+            "KNOWN TEST PROJECT ROOTS:\ntests/Kronxy.Web.Tests/",
+            fixture.Gateway.LastRequest!.UserContent);
+    }
+
+    [Fact]
+    public void Pilot_shaped_nested_web_test_candidate_is_coherent()
+    {
+        PlannerPlan plan = MappedTestPlan(
+        [
+            "src/Kronxy.Web/Components/Pages/JobDetail.razor",
+            "tests/Kronxy.Web.Tests/Components/Pages/JobDetailTests.cs"
+        ]);
+
+        PlanningExecutionService.PathCoherenceResult result =
+            PlanningExecutionService.AreAcceptanceTestsCoherent(
+                plan, "Web-only", TestInventory());
+
+        Assert.True(result.IsValid);
     }
 
     private static PlannerPlan MappedTestPlan(
