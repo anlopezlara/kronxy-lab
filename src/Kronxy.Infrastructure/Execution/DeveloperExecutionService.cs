@@ -9,6 +9,7 @@ using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
 using Kronxy.Application.Context;
 using Kronxy.Application.Execution;
+using Kronxy.Application.Repositories;
 using Kronxy.Infrastructure.AI;
 using Kronxy.Infrastructure.Artifacts;
 using Microsoft.Extensions.Logging;
@@ -37,13 +38,10 @@ public sealed class DeveloperExecutionService :
         "KRONXY alone validates and applies your structured proposal.";
 
     private const string BuildCorrectionInstructions =
-        " The previous proposal failed Build. Produce only the smallest correction required by the supplied compiler evidence. " +
+        "The previous proposal failed Build. Return only the smallest complete JSON correction. " +
         "The compiler diagnostic path is where the inconsistency is observed, not necessarily where the root cause must be fixed. " +
-        "Inspect related declarations before selecting the correction target. " +
-        "When a diagnostic references a type or symbol declared in another allowed source file, consider correcting the declaration rather than rewriting the diagnostic file. " +
-        "Do not add functionality, rewrite unrelated files, expand scope, or create files. " +
-        "Use ReplaceFile only and stay within the original Planner candidates. " +
-        "Set expectedContentSha256 to an empty placeholder; KRONXY binds the governed workspace hash.";
+        "Use ReplaceFile with complete authorized source; preserve unrelated behavior. " +
+        "KRONXY binds the governed workspace hash; use an empty expectedContentSha256.";
 
     private const string HumanReviewCorrectionInstructions =
         " Human Review returned ChangesRequired. Produce only the smallest correction required by the supplied human findings. " +
@@ -191,6 +189,13 @@ public sealed class DeveloperExecutionService :
             TargetContextResult targetContext = BuildTargetContext(
                 contextArtifact.Content,
                 plan.CandidateFilesToModify);
+            if (request.BuildCorrection is not null)
+            {
+                targetContext = await BuildGovernedTargetContextAsync(
+                    request.Repository,
+                    plan.CandidateFilesToModify,
+                    cancellationToken).ConfigureAwait(false);
+            }
             if (!targetContext.IsSuccess)
             {
                 return Failure(
@@ -198,9 +203,15 @@ public sealed class DeveloperExecutionService :
                     targetContext.ErrorCode);
             }
 
-            string targetContextJson = JsonSerializer.Serialize(
-                targetContext.Targets,
-                PromptJsonOptions);
+            string targetContextJson = request.BuildCorrection is null
+                ? JsonSerializer.Serialize(targetContext.Targets, PromptJsonOptions)
+                : JsonSerializer.Serialize(
+                    targetContext.Targets.Select(target => new
+                    {
+                        Path = target.RelativePath,
+                        Content = target.CurrentContent
+                    }),
+                    PromptJsonOptions);
             string feedbackJson =
                 JsonSerializer.Serialize(request.ReviewerFeedback);
 
@@ -213,7 +224,7 @@ public sealed class DeveloperExecutionService :
             else if (request.BuildCorrection is not null)
             {
                 BuildCorrectionEvidenceResult compacted =
-                    await BuildCorrectionEvidenceCompactor.CreateAsync(
+                    await BuildCorrectionEvidenceCompactor.CreatePromptEvidenceAsync(
                         request.BuildCorrection,
                         request.Repository,
                         aiOptions.DeveloperFeedbackCharacters - feedbackJson.Length,
@@ -250,9 +261,21 @@ public sealed class DeveloperExecutionService :
                     "DEVELOPER_REVIEWER_FEEDBACK_LIMIT_EXCEEDED");
             }
 
+            string planningJson = request.BuildCorrection is null
+                ? planJson
+                : JsonSerializer.Serialize(new
+                {
+                    plan.Objective,
+                    plan.AcceptanceCriteria,
+                    plan.ExpectedTests,
+                    plan.AcceptanceTestMappings
+                });
+
             string prefix =
-                "JOB REQUEST:\n" + request.JobRequest +
-                "\n\nAPPROVED PLANNER PLAN:\n" + planJson +
+                (request.BuildCorrection is null
+                    ? "JOB REQUEST:\n" + request.JobRequest + "\n\n"
+                    : string.Empty) +
+                "APPROVED PLANNER PLAN:\n" + planningJson +
                 "\n\nAUTHORIZED TARGET FILES:\n" + targetContextJson +
                 (request.ReviewerFeedback is null
                     ? string.Empty
@@ -265,12 +288,12 @@ public sealed class DeveloperExecutionService :
                     ? string.Empty
                     : "\n\nAUTHORIZED REPOSITORY CONTEXT:\n");
 
-            string systemInstructions = SystemInstructions +
+            string systemInstructions = request.BuildCorrection is not null
+                ? BuildCorrectionInstructions
+                : SystemInstructions +
                 (request.HumanReviewCorrection is not null
                     ? HumanReviewCorrectionInstructions
-                    : request.BuildCorrection is null
-                        ? string.Empty
-                        : BuildCorrectionInstructions);
+                    : string.Empty);
             if (isBuildRetry)
                 systemInstructions +=
                     " The previous correction was a no-op. Inspect the compiler diagnostics, effective source and reference patterns, then make an actual source change in an allowed file. Never repeat unchanged content.";
@@ -280,18 +303,16 @@ public sealed class DeveloperExecutionService :
                     ? "This is a Human Review correction. Return only ReplaceFile operations. " +
                       "Address every supplied human finding without expanding scope. " +
                       "KRONXY binds each expectedContentSha256 from the governed workspace; use an empty placeholder.\n"
-                    : request.BuildCorrection is null
-                        ? string.Empty
-                        : "This is a Build correction. Return only ReplaceFile operations. " +
-                          "The compiler diagnostic path is where the inconsistency is observed, not necessarily where the root cause must be fixed. " +
-                          "Inspect related declarations before selecting the correction target. " +
-                          "When a diagnostic references a type or symbol declared in another allowed source file, consider correcting the declaration rather than rewriting the diagnostic file. " +
-                          "KRONXY binds each expectedContentSha256 from the governed workspace; use an empty placeholder.\n";
+                    : string.Empty;
 
             string outputRequirements =
                 "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
                 "Return only compact JSON matching the schema. " +
                 correctionRequirements +
+                (request.BuildCorrection is null
+                    ? string.Empty
+                    : "Inspect related declarations before selecting the correction target. " +
+                      "When a diagnostic references a related symbol, consider correcting the declaration rather than rewriting the diagnostic file. ") +
                 "Use only these candidate paths:\n- " +
                 string.Join(
                     "\n- ",
@@ -401,9 +422,23 @@ public sealed class DeveloperExecutionService :
                 TargetBytes(targetContext.Targets));
 
             if (request.BuildCorrection is not null)
+            {
                 logger?.LogInformation(
                     "Build correction input: system={SystemCharacters} chars, user={UserCharacters} chars, schema={SchemaCharacters} chars.",
                     systemInstructions.Length, userContent.Length, schemaCharacters);
+                logger?.LogInformation(
+                    "Build correction composition: request={RequestCharacters} chars, planning={PlanningCharacters} chars, targets={TargetCharacters} chars, reviewerFeedback={ReviewerFeedbackCharacters} chars, correctionEvidence={CorrectionEvidenceCharacters} chars, outputRequirements={OutputRequirementsCharacters} chars, other={OtherCharacters} chars.",
+                    request.JobRequest.Length,
+                    planningJson.Length,
+                    targetContextJson.Length,
+                    request.ReviewerFeedback is null ? 0 : feedbackJson.Length,
+                    correctionJson.Length,
+                    outputRequirements.Length,
+                    userContent.Length - request.JobRequest.Length -
+                        planningJson.Length - targetContextJson.Length -
+                        (request.ReviewerFeedback is null ? 0 : feedbackJson.Length) -
+                        correctionJson.Length - outputRequirements.Length);
+            }
 
             AiResponse response =
                 await aiGateway.GenerateAsync(
@@ -495,7 +530,11 @@ public sealed class DeveloperExecutionService :
             string? targetOperationError = ValidateTargetOperations(
                 proposal,
                 targetContext.Targets,
-                validateBoundMetadata: false);
+                validateBoundMetadata: false,
+                validateOperationType: request.BuildCorrection is null,
+                invalidPathError: request.BuildCorrection is null
+                    ? "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT"
+                    : "DEVELOPER_PATH_NOT_IN_PLAN");
             if (targetOperationError is not null)
             {
                 return await PolicyFailureAsync(
@@ -532,7 +571,11 @@ public sealed class DeveloperExecutionService :
             targetOperationError = ValidateTargetOperations(
                 normalizedProposal,
                 targetContext.Targets,
-                validateBoundMetadata: true);
+                validateBoundMetadata: true,
+                validateOperationType: request.BuildCorrection is null,
+                invalidPathError: request.BuildCorrection is null
+                    ? "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT"
+                    : "DEVELOPER_PATH_NOT_IN_PLAN");
             if (targetOperationError is not null)
             {
                 return await PolicyFailureAsync(
@@ -815,10 +858,80 @@ public sealed class DeveloperExecutionService :
         }
     }
 
+    private static async Task<TargetContextResult> BuildGovernedTargetContextAsync(
+        RepositoryWorktreeHandle repository,
+        IReadOnlyList<string> candidatePaths,
+        CancellationToken cancellationToken)
+    {
+        const int maxTargetBytes = 64 * 1024;
+        const int maxTotalTargetBytes = 128 * 1024;
+        string root = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(repository.RepositoryPath));
+        string rootPrefix = root + Path.DirectorySeparatorChar;
+        var targets = new List<DeveloperTargetContext>();
+        int totalBytes = 0;
+
+        foreach (string path in candidatePaths.Distinct(StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string fullPath = Path.GetFullPath(path, root);
+            if (!fullPath.StartsWith(rootPrefix, StringComparison.Ordinal) ||
+                File.GetAttributes(root).HasFlag(FileAttributes.ReparsePoint))
+            {
+                return TargetContextResult.Failure(
+                    "DEVELOPER_BUILD_CORRECTION_SOURCE_UNSAFE");
+            }
+
+            if (!File.Exists(fullPath))
+            {
+                targets.Add(new DeveloperTargetContext(
+                    path, false, null, string.Empty,
+                    "WritableCandidate", "PlanningPlan+GovernedWorkspace"));
+                continue;
+            }
+
+            if (File.GetAttributes(fullPath).HasFlag(FileAttributes.ReparsePoint))
+            {
+                return TargetContextResult.Failure(
+                    "DEVELOPER_BUILD_CORRECTION_SOURCE_UNSAFE");
+            }
+
+            byte[] contentBytes = await File.ReadAllBytesAsync(
+                fullPath, cancellationToken).ConfigureAwait(false);
+            if (contentBytes.Length > maxTargetBytes ||
+                totalBytes + contentBytes.Length > maxTotalTargetBytes)
+            {
+                return TargetContextResult.Failure(
+                    "DEVELOPER_AUTHORITATIVE_TARGET_TOO_LARGE");
+            }
+
+            string content;
+            try
+            {
+                content = new UTF8Encoding(false, true).GetString(contentBytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                return TargetContextResult.Failure(
+                    "DEVELOPER_AUTHORITATIVE_TARGET_INVALID");
+            }
+
+            targets.Add(new DeveloperTargetContext(
+                path, true, content,
+                Convert.ToHexString(SHA256.HashData(contentBytes)).ToLowerInvariant(),
+                "WritableCandidate", "PlanningPlan+GovernedWorkspace"));
+            totalBytes += contentBytes.Length;
+        }
+
+        return TargetContextResult.Success(targets);
+    }
+
     private static string? ValidateTargetOperations(
         DeveloperProposal proposal,
         IReadOnlyList<DeveloperTargetContext> targets,
-        bool validateBoundMetadata)
+        bool validateBoundMetadata,
+        bool validateOperationType = true,
+        string invalidPathError = "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT")
     {
         if (targets.Count == 0)
         {
@@ -832,7 +945,7 @@ public sealed class DeveloperExecutionService :
         {
             if (!byPath.TryGetValue(change.RelativePath, out DeveloperTargetContext? target))
             {
-                return "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT";
+                return invalidPathError;
             }
 
             if (!proposedPaths.Add(change.RelativePath))
@@ -840,17 +953,21 @@ public sealed class DeveloperExecutionService :
                 return "DEVELOPER_PATH_DUPLICATE";
             }
 
-            if (target.Exists && change.Operation != DeveloperChangeOperationType.ReplaceFile)
+            if (validateOperationType && target.Exists &&
+                change.Operation != DeveloperChangeOperationType.ReplaceFile)
             {
                 return "DEVELOPER_CREATE_EXISTING_FILE_REJECTED";
             }
 
-            if (!target.Exists && change.Operation != DeveloperChangeOperationType.CreateFile)
+            if (validateOperationType && !target.Exists &&
+                change.Operation != DeveloperChangeOperationType.CreateFile)
             {
                 return "DEVELOPER_REPLACE_MISSING_FILE_REJECTED";
             }
 
             if (validateBoundMetadata &&
+                (validateOperationType ||
+                 change.Operation == DeveloperChangeOperationType.ReplaceFile) &&
                 !string.Equals(
                     change.ExpectedContentSha256,
                     target.Exists

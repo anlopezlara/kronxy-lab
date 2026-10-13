@@ -67,7 +67,7 @@ public sealed class DeveloperExecutionServiceTests
         DeveloperExecutionResult result =
             await fixture.Service.ExecuteAsync(Request());
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsSuccess, result.ErrorCode);
         Assert.InRange(
             fixture.Context.LastRequest!.MaxCharacters,
             1,
@@ -815,15 +815,21 @@ public sealed class DeveloperExecutionServiceTests
     }
 
     [Fact]
-    public async Task KRX_008030_sized_warning_heavy_evidence_reaches_ai_with_all_errors()
+    public async Task KRX_008113_shaped_build_correction_fits_without_source_duplication()
     {
         const string sourcePath =
             "src/Kronxy.Web/Components/Pages/JobDetail.razor";
         const string testPath =
             "tests/Kronxy.Web.Tests/JobDetailTests.cs";
-        string source = string.Join('\n', Enumerable.Range(1, 220)
-            .Select(line => $"line {line:D3} " + new string('x', 75))) + "\n";
-        string tests = "public sealed class JobDetailTests {}\n" + new string('t', 2_100);
+        string sourcePrefix = string.Join('\n', Enumerable.Range(1, 220)
+            .Select(line => $"line {line:D3} \"\\\\" + new string('x', 63))) + "\n";
+        string source = sourcePrefix + new string(
+            's', 19_181 - Encoding.UTF8.GetByteCount(sourcePrefix));
+        string testPrefix = "public sealed class JobDetailTests {}\n";
+        string tests = testPrefix + new string('t',
+            1_377 - Encoding.UTF8.GetByteCount(testPrefix));
+        Assert.Equal(19_181, Encoding.UTF8.GetByteCount(source));
+        Assert.Equal(1_377, Encoding.UTF8.GetByteCount(tests));
         Fixture fixture = CreateFixture();
         DeveloperExecutionRequest request = BuildCorrectionRequest();
         string root = request.Repository.RepositoryPath;
@@ -882,7 +888,7 @@ public sealed class DeveloperExecutionServiceTests
         string rawBefore = request.BuildCorrection.BuildStandardOutput;
         DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsSuccess, result.ErrorCode);
         Assert.Equal(1, fixture.Gateway.CallCount);
         Assert.Equal(rawBefore, request.BuildCorrection.BuildStandardOutput);
         string input = fixture.Gateway.LastRequest!.UserContent;
@@ -899,13 +905,101 @@ public sealed class DeveloperExecutionServiceTests
         Assert.Contains("\"Line\":210", input);
         Assert.Contains("Build FAILED.", input);
         Assert.DoesNotContain("inherited warning", input);
+        Assert.DoesNotContain("EffectiveSource", input);
+        const string targetMarker = "AUTHORIZED TARGET FILES:\n";
+        int targetStart = input.IndexOf(targetMarker, StringComparison.Ordinal) +
+            targetMarker.Length;
+        int targetEnd = input.IndexOf(
+            "\n\nAUTHORIZED CORRECTION EVIDENCE:", targetStart,
+            StringComparison.Ordinal);
+        using (JsonDocument targetsDocument = JsonDocument.Parse(
+            input[targetStart..targetEnd]))
+        {
+            JsonElement[] targets = targetsDocument.RootElement
+                .EnumerateArray().ToArray();
+            Assert.Equal(2, targets.Length);
+            Assert.Equal(source, targets.Single(item =>
+                item.GetProperty("Path").GetString() == sourcePath)
+                .GetProperty("Content").GetString());
+            Assert.Equal(tests, targets.Single(item =>
+                item.GetProperty("Path").GetString() == testPath)
+                .GetProperty("Content").GetString());
+        }
+        Assert.Contains(sourcePath, input);
+        Assert.Contains(testPath, input);
+        int schemaCharacters = DeveloperContractSchema.CreateSchema()
+            .GetRawText().Length;
+        int estimatedInputTokens = (fixture.Gateway.LastRequest.SystemInstructions.Length +
+            input.Length + schemaCharacters + 2) / 3;
+        var promptJson = new JsonSerializerOptions
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+        int escapedTargetCharacters = JsonSerializer.Serialize(source, promptJson).Length +
+            JsonSerializer.Serialize(tests, promptJson).Length;
+        int minimumOutputTokens = Math.Max(
+            2_048, (escapedTargetCharacters + 1_024 + 2) / 3);
+        Console.WriteLine(
+            $"KRX_008113 envelope input={estimatedInputTokens} minimumOutput={minimumOutputTokens} total={estimatedInputTokens + minimumOutputTokens + 512} headroom={16_384 - 512 - minimumOutputTokens - estimatedInputTokens}");
+        Assert.InRange(estimatedInputTokens, 1, 8_916);
+        Assert.True(minimumOutputTokens >= 6_956);
+        Assert.True(fixture.Gateway.LastRequest.Generation!.MaxOutputTokens >=
+            minimumOutputTokens);
+        Assert.True(16_384 - 512 - minimumOutputTokens - estimatedInputTokens > 0);
         const string evidenceMarker = "AUTHORIZED CORRECTION EVIDENCE:\n";
         int evidenceStart = input.IndexOf(evidenceMarker, StringComparison.Ordinal) +
             evidenceMarker.Length;
         int evidenceEnd = input.IndexOf(
             "\n\nFINAL OUTPUT REQUIREMENTS:", evidenceStart,
             StringComparison.Ordinal);
+        const string planMarker = "APPROVED PLANNER PLAN:\n";
+        int planStart = input.IndexOf(planMarker, StringComparison.Ordinal) +
+            planMarker.Length;
+        int planEnd = input.IndexOf("\n\nAUTHORIZED TARGET FILES:", planStart,
+            StringComparison.Ordinal);
+        Console.WriteLine(
+            $"KRX_008113 chars system={fixture.Gateway.LastRequest.SystemInstructions.Length} request={request.JobRequest.Length} planning={planEnd - planStart} targets={targetEnd - targetStart} evidence={evidenceEnd - evidenceStart} outputAndLabels={input.Length - request.JobRequest.Length - (planEnd - planStart) - (targetEnd - targetStart) - (evidenceEnd - evidenceStart)} schema={schemaCharacters}");
         Assert.InRange(evidenceEnd - evidenceStart, 1, 8_188);
+    }
+
+    [Fact]
+    public async Task Genuinely_impossible_build_correction_envelope_fails_closed()
+    {
+        DeveloperExecutionRequest request = BuildCorrectionRequest();
+        string content = new('x', 50_000);
+        File.WriteAllText(
+            Path.Combine(request.Repository.RepositoryPath, "src", "new.cs"),
+            content);
+        request = request with
+        {
+            BuildCorrection = request.BuildCorrection! with
+            {
+                OriginalProposal = request.BuildCorrection.OriginalProposal with
+                {
+                    Changes =
+                    [
+                        new ValidatedDeveloperChange(
+                            DeveloperChangeOperationType.ReplaceFile,
+                            "src/new.cs", "Change source.", content,
+                            new string('a', 64), 50_000)
+                    ]
+                }
+            }
+        };
+        Fixture fixture = CreateFixture();
+        fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
+            new PlannerPlan
+            {
+                Objective = "Implement safely.", FilesToInspect = ["src/new.cs"],
+                CandidateFilesToModify = ["src/new.cs"], Strategy = "Fix build.",
+                AcceptanceCriteria = ["Build succeeds."], Risks = [],
+                ExpectedTests = [], Assumptions = [], Uncertainties = []
+            });
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_CONTEXT_ENVELOPE_EXCEEDED", result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
     }
 
     [Fact]
@@ -1606,7 +1700,13 @@ public sealed class DeveloperExecutionServiceTests
                 {
                     ExpectedContentSha256 =
                         change.Operation == DeveloperChangeOperationType.ReplaceFile
-                            ? ReplaceHash
+                            ? File.Exists(Path.Combine(
+                                request.Repository.RepositoryPath,
+                                change.RelativePath))
+                                ? CurrentHash(File.ReadAllText(Path.Combine(
+                                    request.Repository.RepositoryPath,
+                                    change.RelativePath)))
+                                : ReplaceHash
                             : string.Empty
                 })
                 .ToArray();

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using Kronxy.Application.Execution;
@@ -42,6 +43,31 @@ public static class BuildCorrectionEvidenceCompactor
         IReadOnlyList<string> allowedPaths,
         IReadOnlyList<string> referencePaths,
         CancellationToken cancellationToken = default)
+        => await CreateCoreAsync(
+            correction, repository, maxCharacters, allowedPaths,
+            referencePaths, includeEffectiveSource: true,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<BuildCorrectionEvidenceResult> CreatePromptEvidenceAsync(
+        DeveloperBuildCorrectionContext correction,
+        RepositoryWorktreeHandle repository,
+        int maxCharacters,
+        IReadOnlyList<string> allowedPaths,
+        IReadOnlyList<string> referencePaths,
+        CancellationToken cancellationToken = default)
+        => await CreateCoreAsync(
+            correction, repository, maxCharacters, allowedPaths,
+            referencePaths, includeEffectiveSource: false,
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task<BuildCorrectionEvidenceResult> CreateCoreAsync(
+        DeveloperBuildCorrectionContext correction,
+        RepositoryWorktreeHandle repository,
+        int maxCharacters,
+        IReadOnlyList<string> allowedPaths,
+        IReadOnlyList<string> referencePaths,
+        bool includeEffectiveSource,
+        CancellationToken cancellationToken)
     {
         if (maxCharacters <= 0 || correction.OriginalProposal.Changes.Count == 0)
             return BuildCorrectionEvidenceResult.Failure("DEVELOPER_BUILD_CORRECTION_EVIDENCE_TOO_LARGE");
@@ -155,8 +181,10 @@ public static class BuildCorrectionEvidenceCompactor
             int included,
             bool includeRelated,
             bool includeReferences,
-            bool includeFullSource) => JsonSerializer.Serialize(new
+            bool includeFullSource)
         {
+            string serialized = JsonSerializer.Serialize(new
+            {
             PreviousProposalPaths = proposalPaths,
             PreviousNoOpCorrection = correction.PreviousNoOpPaths.Count == 0 ? null : new
             {
@@ -176,7 +204,9 @@ public static class BuildCorrectionEvidenceCompactor
                         correction.BuildStandardOutput))).ToLowerInvariant(),
                 BuildOutputCharacters = correction.BuildStandardOutput.Length
             },
-            EffectiveSource = includeFullSource ? fullSource : compactSource,
+            EffectiveSource = includeEffectiveSource
+                ? includeFullSource ? fullSource : compactSource
+                : [],
             Diagnostics = ordered.Take(included).Select(item => new
             {
                 item.Code, item.Path, item.Line, item.Column, item.Message, item.Count,
@@ -202,7 +232,11 @@ public static class BuildCorrectionEvidenceCompactor
             }) : [],
             OmittedRelatedDeclarations = includeRelated ? 0 : related.Length,
             OmittedUniqueDiagnostics = ordered.Length - included
-        });
+            });
+            return includeEffectiveSource
+                ? serialized
+                : CompactPromptEnvelope(serialized);
+        }
 
         int kept = -1;
         bool keptRelated = false;
@@ -264,6 +298,39 @@ public static class BuildCorrectionEvidenceCompactor
             content, ordered.Length, kept,
             ordered.Sum(item => item.Count) - ordered.Length,
             diagnosticCharacters, relatedCharacters);
+    }
+
+    private static string CompactPromptEnvelope(string serialized)
+    {
+        JsonObject root = JsonNode.Parse(serialized)!.AsObject();
+        root.Remove("PreviousProposalPaths");
+        root.Remove("EffectiveSource");
+        if (root["PreviousNoOpCorrection"] is null)
+            root.Remove("PreviousNoOpCorrection");
+        if (root["FailedBuild"] is JsonObject failedBuild)
+        {
+            failedBuild.Remove("JobId");
+            failedBuild.Remove("RunId");
+            failedBuild.Remove("BuildOutputSha256");
+            failedBuild.Remove("BuildOutputCharacters");
+        }
+        if (root["Diagnostics"] is JsonArray diagnostics)
+        {
+            foreach (JsonObject diagnostic in diagnostics.OfType<JsonObject>())
+            {
+                diagnostic.Remove("ExactDiagnostic");
+                if (diagnostic["RelatedSymbols"] is JsonArray symbols &&
+                    symbols.Count == 0)
+                {
+                    diagnostic.Remove("RelatedSymbols");
+                }
+            }
+        }
+        if (root["OmittedRelatedDeclarations"]?.GetValue<int>() == 0)
+            root.Remove("OmittedRelatedDeclarations");
+        if (root["RelatedDeclarations"] is JsonArray related && related.Count == 0)
+            root.Remove("RelatedDeclarations");
+        return root.ToJsonString();
     }
 
     private static string[] ExtractActionableLines(string output)
