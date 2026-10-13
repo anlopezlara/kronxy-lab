@@ -186,16 +186,11 @@ public sealed class DeveloperExecutionService :
             }
 
             string planJson = JsonSerializer.Serialize(plan);
-            TargetContextResult targetContext = BuildTargetContext(
-                contextArtifact.Content,
-                plan.CandidateFilesToModify);
-            if (request.BuildCorrection is not null)
-            {
-                targetContext = await BuildGovernedTargetContextAsync(
-                    request.Repository,
-                    plan.CandidateFilesToModify,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            TargetContextResult targetContext = request.BuildCorrection is null
+                ? BuildTargetContext(
+                    contextArtifact.Content,
+                    plan.CandidateFilesToModify)
+                : TargetContextResult.Success([]);
             if (!targetContext.IsSuccess)
             {
                 return Failure(
@@ -203,17 +198,10 @@ public sealed class DeveloperExecutionService :
                     targetContext.ErrorCode);
             }
 
-            string targetContextJson = request.BuildCorrection is null
-                ? JsonSerializer.Serialize(targetContext.Targets, PromptJsonOptions)
-                : JsonSerializer.Serialize(
-                    targetContext.Targets.Select(target => new
-                    {
-                        Path = target.RelativePath,
-                        Content = target.CurrentContent
-                    }),
-                    PromptJsonOptions);
             string feedbackJson =
                 JsonSerializer.Serialize(request.ReviewerFeedback);
+            IReadOnlyList<string> authorizedDeveloperPaths =
+                plan.CandidateFilesToModify;
 
             string correctionJson;
             if (request.HumanReviewCorrection is not null)
@@ -235,14 +223,47 @@ public sealed class DeveloperExecutionService :
                     return Failure(
                         DeveloperExecutionFailureKind.ContextTooLarge,
                         compacted.ErrorCode);
+                string[] unauthorizedDiagnosticPaths = compacted.DiagnosticPaths
+                    .Where(path => !plan.CandidateFilesToModify.Contains(
+                        path, StringComparer.OrdinalIgnoreCase))
+                    .ToArray();
+                if (unauthorizedDiagnosticPaths.Length > 0)
+                {
+                    return Failure(
+                        DeveloperExecutionFailureKind.PolicyRejected,
+                        "DEVELOPER_BUILD_DIAGNOSTIC_PATH_NOT_AUTHORIZED");
+                }
+
+                authorizedDeveloperPaths = plan.CandidateFilesToModify
+                    .Where(path => compacted.DiagnosticPaths.Contains(
+                        path, StringComparer.OrdinalIgnoreCase))
+                    .ToArray();
+                if (authorizedDeveloperPaths.Count == 0)
+                {
+                    return Failure(
+                        DeveloperExecutionFailureKind.PolicyRejected,
+                        "DEVELOPER_BUILD_CORRECTION_TARGET_NOT_FOUND");
+                }
+
+                targetContext = await BuildGovernedTargetContextAsync(
+                    request.Repository,
+                    authorizedDeveloperPaths,
+                    cancellationToken).ConfigureAwait(false);
+                if (!targetContext.IsSuccess)
+                {
+                    return Failure(
+                        DeveloperExecutionFailureKind.ContextArtifactReadFailure,
+                        targetContext.ErrorCode);
+                }
                 correctionJson = compacted.Content;
                 logger?.LogInformation(
-                    "Build correction evidence: diagnostics={DiagnosticsCharacters} chars, relatedDeclarations={RelatedDeclarationsCharacters} chars, envelope={EnvelopeCharacters} chars, feedbackLimit={FeedbackLimit}, unique={UniqueCount}, included={IncludedCount}, duplicates={DuplicateCount}.",
+                    "Build correction evidence: diagnostics={DiagnosticsCharacters} chars, relatedDeclarations={RelatedDeclarationsCharacters} chars, envelope={EnvelopeCharacters} chars, feedbackLimit={FeedbackLimit}, unique={UniqueCount}, included={IncludedCount}, duplicates={DuplicateCount}, selectedTargets={SelectedTargetCount}.",
                     compacted.DiagnosticsCharacters,
                     compacted.RelatedDeclarationsCharacters,
                     compacted.Content.Length,
                     aiOptions.DeveloperFeedbackCharacters, compacted.UniqueCount,
-                    compacted.IncludedCount, compacted.DuplicateCount);
+                    compacted.IncludedCount, compacted.DuplicateCount,
+                    authorizedDeveloperPaths.Count);
                 if (compacted.IncludedCount < compacted.UniqueCount)
                     logger?.LogWarning(
                         "Build correction diagnostics reduced from {UniqueCount} to {IncludedCount} unique items.",
@@ -252,6 +273,16 @@ public sealed class DeveloperExecutionService :
             {
                 correctionJson = "null";
             }
+
+            string targetContextJson = request.BuildCorrection is null
+                ? JsonSerializer.Serialize(targetContext.Targets, PromptJsonOptions)
+                : JsonSerializer.Serialize(
+                    targetContext.Targets.Select(target => new
+                    {
+                        Path = target.RelativePath,
+                        Content = target.CurrentContent
+                    }),
+                    PromptJsonOptions);
 
             if ((long)feedbackJson.Length + correctionJson.Length >
                 aiOptions.DeveloperFeedbackCharacters)
@@ -316,7 +347,7 @@ public sealed class DeveloperExecutionService :
                 "Use only these candidate paths:\n- " +
                 string.Join(
                     "\n- ",
-                    plan.CandidateFilesToModify) +
+                    authorizedDeveloperPaths) +
                 "\nGenerate only the smallest complete source required by the request.\n";
 
             JsonElement developerSchema =
@@ -551,7 +582,7 @@ public sealed class DeveloperExecutionService :
                         JobId = request.JobId,
                         Repository = request.Repository,
                         Proposal = proposal,
-                        AllowedPaths = plan.CandidateFilesToModify
+                        AllowedPaths = authorizedDeveloperPaths
                     },
                     cancellationToken).ConfigureAwait(false);
 
@@ -601,7 +632,7 @@ public sealed class DeveloperExecutionService :
 
             if (validated.Proposal.Changes.Any(
                     change =>
-                        !plan.CandidateFilesToModify.Contains(
+                        !authorizedDeveloperPaths.Contains(
                             change.RelativePath,
                             StringComparer.OrdinalIgnoreCase)))
             {

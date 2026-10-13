@@ -297,7 +297,9 @@ public static class BuildCorrectionEvidenceCompactor
         return BuildCorrectionEvidenceResult.Success(
             content, ordered.Length, kept,
             ordered.Sum(item => item.Count) - ordered.Length,
-            diagnosticCharacters, relatedCharacters);
+            diagnosticCharacters, relatedCharacters,
+            ordered.Select(item => item.Path)
+                .Distinct(PathComparer).ToArray());
     }
 
     private static string CompactPromptEnvelope(string serialized)
@@ -521,16 +523,18 @@ public static class BuildCorrectionEvidenceCompactor
 
 public sealed record BuildCorrectionEvidenceResult(
     string Content, string ErrorCode, int UniqueCount, int IncludedCount,
-    int DuplicateCount, int DiagnosticsCharacters, int RelatedDeclarationsCharacters)
+    int DuplicateCount, int DiagnosticsCharacters, int RelatedDeclarationsCharacters,
+    IReadOnlyList<string> DiagnosticPaths)
 {
     public bool IsSuccess => string.IsNullOrEmpty(ErrorCode);
 
     public static BuildCorrectionEvidenceResult Success(
         string content, int uniqueCount, int includedCount, int duplicateCount,
-        int diagnosticsCharacters, int relatedDeclarationsCharacters) =>
+        int diagnosticsCharacters, int relatedDeclarationsCharacters,
+        IReadOnlyList<string> diagnosticPaths) =>
         new(content, string.Empty, uniqueCount, includedCount, duplicateCount,
-            diagnosticsCharacters, relatedDeclarationsCharacters);
+            diagnosticsCharacters, relatedDeclarationsCharacters, diagnosticPaths);
 
     public static BuildCorrectionEvidenceResult Failure(string errorCode) =>
-        new(string.Empty, errorCode, 0, 0, 0, 0, 0);
+        new(string.Empty, errorCode, 0, 0, 0, 0, 0, []);
 }

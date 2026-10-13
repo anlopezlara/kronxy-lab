@@ -917,16 +917,13 @@ public sealed class DeveloperExecutionServiceTests
         {
             JsonElement[] targets = targetsDocument.RootElement
                 .EnumerateArray().ToArray();
-            Assert.Equal(2, targets.Length);
+            Assert.Single(targets);
             Assert.Equal(source, targets.Single(item =>
                 item.GetProperty("Path").GetString() == sourcePath)
                 .GetProperty("Content").GetString());
-            Assert.Equal(tests, targets.Single(item =>
-                item.GetProperty("Path").GetString() == testPath)
-                .GetProperty("Content").GetString());
         }
         Assert.Contains(sourcePath, input);
-        Assert.Contains(testPath, input);
+        Assert.DoesNotContain(testPath, input);
         int schemaCharacters = DeveloperContractSchema.CreateSchema()
             .GetRawText().Length;
         int estimatedInputTokens = (fixture.Gateway.LastRequest.SystemInstructions.Length +
@@ -935,8 +932,7 @@ public sealed class DeveloperExecutionServiceTests
         {
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
-        int escapedTargetCharacters = JsonSerializer.Serialize(source, promptJson).Length +
-            JsonSerializer.Serialize(tests, promptJson).Length;
+        int escapedTargetCharacters = JsonSerializer.Serialize(source, promptJson).Length;
         int minimumOutputTokens = Math.Max(
             2_048, (escapedTargetCharacters + 1_024 + 2) / 3);
         Console.WriteLine(
@@ -1000,6 +996,128 @@ public sealed class DeveloperExecutionServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal("DEVELOPER_CONTEXT_ENVELOPE_EXCEEDED", result.ErrorCode);
         Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    [Fact]
+    public async Task Build_correction_selects_all_and_only_diagnostic_authorized_targets()
+    {
+        const string firstPath = "src/new.cs";
+        const string secondPath = "src/second.cs";
+        DeveloperExecutionRequest request = BuildCorrectionRequest();
+        string root = request.Repository.RepositoryPath;
+        const string firstContent = "class NewType {}";
+        const string secondContent = "class SecondType {}";
+        File.WriteAllText(Path.Combine(root, secondPath), secondContent);
+        request = request with
+        {
+            BuildCorrection = request.BuildCorrection! with
+            {
+                OriginalProposal = request.BuildCorrection.OriginalProposal with
+                {
+                    Changes =
+                    [
+                        new ValidatedDeveloperChange(
+                            DeveloperChangeOperationType.CreateFile, firstPath,
+                            "Create first.", firstContent, string.Empty,
+                            firstContent.Length),
+                        new ValidatedDeveloperChange(
+                            DeveloperChangeOperationType.CreateFile, secondPath,
+                            "Create second.", secondContent, string.Empty,
+                            secondContent.Length)
+                    ]
+                },
+                BuildStandardOutput =
+                    $"{firstPath}(1,1): error CS0103: Missing first\n" +
+                    $"{secondPath}(1,1): error CS0103: Missing second"
+            }
+        };
+        Fixture fixture = CreateFixture();
+        fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
+            new PlannerPlan
+            {
+                Objective = "Implement safely.", FilesToInspect = [firstPath],
+                CandidateFilesToModify = [firstPath, secondPath],
+                Strategy = "Fix diagnostics.",
+                AcceptanceCriteria = ["Build succeeds."], Risks = [],
+                ExpectedTests = [], Assumptions = [], Uncertainties = []
+            });
+        fixture.Gateway.Response = SuccessResponse(
+            $$"""
+            {"summary":"Fix first target.","changes":[{"operation":"ReplaceFile","relativePath":"{{firstPath}}","intent":"Fix first error.","content":"class NewType { int Value; }","expectedContentSha256":""}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        string input = fixture.Gateway.LastRequest!.UserContent;
+        Assert.Contains($"\"Path\":\"{firstPath}\"", input);
+        Assert.Contains($"\"Path\":\"{secondPath}\"", input);
+        Assert.Contains($"- {firstPath}", input);
+        Assert.Contains($"- {secondPath}", input);
+    }
+
+    [Fact]
+    public async Task Build_correction_rejects_unauthorized_diagnostic_path()
+    {
+        DeveloperExecutionRequest request = BuildCorrectionRequest();
+        request = request with
+        {
+            BuildCorrection = request.BuildCorrection! with
+            {
+                BuildStandardOutput =
+                    "src/unauthorized.cs(1,1): error CS0103: Missing symbol"
+            }
+        };
+        Fixture fixture = CreateFixture();
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_BUILD_DIAGNOSTIC_PATH_NOT_AUTHORIZED",
+            result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    [Fact]
+    public async Task Build_correction_rejects_unsafe_diagnostic_path()
+    {
+        DeveloperExecutionRequest request = BuildCorrectionRequest();
+        request = request with
+        {
+            BuildCorrection = request.BuildCorrection! with
+            {
+                BuildStandardOutput =
+                    "../outside.cs(1,1): error CS0103: Missing symbol"
+            }
+        };
+        Fixture fixture = CreateFixture();
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("DEVELOPER_BUILD_DIAGNOSTIC_UNREPRESENTABLE",
+            result.ErrorCode);
+        Assert.Equal(0, fixture.Gateway.CallCount);
+    }
+
+    [Fact]
+    public async Task Originally_created_file_is_replaceable_when_later_diagnostic_associates_it()
+    {
+        Fixture fixture = CreateFixture();
+        fixture.Gateway.Response = SuccessResponse(
+            """
+            {"summary":"Fix created file.","changes":[{"operation":"ReplaceFile","relativePath":"src/new.cs","intent":"Fix compiler error.","content":"class NewType { int Value; }","expectedContentSha256":""}],"assumptions":[],"risks":[]}
+            """);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(
+            BuildCorrectionRequest());
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        ValidatedDeveloperChange change = Assert.Single(result.Proposal!.Changes);
+        Assert.Equal(DeveloperChangeOperationType.ReplaceFile, change.Operation);
+        Assert.Equal("src/new.cs", change.RelativePath);
+        Assert.Contains("\"Path\":\"src/new.cs\"",
+            fixture.Gateway.LastRequest!.UserContent);
     }
 
     [Fact]
