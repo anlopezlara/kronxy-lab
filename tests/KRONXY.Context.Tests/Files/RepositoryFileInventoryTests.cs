@@ -58,6 +58,27 @@ public sealed class RepositoryFileInventoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Current_repository_inventory_shape_fits_supported_limit()
+    {
+        GitIndexEntry[] entries = Enumerable.Range(0, 568)
+            .Select(index => Entry($"src/File{index:D3}.cs"))
+            .ToArray();
+        var git = new InventoryGitClient(root, entries, []);
+
+        var result = await Inventory(git, new MetadataOnlyFileSystem(1))
+            .CreateAsync(
+                root,
+                Limits(
+                    maxCandidates: 750,
+                    maxAccepted: new ContextOptions().MaxFilesPerPackage,
+                    maxTotal: 568),
+                OutputDirectory);
+
+        Assert.True(result.IsComplete);
+        Assert.Equal(568, result.Accepted.Count);
+    }
+
+    [Fact]
     public async Task CaseCollisionFollowsPlatformRules()
     {
         var git = new InventoryGitClient(root, [Entry("File.cs"), Entry("file.cs")], []);

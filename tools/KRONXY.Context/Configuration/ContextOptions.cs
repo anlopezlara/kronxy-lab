@@ -8,7 +8,7 @@ public sealed record ContextOptions
     public int TargetHandoffPackageBytes { get; init; } = 1_572_864;
     public int MaxHandoffPackageBytes { get; init; } = 3_145_728;
     public int MaxBaselinePackageBytes { get; init; } = 5_242_880;
-    public int MaxFilesPerPackage { get; init; } = 100;
+    public int MaxFilesPerPackage { get; init; } = 750;
     public int MaxRepositoryCandidates { get; init; } = 10_000;
     public int MaxLogicalPathLength { get; init; } = 1_024;
     public int RelationshipDepth { get; init; } = 1;
