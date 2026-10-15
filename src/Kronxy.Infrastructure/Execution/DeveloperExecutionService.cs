@@ -276,6 +276,17 @@ public sealed class DeveloperExecutionService :
                 correctionJson = "null";
             }
 
+            if (request.BuildCorrection is null &&
+                request.HumanReviewCorrection is null &&
+                targetContext.Targets.Count > 1)
+            {
+                return await ExecuteInitialTargetsAsync(
+                    request,
+                    plan,
+                    targetContext.Targets,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             string targetContextJson = request.BuildCorrection is null
                 ? JsonSerializer.Serialize(targetContext.Targets, PromptJsonOptions)
                 : JsonSerializer.Serialize(
@@ -748,6 +759,264 @@ public sealed class DeveloperExecutionService :
                 "DEVELOPER_INTERNAL_FAILURE");
         }
     }
+
+    private async Task<DeveloperExecutionResult> ExecuteInitialTargetsAsync(
+        DeveloperExecutionRequest request,
+        PlannerPlan plan,
+        IReadOnlyList<DeveloperTargetContext> targets,
+        CancellationToken cancellationToken)
+    {
+        DeveloperTargetContext[] orderedTargets = targets
+            .OrderBy(target => IsTestPath(target.RelativePath) ? 1 : 0)
+            .ThenBy(target => target.RelativePath, StringComparer.Ordinal)
+            .ToArray();
+        var completed = new List<DeveloperProposal>();
+        var responses = new List<object>();
+        string planJson = JsonSerializer.Serialize(plan);
+        JsonElement schema = DeveloperContractSchema.CreateSchema();
+        int schemaCharacters = schema.GetRawText().Length;
+
+        for (int index = 0; index < orderedTargets.Length; index++)
+        {
+            DeveloperTargetContext target = orderedTargets[index];
+            IReadOnlyList<DeveloperTargetContext> invocationTargets = [target];
+            string targetJson = JsonSerializer.Serialize(
+                invocationTargets,
+                PromptJsonOptions);
+            string priorEffects = completed.Count == 0
+                ? string.Empty
+                : "\n\nGOVERNED PRIOR TARGET EFFECTS:\n" +
+                  JsonSerializer.Serialize(
+                      completed.SelectMany(item => item.Changes).Select(change => new
+                      {
+                          change.RelativePath,
+                          change.Operation,
+                          change.Intent,
+                          Content = change.Content.Length <= 4_096
+                              ? change.Content
+                              : change.Content[..4_096]
+                      }),
+                      PromptJsonOptions);
+            string prefix =
+                "JOB REQUEST:\n" + request.JobRequest + "\n\n" +
+                "APPROVED PLANNER PLAN:\n" + planJson +
+                "\n\nAUTHORIZED TARGET FILES:\n" + targetJson +
+                priorEffects;
+            string outputRequirements =
+                "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
+                "Return only compact JSON matching the schema. " +
+                "Emit exactly one change for this target and no other path:\n- " +
+                target.RelativePath +
+                "\nGenerate only the smallest complete source required by the request.\n";
+            int minimumOutputTokens =
+                EstimateMinimumOutputTokens(invocationTargets);
+            int fixedCharacters = SystemInstructions.Length + prefix.Length +
+                outputRequirements.Length + schemaCharacters;
+            int availableInputTokens = aiCapability.ContextWindowTokens -
+                aiCapability.SafetyMarginTokens - minimumOutputTokens;
+            int remainingCharacters = Math.Min(
+                aiOptions.DeveloperContextCharacters,
+                aiOptions.MaxInputCharacters - fixedCharacters);
+            remainingCharacters = Math.Min(
+                remainingCharacters,
+                checked(availableInputTokens * ConservativeCharactersPerToken) -
+                    fixedCharacters);
+            if (remainingCharacters <= 0)
+            {
+                LogEnvelopeFailure(
+                    DivideRoundUp(fixedCharacters, ConservativeCharactersPerToken),
+                    minimumOutputTokens,
+                    invocationTargets);
+                return EnvelopeFailure();
+            }
+
+            ContextAiInputResult context =
+                ContextAiInputResult.Success(string.Empty);
+            if (!context.IsSuccess)
+                return Failure(MapContextFailure(context.FailureKind), context.ErrorCode);
+
+            string userContent = prefix + context.Content + outputRequirements;
+            int inputTokens = DivideRoundUp(
+                SystemInstructions.Length + userContent.Length + schemaCharacters,
+                ConservativeCharactersPerToken);
+            int effectiveOutputTokens = Math.Min(
+                aiCapability.MaxOutputTokens,
+                aiCapability.ContextWindowTokens -
+                    aiCapability.SafetyMarginTokens - inputTokens);
+            if ((long)SystemInstructions.Length + userContent.Length >
+                    aiOptions.MaxInputCharacters ||
+                effectiveOutputTokens < minimumOutputTokens)
+            {
+                LogEnvelopeFailure(inputTokens, minimumOutputTokens, invocationTargets);
+                return EnvelopeFailure();
+            }
+
+            logger?.LogInformation(
+                "Developer target envelope: Sequence={Sequence} TargetPath={TargetPath} TargetBytes={TargetBytes} EstimatedInputTokens={EstimatedInputTokens} MinimumRequiredOutputTokens={MinimumRequiredOutputTokens} EffectiveOutputTokens={EffectiveOutputTokens} TotalEnvelope={TotalEnvelope} Headroom={Headroom}.",
+                index + 1, target.RelativePath, TargetBytes(invocationTargets),
+                inputTokens, minimumOutputTokens, effectiveOutputTokens,
+                inputTokens + minimumOutputTokens + aiCapability.SafetyMarginTokens,
+                aiCapability.ContextWindowTokens - inputTokens -
+                    minimumOutputTokens - aiCapability.SafetyMarginTokens);
+
+            AiResponse response = await aiGateway.GenerateAsync(
+                new AiRequest
+                {
+                    Model = aiCapability.LogicalModel,
+                    SystemInstructions = SystemInstructions,
+                    UserContent = userContent,
+                    CorrelationId = $"{request.CorrelationId}:target:{index + 1}",
+                    InferenceTimeout = aiCapability.InferenceTimeout,
+                    Generation = new AiGenerationOptions
+                    {
+                        MaxOutputTokens = effectiveOutputTokens,
+                        ContextWindowTokens = aiCapability.ContextWindowTokens,
+                        Temperature = 0
+                    },
+                    StructuredOutput = new AiStructuredOutput { Schema = schema }
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccess)
+            {
+                await WriteAsync(
+                    request,
+                    ArtifactType.DeveloperRejectedResponse,
+                    JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        FailedSequence = index + 1,
+                        TargetPath = target.RelativePath,
+                        Completed = responses,
+                        Response = response
+                    }),
+                    cancellationToken).ConfigureAwait(false);
+                return Failure(
+                    MapAiFailure(response.Status),
+                    string.IsNullOrWhiteSpace(response.ErrorCode)
+                        ? "DEVELOPER_AI_FAILED"
+                        : response.ErrorCode);
+            }
+
+            DeveloperProposal? proposal;
+            try
+            {
+                proposal = JsonSerializer.Deserialize<DeveloperProposal>(response.Content);
+            }
+            catch (JsonException)
+            {
+                return Failure(
+                    DeveloperExecutionFailureKind.AiInvalidResponse,
+                    "DEVELOPER_PROPOSAL_DESERIALIZATION_FAILED");
+            }
+            if (!IsStructurallyValid(proposal))
+                return Failure(
+                    DeveloperExecutionFailureKind.AiInvalidResponse,
+                    "DEVELOPER_PROPOSAL_INVALID");
+
+            string? operationError = ValidateTargetOperations(
+                proposal,
+                invocationTargets,
+                validateBoundMetadata: false,
+                validateOperationType: true,
+                invalidPathError: "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT");
+            if (operationError is not null)
+                return await PolicyFailureAsync(
+                    request, response, operationError, cancellationToken)
+                    .ConfigureAwait(false);
+
+            DeveloperProposalMetadataBindingResult binding =
+                await metadataBinder.BindAsync(
+                    new DeveloperProposalMetadataBindingRequest
+                    {
+                        JobId = request.JobId,
+                        Repository = request.Repository,
+                        Proposal = proposal,
+                        AllowedPaths = plan.CandidateFilesToModify
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            if (!binding.IsSuccess || binding.Proposal is null)
+                return await PolicyFailureAsync(
+                    request,
+                    response,
+                    string.IsNullOrWhiteSpace(binding.ErrorCode)
+                        ? "DEVELOPER_METADATA_BINDING_FAILED"
+                        : binding.ErrorCode,
+                    cancellationToken).ConfigureAwait(false);
+
+            operationError = ValidateTargetOperations(
+                binding.Proposal,
+                invocationTargets,
+                validateBoundMetadata: true,
+                validateOperationType: true,
+                invalidPathError: "DEVELOPER_PATH_NOT_IN_TARGET_CONTEXT");
+            if (operationError is not null)
+                return await PolicyFailureAsync(
+                    request, response, operationError, cancellationToken)
+                    .ConfigureAwait(false);
+
+            completed.Add(binding.Proposal);
+            responses.Add(new
+            {
+                Sequence = index + 1,
+                TargetPath = target.RelativePath,
+                Response = response,
+                EffectiveOperation = binding.Proposal.Changes.Single()
+            });
+        }
+
+        DeveloperProposal combined = new()
+        {
+            Summary = "Implement authorized targets.",
+            Changes = completed.SelectMany(item => item.Changes).ToArray(),
+            Assumptions = completed.SelectMany(item => item.Assumptions).ToArray(),
+            Risks = completed.SelectMany(item => item.Risks).ToArray()
+        };
+        DeveloperProposalPolicyResult validated = proposalPolicy.Validate(combined);
+        if (!validated.IsSuccess || validated.Proposal is null)
+            return Failure(
+                DeveloperExecutionFailureKind.PolicyRejected,
+                string.IsNullOrWhiteSpace(validated.ErrorCode)
+                    ? "DEVELOPER_PROPOSAL_POLICY_REJECTED"
+                    : validated.ErrorCode);
+
+        ArtifactWriteResult proposalWritten = await WriteAsync(
+            request,
+            ArtifactType.DeveloperProposal,
+            JsonSerializer.SerializeToUtf8Bytes(combined),
+            cancellationToken).ConfigureAwait(false);
+        ArtifactWriteResult responseWritten = await WriteAsync(
+            request,
+            ArtifactType.DeveloperResponse,
+            JsonSerializer.SerializeToUtf8Bytes(responses),
+            cancellationToken).ConfigureAwait(false);
+        if (!proposalWritten.IsSuccess || proposalWritten.Artifact is null ||
+            !responseWritten.IsSuccess || responseWritten.Artifact is null)
+            return Failure(
+                DeveloperExecutionFailureKind.ArtifactWriteFailure,
+                "DEVELOPER_MULTI_TARGET_ARTIFACT_WRITE_FAILED");
+
+        return DeveloperExecutionResult.Success(
+            new DeveloperExecutionReport
+            {
+                JobId = request.JobId,
+                RunId = request.RunId,
+                LogicalModel = aiCapability.LogicalModel.ToString(),
+                Provider = "Multiple",
+                PhysicalModel = "ConfigurationResolved",
+                Duration = TimeSpan.Zero,
+                TerminationReason = AiTerminationReason.Stop.ToString(),
+                PromptTokens = null,
+                CompletionTokens = null
+            },
+            responseWritten.Artifact,
+            proposalWritten.Artifact,
+            validated.Proposal);
+    }
+
+    private static bool IsTestPath(string path) =>
+        path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains(".Tests/", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase);
 
     private int EstimateMinimumOutputTokens(
         IReadOnlyList<DeveloperTargetContext> targets)

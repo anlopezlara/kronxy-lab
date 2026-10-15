@@ -245,15 +245,20 @@ public sealed class DeveloperExecutionServiceTests
                 Uncertainties = []
             });
         fixture.Reader.ContextContent = ContextPackage((sourcePath, current));
-        fixture.Gateway.Response = SuccessResponse(
+        fixture.Gateway.Responses.Enqueue(SuccessResponse(
             $$"""
             {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{sourcePath}}","intent":"Add copy controls.","content":"updated","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
-            """);
+            """));
+        fixture.Gateway.Responses.Enqueue(SuccessResponse(
+            $$"""
+            {"summary":"Create focused tests.","changes":[{"operation":"CreateFile","relativePath":"{{testPath}}","intent":"Test copy controls.","content":"public sealed class JobDetailTests {}\n","expectedContentSha256":""}],"assumptions":[],"risks":[]}
+            """));
 
         DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
 
         Assert.True(result.IsSuccess);
-        AiRequest sent = fixture.Gateway.LastRequest!;
+        Assert.Equal(2, fixture.Gateway.CallCount);
+        AiRequest sent = fixture.Gateway.Requests[0];
         int estimatedInputTokens = (
             sent.SystemInstructions.Length + sent.UserContent.Length +
             sent.StructuredOutput!.Schema.GetRawText().Length + 2) / 3;
@@ -285,10 +290,16 @@ public sealed class DeveloperExecutionServiceTests
             StringComparison.Ordinal);
         using JsonDocument targets = JsonDocument.Parse(
             sent.UserContent[targetStart..targetEnd]);
-        Assert.Equal(2, targets.RootElement.GetArrayLength());
+        Assert.Single(targets.RootElement.EnumerateArray());
         Assert.Equal(current,
             targets.RootElement[0].GetProperty("CurrentContent").GetString());
         Assert.Contains(testPath, sent.UserContent);
+        AiRequest second = fixture.Gateway.Requests[1];
+        Assert.Contains(testPath, second.UserContent);
+        Assert.DoesNotContain(current, second.UserContent);
+        Assert.Contains("GOVERNED PRIOR TARGET EFFECTS", second.UserContent);
+        Assert.Contains("updated", second.UserContent);
+        Assert.Equal(2, result.Proposal!.Changes.Count);
     }
 
     [Fact]
@@ -316,10 +327,14 @@ public sealed class DeveloperExecutionServiceTests
                 Uncertainties = []
             });
         fixture.Reader.ContextContent = ContextPackage((sourcePath, current));
-        fixture.Gateway.Response = SuccessResponse(
+        fixture.Gateway.Responses.Enqueue(SuccessResponse(
             $$"""
-            {"summary":"Add copy controls.","changes":[{"operation":"ReplaceFile","relativePath":"{{sourcePath}}","intent":"Add copy controls.","content":"<p>updated</p>\n","expectedContentSha256":"new_sha256_here"},{"operation":"CreateFile","relativePath":"{{testPath}}","intent":"Add focused tests.","content":"public sealed class JobDetailTests {}\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
-            """);
+            {"summary":"Add copy controls.","changes":[{"operation":"ReplaceFile","relativePath":"{{sourcePath}}","intent":"Add copy controls.","content":"<p>updated</p>\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """));
+        fixture.Gateway.Responses.Enqueue(SuccessResponse(
+            $$"""
+            {"summary":"Add focused tests.","changes":[{"operation":"CreateFile","relativePath":"{{testPath}}","intent":"Add focused tests.","content":"public sealed class JobDetailTests {}\n","expectedContentSha256":"new_sha256_here"}],"assumptions":[],"risks":[]}
+            """));
 
         DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
 
@@ -336,6 +351,55 @@ public sealed class DeveloperExecutionServiceTests
                 Assert.Equal(testPath, change.RelativePath);
                 Assert.Empty(change.ExpectedContentSha256);
             });
+    }
+
+    [Fact]
+    public async Task Second_target_failure_fails_stage_after_preserving_provenance()
+    {
+        const string sourcePath = "src/app.cs";
+        const string testPath = "tests/appTests.cs";
+        const string current = "class App {}\n";
+        string hash = CurrentHash(current);
+        Fixture fixture = CreateFixture();
+        fixture.MetadataBinder.ReplaceHash = hash;
+        fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
+            new PlannerPlan
+            {
+                Objective = "Implement safely.",
+                FilesToInspect = [sourcePath],
+                CandidateFilesToModify = [testPath, sourcePath],
+                Strategy = "Change source then tests.",
+                AcceptanceCriteria = ["Works."],
+                Risks = [], ExpectedTests = [], Assumptions = [], Uncertainties = []
+            });
+        fixture.Reader.ContextContent = ContextPackage((sourcePath, current));
+        fixture.Gateway.Responses.Enqueue(SuccessResponse(
+            $$"""
+            {"summary":"Update app.","changes":[{"operation":"ReplaceFile","relativePath":"src/app.cs","intent":"Add behavior.","content":"class App { public int Value => 1; }\n","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
+            """));
+        fixture.Gateway.Responses.Enqueue(new AiResponse
+        {
+            Status = AiOperationStatus.TimedOut,
+            Provider = "Fake",
+            LogicalModel = "CodingQuality",
+            PhysicalModel = "quality",
+            ErrorCode = "AI_INFERENCE_TIMEOUT",
+            TerminationReason = AiTerminationReason.Error
+        });
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("AI_INFERENCE_TIMEOUT", result.ErrorCode);
+        Assert.Equal(2, fixture.Gateway.CallCount);
+        Assert.Contains(sourcePath, fixture.Gateway.Requests[0].UserContent);
+        Assert.Contains(testPath, fixture.Gateway.Requests[1].UserContent);
+        ArtifactWriteRequest rejected = Assert.Single(fixture.Store.Requests);
+        string evidence = Encoding.UTF8.GetString(rejected.Content.Span);
+        Assert.Contains("Completed", evidence);
+        Assert.Contains(sourcePath, evidence);
+        Assert.DoesNotContain(fixture.Store.Requests,
+            item => item.ArtifactType == ArtifactType.DeveloperProposal);
     }
 
     [Fact]
@@ -1896,6 +1960,8 @@ public sealed class DeveloperExecutionServiceTests
     {
         public int CallCount { get; private set; }
         public AiRequest? LastRequest { get; private set; }
+        public List<AiRequest> Requests { get; } = [];
+        public Queue<AiResponse> Responses { get; } = new();
         public AiResponse Response { get; set; } = SuccessResponse(
             """
             {
@@ -1918,7 +1984,9 @@ public sealed class DeveloperExecutionServiceTests
         {
             CallCount++;
             LastRequest = request;
-            return Task.FromResult(Response);
+            Requests.Add(request);
+            return Task.FromResult(
+                Responses.Count > 0 ? Responses.Dequeue() : Response);
         }
 
         public Task<AiProviderHealthResult> CheckHealthAsync(

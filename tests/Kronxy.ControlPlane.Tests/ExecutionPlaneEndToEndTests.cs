@@ -1026,10 +1026,12 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 capability.InferenceTimeout);
             Assert.True(capability.InferenceTimeout > TimeSpan.FromMinutes(3));
             Assert.Equal(19_181, new FileInfo(Path.Combine(root, SourcePath)).Length);
-            AssertEnvelope(8_847, 6_956, expectedHeadroom: 69);
             Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
                 "Two_target_19181_byte_pilot_has_deterministic_headroom"));
+            Assert.True(HasTest(
+                typeof(DeveloperExecutionServiceTests),
+                "Second_target_failure_fails_stage_after_preserving_provenance"));
             Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
                 "Genuinely_impossible_build_correction_envelope_fails_closed"));
@@ -1139,12 +1141,8 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 "Pending_promotion_completes_after_promoted_evidence_is_validated"));
         });
 
-        output.WriteLine("INITIAL_TARGET_COUNT=2");
-        output.WriteLine("INITIAL_TARGET_BYTES=19181");
-        output.WriteLine("INITIAL_INPUT_TOKENS=8847");
-        output.WriteLine("INITIAL_MIN_OUTPUT_TOKENS=6956");
-        output.WriteLine("INITIAL_TOTAL_ENVELOPE=16315");
-        output.WriteLine("INITIAL_HEADROOM=69");
+        output.WriteLine("INITIAL_TARGET_INVOCATIONS=2");
+        output.WriteLine("INITIAL_ENVELOPE_MODE=PER_TARGET");
         output.WriteLine("CORRECTION_TARGET_COUNT=1");
         output.WriteLine("CORRECTION_TARGET_BYTES=19181");
         output.WriteLine("CORRECTION_INPUT_TOKENS=7823");
