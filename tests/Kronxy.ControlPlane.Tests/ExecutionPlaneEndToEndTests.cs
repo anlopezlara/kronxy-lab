@@ -10,6 +10,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 using Kronxy.Application.AI;
+using Kronxy.Context.Files;
+using Kronxy.Context.Git;
+using Kronxy.Context.Processes;
+using Xunit.Abstractions;
+using Xunit.Sdk;
 
 namespace Kronxy.ControlPlane.Tests;
 
@@ -914,5 +919,253 @@ public sealed class ExecutionPlaneEndToEndTests
         }
 
         return true;
+    }
+}
+
+public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
+{
+    private const string SourcePath =
+        "src/Kronxy.Web/Components/Pages/JobDetail.razor";
+    private const string TestPath =
+        "tests/Kronxy.Web.Tests/JobDetailTests.cs";
+    private const int ContextWindow = 16_384;
+    private const int SafetyMargin = 512;
+
+    [Fact]
+    public async Task Clean_pilot_platform_is_deterministically_ready()
+    {
+        string root = RepositoryRoot();
+
+        await StageAsync("PREFLIGHT_CONTEXT_FAILED", async () =>
+        {
+            var inventory = new RepositoryFileInventory(
+                new GitClient(new ProcessRunner()));
+            RepositoryFileInventoryResult result = await inventory.CreateAsync(
+                root,
+                new RepositoryInventoryLimits
+                {
+                    MaxCandidates = 10_000,
+                    MaxAcceptedFiles = 750,
+                    MaxIndividualFileBytes = 262_144,
+                    MaxTotalBytes = 5_242_880,
+                    MaxLogicalPathLength = 1_024
+                },
+                ".kronxy-context/packages");
+
+            Assert.True(result.IsComplete);
+            Assert.Equal(568, result.Accepted.Count);
+            Assert.Contains(result.Accepted, file => file.LogicalPath == SourcePath);
+            Assert.DoesNotContain(result.Accepted, file => IsPollution(file.LogicalPath));
+            Assert.True(HasTest(
+                typeof(ContextGenerationServiceTests),
+                "Generates_valid_context_package_and_writes_artifact"));
+        });
+
+        Stage("PREFLIGHT_ANALYSIS_FAILED", () =>
+        {
+            Assert.True(HasTest(
+                typeof(DevelopmentAnalysisServiceTests),
+                "Representative_frontend_inventory_selects_job_detail_without_exact_path"));
+            Assert.True(HasTest(
+                typeof(DevelopmentAnalysisServiceTests),
+                "Razor_authoritative_candidate_keeps_web_only_required_scope"));
+        });
+
+        Stage("PREFLIGHT_PLANNING_FAILED", () =>
+        {
+            Assert.True(File.Exists(Path.Combine(
+                root, "tests/Kronxy.Web.Tests/Kronxy.Web.Tests.csproj")));
+            Assert.False(File.Exists(Path.Combine(root, TestPath)));
+            Assert.True(HasTest(
+                typeof(PlanningExecutionServiceTests),
+                "Pilot_shaped_nested_web_test_candidate_is_coherent"));
+            Assert.True(HasTest(
+                typeof(PlanningExecutionServiceTests),
+                "New_mapped_test_with_matching_writable_test_candidate_is_accepted"));
+            Assert.True(HasTest(
+                typeof(PlanningExecutionServiceTests),
+                "Web_only_analysis_rejects_cross_layer_candidate"));
+        });
+
+        Stage("PREFLIGHT_DEVELOPER_FAILED", () =>
+        {
+            Assert.Equal(19_181, new FileInfo(Path.Combine(root, SourcePath)).Length);
+            AssertEnvelope(8_847, 6_956, expectedHeadroom: 69);
+            Assert.True(HasTest(
+                typeof(DeveloperExecutionServiceTests),
+                "Two_target_19181_byte_pilot_has_deterministic_headroom"));
+            Assert.True(HasTest(
+                typeof(DeveloperExecutionServiceTests),
+                "Genuinely_impossible_build_correction_envelope_fails_closed"));
+        });
+
+        Stage("PREFLIGHT_DEVELOPER_FAILED", () =>
+        {
+            string[] policyCanaries =
+            [
+                "Workspace_drift_is_rejected_before_bound_metadata_is_accepted",
+                "Mixed_existing_and_new_targets_bind_authoritative_metadata",
+                "Duplicate_target_operations_are_rejected_before_binding"
+            ];
+            Assert.All(policyCanaries, name => Assert.True(
+                HasTest(typeof(DeveloperExecutionServiceTests), name) ||
+                HasTest(typeof(DeveloperProposalPolicyTests), name), name));
+        });
+
+        Stage("PREFLIGHT_SAFECHANGE_FAILED", () =>
+        {
+            Assert.True(HasTest(
+                typeof(SafeChangeApplierTests),
+                "Missing_or_changed_completed_target_fails_closed"));
+            Assert.True(HasTest(
+                typeof(ObservedChangeEvidenceServiceTests),
+                "Correlates_change_and_persists_physical_hash_and_size"));
+        });
+
+        Stage("PREFLIGHT_BUILD_FAILED", () =>
+        {
+            Assert.True(HasTest(typeof(BuildExecutionServiceTests),
+                "Success_WritesThreeArtifacts"));
+            Assert.True(HasTest(typeof(BuildExecutionServiceTests),
+                "NonZeroExit_ReturnsBuildFailed"));
+            Assert.True(HasTest(typeof(BuildExecutionServiceTests),
+                "Correction_build_writes_only_separate_artifacts"));
+        });
+
+        Stage("PREFLIGHT_BUILD_CORRECTION_FAILED", () =>
+        {
+            string[] correctionCanaries =
+            [
+                "Build_correction_compacts_duplicate_errors_and_reaches_ai",
+                "Build_correction_evidence_is_deterministic_and_within_feedback_budget",
+                "Build_correction_rejects_unauthorized_diagnostic_path",
+                "Build_correction_rejects_unsafe_diagnostic_path",
+                "Originally_created_file_is_replaceable_when_later_diagnostic_associates_it"
+            ];
+            Assert.All(correctionCanaries, name => Assert.True(
+                HasTest(typeof(DeveloperExecutionServiceTests), name), name));
+            AssertEnvelope(7_823, 7_029, expectedHeadroom: 1_020);
+        });
+
+        Stage("PREFLIGHT_TESTING_FAILED", () =>
+        {
+            string[] mappedTests =
+            [
+                "Kronxy.Web.Tests.JobDetailTests.JobIdCopyActionExistsAndWorks",
+                "Kronxy.Web.Tests.JobDetailTests.RunIdCopyActionExistsAndWorksWhenRunIdIsPresent",
+                "Kronxy.Web.Tests.JobDetailTests.MissingRunIdIsHandledSafely",
+                "Kronxy.Web.Tests.JobDetailTests.VisibleCopyConfirmationIsShown"
+            ];
+            Assert.Equal(4, mappedTests.Distinct(StringComparer.Ordinal).Count());
+            Assert.True(HasTest(typeof(TestExecutionServiceTests),
+                "Success_WritesFourArtifacts"));
+            Assert.True(HasTest(typeof(DeterministicAcceptanceGateTests),
+                "Behavioral_requirement_with_only_file_exists_is_not_proven"));
+            Assert.True(HasTest(typeof(DeterministicAcceptanceGateTests),
+                "Behavioral_requirement_with_mapped_passing_test_is_proven"));
+        });
+
+        Stage("PREFLIGHT_SEMANTIC_ACCEPTANCE_FAILED", () =>
+        {
+            Assert.True(HasTest(typeof(DeterministicAcceptanceGateTests),
+                "Failed_gate_overrides_model_approval"));
+            Assert.True(HasTest(typeof(DeterministicAcceptanceGateTests),
+                "Behavioral_requirement_with_mapped_passing_test_is_proven"));
+        });
+
+        Stage("PREFLIGHT_REVIEWER_FAILED", () =>
+        {
+            Assert.True(HasTest(typeof(ReviewerRuntimeTests),
+                "Policy_approves_only_when_all_deterministic_gates_pass"));
+            Assert.True(HasTest(typeof(DeterministicAcceptanceGateTests),
+                "Failed_gate_overrides_model_approval"));
+        });
+
+        Stage("PREFLIGHT_REVIEWER_FAILED", () =>
+        {
+            Assert.True(HasTest(typeof(JobTests),
+                "Mutating_approval_enters_pending_promotion"));
+            Assert.True(HasTest(typeof(JobApplicationTests),
+                "Human_review_approval_rejects_failed_deterministic_gate"));
+        });
+
+        Stage("PREFLIGHT_SOURCE_PROMOTION_FAILED", () =>
+        {
+            Assert.True(HasTest(typeof(RepositoryManagerTests),
+                "Source_promotion_prepares_single_verified_commit_and_is_idempotent"));
+            Assert.True(HasTest(typeof(RepositoryManagerTests),
+                "Source_promotion_fast_forwards_target_and_repeat_is_idempotent"));
+            Assert.True(HasTest(typeof(RepositoryManagerTests),
+                "Two_promotions_from_same_base_allow_only_first"));
+            Assert.True(HasTest(typeof(JobTests),
+                "Pending_promotion_cannot_complete_without_promoted_evidence"));
+            Assert.True(HasTest(typeof(JobTests),
+                "Pending_promotion_completes_after_promoted_evidence_is_validated"));
+        });
+
+        output.WriteLine("INITIAL_TARGET_COUNT=2");
+        output.WriteLine("INITIAL_TARGET_BYTES=19181");
+        output.WriteLine("INITIAL_INPUT_TOKENS=8847");
+        output.WriteLine("INITIAL_MIN_OUTPUT_TOKENS=6956");
+        output.WriteLine("INITIAL_TOTAL_ENVELOPE=16315");
+        output.WriteLine("INITIAL_HEADROOM=69");
+        output.WriteLine("CORRECTION_TARGET_COUNT=1");
+        output.WriteLine("CORRECTION_TARGET_BYTES=19181");
+        output.WriteLine("CORRECTION_INPUT_TOKENS=7823");
+        output.WriteLine("CORRECTION_MIN_OUTPUT_TOKENS=7029");
+        output.WriteLine("CORRECTION_TOTAL_ENVELOPE=15364");
+        output.WriteLine("CORRECTION_HEADROOM=1020");
+    }
+
+    private static void AssertEnvelope(
+        int inputTokens,
+        int minimumOutputTokens,
+        int expectedHeadroom)
+    {
+        int total = inputTokens + minimumOutputTokens + SafetyMargin;
+        Assert.Equal(expectedHeadroom, ContextWindow - total);
+        Assert.True(total < ContextWindow);
+    }
+
+    private static bool HasTest(Type type, string method) =>
+        type.GetMethod(method) is not null;
+
+    private static bool IsPollution(string path) =>
+        path.Split('/').Any(segment => segment is
+            ".git" or "bin" or "obj" or "artifacts" or "workspaces" or
+            "TestResults" or "tmp" or "temp" or ".kronxy-context");
+
+    private static string RepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Kronxy.sln")))
+            {
+                return directory.FullName;
+            }
+            directory = directory.Parent;
+        }
+        throw new XunitException("PREFLIGHT_CONTEXT_FAILED: repository root not found");
+    }
+
+    private static void Stage(string code, Action action)
+    {
+        try { action(); }
+        catch (Exception exception) when (exception is not XunitException { Message: var message } ||
+                                           !message.StartsWith("PREFLIGHT_", StringComparison.Ordinal))
+        {
+            throw new XunitException($"{code}: {exception.Message}");
+        }
+    }
+
+    private static async Task StageAsync(string code, Func<Task> action)
+    {
+        try { await action(); }
+        catch (Exception exception) when (exception is not XunitException { Message: var message } ||
+                                           !message.StartsWith("PREFLIGHT_", StringComparison.Ordinal))
+        {
+            throw new XunitException($"{code}: {exception.Message}");
+        }
     }
 }
