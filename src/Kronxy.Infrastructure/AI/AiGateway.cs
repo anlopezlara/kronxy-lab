@@ -119,13 +119,14 @@ public sealed class AiGateway : IAiGateway, IDisposable
         {
             TimeSpan effectiveInferenceTimeout =
                 request.InferenceTimeout ??
-                options.InferenceTimeout;
+                AiInferenceTimeoutPolicy.Resolve(
+                    options,
+                    request.Model);
 
             TimeSpan maximumInferenceTimeout =
-                options.PlanningInferenceTimeout >
-                    options.DeveloperInferenceTimeout
-                    ? options.PlanningInferenceTimeout
-                    : options.DeveloperInferenceTimeout;
+                AiInferenceTimeoutPolicy.ResolveOverrideCeiling(
+                    options,
+                    request.Model);
 
             if (effectiveInferenceTimeout <= TimeSpan.Zero ||
                 effectiveInferenceTimeout == Timeout.InfiniteTimeSpan ||

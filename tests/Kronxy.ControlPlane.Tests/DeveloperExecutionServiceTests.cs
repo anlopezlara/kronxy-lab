@@ -33,7 +33,7 @@ public sealed class DeveloperExecutionServiceTests
             fixture.Gateway.LastRequest.Model);
 
         Assert.Equal(
-            TimeSpan.FromSeconds(90),
+            TimeSpan.FromMinutes(5),
             fixture.Gateway.LastRequest.InferenceTimeout);
 
         Assert.Contains(

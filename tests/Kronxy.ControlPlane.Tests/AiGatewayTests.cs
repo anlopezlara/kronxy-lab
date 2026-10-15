@@ -10,6 +10,33 @@ namespace Kronxy.ControlPlane.Tests;
 public sealed class AiGatewayTests
 {
     [Fact]
+    public void Timeout_policy_resolves_by_logical_not_physical_model()
+    {
+        AiGatewayOptions options = Options(
+            general: TimeSpan.FromSeconds(40),
+            codingQuality: TimeSpan.FromMinutes(5));
+
+        Assert.Equal(TimeSpan.FromSeconds(40),
+            AiInferenceTimeoutPolicy.Resolve(options, AiLogicalModel.General));
+        Assert.Equal(TimeSpan.FromMinutes(5),
+            AiInferenceTimeoutPolicy.Resolve(options, AiLogicalModel.CodingQuality));
+
+        AiGatewayOptions renamedPhysicalModel = options with
+        {
+            Models = new Dictionary<string, string>
+            {
+                ["CodingFast"] = "other-fast",
+                ["CodingQuality"] = "other-quality",
+                ["General"] = "other-general"
+            }
+        };
+        Assert.Equal(TimeSpan.FromMinutes(5),
+            AiInferenceTimeoutPolicy.Resolve(
+                renamedPhysicalModel,
+                AiLogicalModel.CodingQuality));
+    }
+
+    [Fact]
     public void Options_default_inference_timeout_is_two_minutes()
     {
         var options =
@@ -36,7 +63,33 @@ public sealed class AiGatewayTests
             TimeSpan.FromSeconds(120),
             options.InferenceTimeout);
         Assert.Equal(8_192, options.DeveloperMaxOutputTokens);
+        Assert.Equal(TimeSpan.FromMinutes(5),
+            options.CodingQualityInferenceTimeout);
     }
+
+    private static AiGatewayOptions Options(
+        TimeSpan general,
+        TimeSpan codingQuality) => new()
+        {
+            Provider = "Ollama",
+            Endpoint = "http://example.invalid",
+            Models = new Dictionary<string, string>
+            {
+                ["CodingFast"] = "model-fast",
+                ["CodingQuality"] = "model-quality",
+                ["General"] = "model-general"
+            },
+            MaxConcurrentInferences = 1,
+            ConnectionTimeout = TimeSpan.FromSeconds(1),
+            InferenceTimeout = general,
+            DeveloperInferenceTimeout = general,
+            PlanningInferenceTimeout = general,
+            CodingQualityInferenceTimeout = codingQuality,
+            QueueWaitTimeout = TimeSpan.FromSeconds(1),
+            MaxOutputTokens = 256,
+            MaxInputCharacters = 65_536,
+            MaxResponseBytes = 1_048_576
+        };
 
     [Fact]
     public void Options_developer_output_budget_can_be_overridden()

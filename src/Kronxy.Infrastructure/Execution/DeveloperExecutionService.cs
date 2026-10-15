@@ -482,7 +482,7 @@ public sealed class DeveloperExecutionService :
                         UserContent = userContent,
                         CorrelationId = request.CorrelationId,
                         InferenceTimeout =
-                            aiOptions.DeveloperInferenceTimeout,
+                            aiCapability.InferenceTimeout,
                         Generation = new AiGenerationOptions
                         {
                             MaxOutputTokens =

@@ -18,7 +18,8 @@ public static class DeveloperAiRoutingPolicy
             options.DeveloperContextWindowTokens,
             options.DeveloperMaxOutputTokens,
             options.DeveloperMinimumOutputTokens,
-            options.DeveloperContextSafetyMarginTokens);
+            options.DeveloperContextSafetyMarginTokens,
+            AiInferenceTimeoutPolicy.Resolve(options, LogicalModel));
     }
 }
 
@@ -27,4 +28,5 @@ public sealed record DeveloperAiCapability(
     int ContextWindowTokens,
     int MaxOutputTokens,
     int MinimumOutputTokens,
-    int SafetyMarginTokens);
+    int SafetyMarginTokens,
+    TimeSpan InferenceTimeout);

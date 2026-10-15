@@ -955,7 +955,7 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 ".kronxy-context/packages");
 
             Assert.True(result.IsComplete);
-            Assert.Equal(569, result.Accepted.Count);
+            Assert.Equal(570, result.Accepted.Count);
             Assert.Contains(result.Accepted, file => file.LogicalPath == SourcePath);
             Assert.DoesNotContain(result.Accepted, file => IsPollution(file.LogicalPath));
             Assert.True(HasTest(
@@ -1018,6 +1018,13 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
             Assert.NotEqual(options.Models["General"], physicalModel);
             Assert.Equal(ContextWindow, capability.ContextWindowTokens);
             Assert.Equal(8_192, capability.MaxOutputTokens);
+            Assert.Equal(TimeSpan.FromMinutes(5), capability.InferenceTimeout);
+            Assert.Equal(
+                AiInferenceTimeoutPolicy.Resolve(
+                    options,
+                    capability.LogicalModel),
+                capability.InferenceTimeout);
+            Assert.True(capability.InferenceTimeout > TimeSpan.FromMinutes(3));
             Assert.Equal(19_181, new FileInfo(Path.Combine(root, SourcePath)).Length);
             AssertEnvelope(8_847, 6_956, expectedHeadroom: 69);
             Assert.True(HasTest(

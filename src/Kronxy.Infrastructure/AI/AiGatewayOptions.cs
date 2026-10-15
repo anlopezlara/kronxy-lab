@@ -54,6 +54,12 @@ public sealed record AiGatewayOptions
         init;
     } = TimeSpan.FromMinutes(3);
 
+    public TimeSpan CodingQualityInferenceTimeout
+    {
+        get;
+        init;
+    } = TimeSpan.FromMinutes(5);
+
     public TimeSpan QueueWaitTimeout
     {
         get;
@@ -201,6 +207,16 @@ public sealed record AiGatewayOptions
         {
             throw new InvalidOperationException(
                 "AI DeveloperInferenceTimeout must be greater than or equal to InferenceTimeout.");
+        }
+
+        ValidatePositiveTimeout(
+            CodingQualityInferenceTimeout,
+            nameof(CodingQualityInferenceTimeout));
+
+        if (CodingQualityInferenceTimeout < DeveloperInferenceTimeout)
+        {
+            throw new InvalidOperationException(
+                "AI CodingQualityInferenceTimeout must be greater than or equal to DeveloperInferenceTimeout.");
         }
 
         ValidatePositiveTimeout(

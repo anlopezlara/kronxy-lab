@@ -494,6 +494,12 @@ public static class DependencyInjection
                         configuration,
                         "AI:DeveloperInferenceTimeout"),
 
+                CodingQualityInferenceTimeout =
+                    GetOptionalPositiveTimeSpan(
+                        configuration,
+                        "AI:Timeouts:CodingQuality",
+                        TimeSpan.FromMinutes(5)),
+
                 QueueWaitTimeout =
                     GetRequiredPositiveTimeSpan(
                         configuration,
@@ -734,6 +740,29 @@ public static class DependencyInjection
         {
             throw new InvalidOperationException(
                 $"Configuration '{key}' must be a positive TimeSpan.");
+        }
+
+        return value;
+    }
+
+    private static TimeSpan GetOptionalPositiveTimeSpan(
+        IConfiguration configuration,
+        string key,
+        TimeSpan defaultValue)
+    {
+        string? raw = configuration[key];
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return defaultValue;
+        }
+
+        if (!TimeSpan.TryParse(raw, out TimeSpan value) ||
+            value <= TimeSpan.Zero ||
+            value == Timeout.InfiniteTimeSpan)
+        {
+            throw new InvalidOperationException(
+                $"Configuration '{key}' must be a finite positive TimeSpan.");
         }
 
         return value;
