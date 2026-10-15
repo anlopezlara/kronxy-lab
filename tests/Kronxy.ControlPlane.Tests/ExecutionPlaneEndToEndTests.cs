@@ -5,6 +5,8 @@ using Kronxy.Application.Jobs;
 using Kronxy.Domain.Jobs;
 using Kronxy.Infrastructure;
 using Kronxy.Infrastructure.Data;
+using Kronxy.Infrastructure.AI;
+using Kronxy.Infrastructure.Execution;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -953,7 +955,7 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 ".kronxy-context/packages");
 
             Assert.True(result.IsComplete);
-            Assert.Equal(568, result.Accepted.Count);
+            Assert.Equal(569, result.Accepted.Count);
             Assert.Contains(result.Accepted, file => file.LogicalPath == SourcePath);
             Assert.DoesNotContain(result.Accepted, file => IsPollution(file.LogicalPath));
             Assert.True(HasTest(
@@ -989,6 +991,33 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
 
         Stage("PREFLIGHT_DEVELOPER_FAILED", () =>
         {
+            var options = new AiGatewayOptions
+            {
+                Provider = "Ollama",
+                Endpoint = "http://localhost:11434",
+                Models = new Dictionary<string, string>
+                {
+                    ["CodingFast"] = "configured-fast-model",
+                    ["CodingQuality"] = "configured-quality-model",
+                    ["General"] = "configured-general-model"
+                },
+                MaxConcurrentInferences = 1,
+                ConnectionTimeout = TimeSpan.FromSeconds(1),
+                QueueWaitTimeout = TimeSpan.FromSeconds(1),
+                MaxOutputTokens = 4_096,
+                MaxInputCharacters = 65_536,
+                MaxResponseBytes = 1_048_576
+            };
+            DeveloperAiCapability capability =
+                DeveloperAiRoutingPolicy.GetCapability(options);
+            var catalog = new AiModelCatalog(options);
+
+            Assert.Equal(AiLogicalModel.CodingQuality, capability.LogicalModel);
+            Assert.True(catalog.TryResolve(capability.LogicalModel, out string physicalModel));
+            Assert.Equal("configured-quality-model", physicalModel);
+            Assert.NotEqual(options.Models["General"], physicalModel);
+            Assert.Equal(ContextWindow, capability.ContextWindowTokens);
+            Assert.Equal(8_192, capability.MaxOutputTokens);
             Assert.Equal(19_181, new FileInfo(Path.Combine(root, SourcePath)).Length);
             AssertEnvelope(8_847, 6_956, expectedHeadroom: 69);
             Assert.True(HasTest(

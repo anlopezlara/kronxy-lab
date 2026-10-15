@@ -29,7 +29,7 @@ public sealed class DeveloperExecutionServiceTests
         Assert.NotNull(result.Proposal);
         Assert.NotNull(fixture.Gateway.LastRequest!.StructuredOutput);
         Assert.Equal(
-            AiLogicalModel.General,
+            AiLogicalModel.CodingQuality,
             fixture.Gateway.LastRequest.Model);
 
         Assert.Equal(

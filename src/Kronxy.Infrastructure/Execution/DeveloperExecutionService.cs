@@ -58,6 +58,7 @@ public sealed class DeveloperExecutionService :
     private readonly IArtifactStore artifactStore;
     private readonly ArtifactStoreOptions artifactOptions;
     private readonly AiGatewayOptions aiOptions;
+    private readonly DeveloperAiCapability aiCapability;
     private readonly ILogger<DeveloperExecutionService>? logger;
 
     public DeveloperExecutionService(
@@ -90,6 +91,7 @@ public sealed class DeveloperExecutionService :
             throw new ArgumentNullException(nameof(artifactOptions));
         this.aiOptions = aiOptions ??
             throw new ArgumentNullException(nameof(aiOptions));
+        aiCapability = DeveloperAiRoutingPolicy.GetCapability(this.aiOptions);
         this.logger = logger;
 
         this.artifactOptions.Validate();
@@ -362,8 +364,8 @@ public sealed class DeveloperExecutionService :
             int minimumRequiredOutputTokens =
                 EstimateMinimumOutputTokens(targetContext.Targets);
             int availableInputTokens =
-                aiOptions.DeveloperContextWindowTokens -
-                aiOptions.DeveloperContextSafetyMarginTokens -
+                aiCapability.ContextWindowTokens -
+                aiCapability.SafetyMarginTokens -
                 minimumRequiredOutputTokens;
 
             int remainingCharacters =
@@ -423,11 +425,11 @@ public sealed class DeveloperExecutionService :
                     schemaCharacters,
                 ConservativeCharactersPerToken);
             int maximumAvailableOutputTokens =
-                aiOptions.DeveloperContextWindowTokens -
-                aiOptions.DeveloperContextSafetyMarginTokens -
+                aiCapability.ContextWindowTokens -
+                aiCapability.SafetyMarginTokens -
                 estimatedInputTokens;
             int effectiveOutputTokens = Math.Min(
-                aiOptions.DeveloperMaxOutputTokens,
+                aiCapability.MaxOutputTokens,
                 maximumAvailableOutputTokens);
 
             if ((long)systemInstructions.Length +
@@ -443,12 +445,12 @@ public sealed class DeveloperExecutionService :
 
             logger?.LogInformation(
                 "Developer context envelope: ContextWindow={ContextWindow} EstimatedInputTokens={EstimatedInputTokens} MinimumRequiredOutputTokens={MinimumRequiredOutputTokens} EffectiveOutputTokens={EffectiveOutputTokens} ConfiguredMaxOutputTokens={ConfiguredMaxOutputTokens} SafetyMargin={SafetyMargin} TargetCount={TargetCount} TargetBytes={TargetBytes}.",
-                aiOptions.DeveloperContextWindowTokens,
+                aiCapability.ContextWindowTokens,
                 estimatedInputTokens,
                 minimumRequiredOutputTokens,
                 effectiveOutputTokens,
-                aiOptions.DeveloperMaxOutputTokens,
-                aiOptions.DeveloperContextSafetyMarginTokens,
+                aiCapability.MaxOutputTokens,
+                aiCapability.SafetyMarginTokens,
                 targetContext.Targets.Count,
                 TargetBytes(targetContext.Targets));
 
@@ -475,9 +477,7 @@ public sealed class DeveloperExecutionService :
                 await aiGateway.GenerateAsync(
                     new AiRequest
                     {
-                        Model = request.BuildCorrection is null
-                            ? AiLogicalModel.General
-                            : AiLogicalModel.CodingQuality,
+                        Model = aiCapability.LogicalModel,
                         SystemInstructions = systemInstructions,
                         UserContent = userContent,
                         CorrelationId = request.CorrelationId,
@@ -488,7 +488,7 @@ public sealed class DeveloperExecutionService :
                             MaxOutputTokens =
                                 effectiveOutputTokens,
                             ContextWindowTokens =
-                                aiOptions.DeveloperContextWindowTokens,
+                                aiCapability.ContextWindowTokens,
                             Temperature = 0
                         },
                         StructuredOutput = new AiStructuredOutput
@@ -762,7 +762,7 @@ public sealed class DeveloperExecutionService :
             escapedContentCharacters + proposalOverheadCharacters,
             ConservativeCharactersPerToken);
         return Math.Max(
-            aiOptions.DeveloperMinimumOutputTokens,
+            aiCapability.MinimumOutputTokens,
             fullFileEstimate);
     }
 
@@ -781,11 +781,11 @@ public sealed class DeveloperExecutionService :
         IReadOnlyList<DeveloperTargetContext> targets) =>
         logger?.LogWarning(
             "Developer context envelope exceeded. ContextWindow={ContextWindow} EstimatedInputTokens={EstimatedInputTokens} MinimumRequiredOutputTokens={MinimumRequiredOutputTokens} ConfiguredMaxOutputTokens={ConfiguredMaxOutputTokens} SafetyMargin={SafetyMargin} TargetCount={TargetCount} TargetBytes={TargetBytes}.",
-            aiOptions.DeveloperContextWindowTokens,
+            aiCapability.ContextWindowTokens,
             estimatedInputTokens,
             minimumRequiredOutputTokens,
-            aiOptions.DeveloperMaxOutputTokens,
-            aiOptions.DeveloperContextSafetyMarginTokens,
+            aiCapability.MaxOutputTokens,
+            aiCapability.SafetyMarginTokens,
             targets.Count,
             TargetBytes(targets));
 
