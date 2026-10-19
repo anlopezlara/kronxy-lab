@@ -186,8 +186,9 @@ public sealed class SafeChangeWorkspaceValidator :
 
                 string expectedHash = string.Empty;
 
-                if (change.Operation ==
-                    DeveloperChangeOperationType.ReplaceFile)
+                if (change.Operation is
+                    DeveloperChangeOperationType.ReplaceFile or
+                    DeveloperChangeOperationType.LocalizedPatch)
                 {
                     if (!IsSafeRegularFile(destination))
                     {
@@ -205,6 +206,44 @@ public sealed class SafeChangeWorkspaceValidator :
                         return BindingFailure(
                             "DEVELOPER_REPLACE_SOURCE_CHANGED");
                     }
+                }
+
+                if (change.Operation ==
+                    DeveloperChangeOperationType.LocalizedPatch)
+                {
+                    if (!string.Equals(
+                            change.ExpectedContentSha256,
+                            expectedHash,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return BindingFailure(
+                            "DEVELOPER_LOCALIZED_PATCH_BASE_SHA_MISMATCH");
+                    }
+
+                    string governedContent = await File.ReadAllTextAsync(
+                            destination,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    LocalizedPatchResult patch = ApplyLocalizedEdits(
+                        governedContent,
+                        change.Edits);
+                    if (!patch.IsSuccess)
+                    {
+                        return BindingFailure(patch.ErrorCode);
+                    }
+
+                    string resultSha = Convert.ToHexString(
+                            SHA256.HashData(
+                                System.Text.Encoding.UTF8.GetBytes(
+                                    patch.Content!)))
+                        .ToLowerInvariant();
+                    changes.Add(change with
+                    {
+                        Content = patch.Content!,
+                        ExpectedContentSha256 = expectedHash,
+                        ResultContentSha256 = resultSha
+                    });
+                    continue;
                 }
 
                 changes.Add(change with
@@ -243,6 +282,65 @@ public sealed class SafeChangeWorkspaceValidator :
             return BindingFailure(
                 "DEVELOPER_PATH_INVALID");
         }
+    }
+
+    private static LocalizedPatchResult ApplyLocalizedEdits(
+        string content,
+        IReadOnlyList<DeveloperLocalizedEdit>? edits)
+    {
+        if (edits is null || edits.Count is < 1 or > 8)
+            return LocalizedPatchResult.Failure(
+                "DEVELOPER_LOCALIZED_PATCH_INVALID");
+
+        var matches = new List<(int Start, int Length, string NewText)>();
+        foreach (DeveloperLocalizedEdit? edit in edits)
+        {
+            if (edit is null || string.IsNullOrEmpty(edit.OldText) ||
+                edit.NewText is null || edit.OldText == edit.NewText)
+                return LocalizedPatchResult.Failure(
+                    "DEVELOPER_LOCALIZED_PATCH_INVALID");
+
+            int first = content.IndexOf(edit.OldText, StringComparison.Ordinal);
+            if (first < 0)
+                return LocalizedPatchResult.Failure(
+                    "DEVELOPER_LOCALIZED_PATCH_NO_MATCH");
+            if (content.IndexOf(
+                    edit.OldText,
+                    first + edit.OldText.Length,
+                    StringComparison.Ordinal) >= 0)
+                return LocalizedPatchResult.Failure(
+                    "DEVELOPER_LOCALIZED_PATCH_AMBIGUOUS");
+
+            matches.Add((first, edit.OldText.Length, edit.NewText));
+        }
+
+        (int Start, int Length, string NewText)[] ordered = matches
+            .OrderBy(match => match.Start)
+            .ToArray();
+        for (int index = 1; index < ordered.Length; index++)
+        {
+            if (ordered[index].Start <
+                ordered[index - 1].Start + ordered[index - 1].Length)
+                return LocalizedPatchResult.Failure(
+                    "DEVELOPER_LOCALIZED_PATCH_OVERLAP");
+        }
+
+        string result = content;
+        foreach (var match in ordered.Reverse())
+            result = result.Remove(match.Start, match.Length)
+                .Insert(match.Start, match.NewText);
+        return LocalizedPatchResult.Success(result);
+    }
+
+    private sealed record LocalizedPatchResult(
+        string? Content,
+        string ErrorCode)
+    {
+        public bool IsSuccess => Content is not null && ErrorCode.Length == 0;
+        public static LocalizedPatchResult Success(string content) =>
+            new(content, string.Empty);
+        public static LocalizedPatchResult Failure(string errorCode) =>
+            new(null, errorCode);
     }
 
     public async Task<

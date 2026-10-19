@@ -43,7 +43,7 @@ public sealed class DeveloperExecutionServiceTests
             "never pad content with repeated blank lines",
             fixture.Gateway.LastRequest.SystemInstructions);
         Assert.Contains(
-            "Use ReplaceFile for exists=true",
+            "Use LocalizedPatch",
             fixture.Gateway.LastRequest.SystemInstructions);
         Assert.Contains(
             "Each change content must contain only the file named by relativePath",
@@ -210,7 +210,7 @@ public sealed class DeveloperExecutionServiceTests
         Assert.Equal(16_384, fixture.Gateway.LastRequest.Generation.ContextWindowTokens);
         Assert.InRange(
             fixture.Gateway.LastRequest.Generation.MaxOutputTokens!.Value,
-            6_870,
+            2_048,
             8_192);
         Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(current));
     }
@@ -262,17 +262,11 @@ public sealed class DeveloperExecutionServiceTests
         int estimatedInputTokens = (
             sent.SystemInstructions.Length + sent.UserContent.Length +
             sent.StructuredOutput!.Schema.GetRawText().Length + 2) / 3;
-        int minimumOutputTokens = (
-            JsonSerializer.Serialize(
-                current,
-                new JsonSerializerOptions
-                {
-                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                }).Length + 512 + 2 * 256 + 2) / 3;
+        const int minimumOutputTokens = 2_048;
         int headroom = 16_384 - 512 - estimatedInputTokens - minimumOutputTokens;
 
         Assert.True(estimatedInputTokens <= 8_861, $"Input={estimatedInputTokens}");
-        Assert.True(minimumOutputTokens >= 6_956, $"Output={minimumOutputTokens}");
+        Assert.Equal(2_048, minimumOutputTokens);
         Assert.True(headroom > 0, $"Headroom={headroom}");
         Assert.Equal(16_384, sent.Generation.ContextWindowTokens);
         Assert.Equal(16_384 - 512 - estimatedInputTokens,

@@ -84,6 +84,76 @@ public sealed class SafeChangeWorkspaceValidatorTests
     }
 
     [Fact]
+    public async Task Localized_patch_applies_exact_edits_and_computes_result_hash()
+    {
+        using var fixture = new Fixture();
+        const string before = "alpha\nbeta\ngamma\n";
+        const string after = "one\nbeta\nthree\n";
+        string path = Path.Combine(fixture.RepositoryPath, "src", "Large.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, before);
+
+        DeveloperProposalMetadataBindingResult result =
+            await fixture.Validator.BindAsync(fixture.BindingRequest(
+                RawPatch("src/Large.cs", Hash(before),
+                    [("alpha", "one"), ("gamma", "three")]),
+                ["src/Large.cs"]));
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        DeveloperChangeOperation change = Assert.Single(result.Proposal!.Changes);
+        Assert.Equal(DeveloperChangeOperationType.LocalizedPatch, change.Operation);
+        Assert.Equal(before, await File.ReadAllTextAsync(path));
+        Assert.Equal(after, change.Content);
+        Assert.Equal(Hash(before), change.ExpectedContentSha256);
+        Assert.Equal(Hash(after), change.ResultContentSha256);
+    }
+
+    [Theory]
+    [InlineData("missing", "DEVELOPER_LOCALIZED_PATCH_NO_MATCH")]
+    [InlineData("repeat", "DEVELOPER_LOCALIZED_PATCH_AMBIGUOUS")]
+    public async Task Localized_patch_requires_one_exact_match(
+        string oldText,
+        string expectedError)
+    {
+        using var fixture = new Fixture();
+        const string before = "repeat middle repeat";
+        string path = Path.Combine(fixture.RepositoryPath, "src", "Large.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, before);
+
+        DeveloperProposalMetadataBindingResult result =
+            await fixture.Validator.BindAsync(fixture.BindingRequest(
+                RawPatch("src/Large.cs", Hash(before), [(oldText, "new")]),
+                ["src/Large.cs"]));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(expectedError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Localized_patch_rejects_base_drift_and_overlap()
+    {
+        using var fixture = new Fixture();
+        const string before = "abcdef";
+        string path = Path.Combine(fixture.RepositoryPath, "src", "Large.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, before);
+
+        DeveloperProposalMetadataBindingResult drift =
+            await fixture.Validator.BindAsync(fixture.BindingRequest(
+                RawPatch("src/Large.cs", new string('a', 64), [("abc", "x")]),
+                ["src/Large.cs"]));
+        Assert.Equal("DEVELOPER_LOCALIZED_PATCH_BASE_SHA_MISMATCH", drift.ErrorCode);
+
+        DeveloperProposalMetadataBindingResult overlap =
+            await fixture.Validator.BindAsync(fixture.BindingRequest(
+                RawPatch("src/Large.cs", Hash(before),
+                    [("abcd", "x"), ("cdef", "y")]),
+                ["src/Large.cs"]));
+        Assert.Equal("DEVELOPER_LOCALIZED_PATCH_OVERLAP", overlap.ErrorCode);
+    }
+
+    [Fact]
     public async Task Binding_rejects_path_outside_allowlist_before_hashing()
     {
         using var fixture = new Fixture();
@@ -403,6 +473,25 @@ public sealed class SafeChangeWorkspaceValidatorTests
             Intent = "Apply a deterministic change.",
             Content = content,
             ExpectedContentSha256 = expectedHash
+        };
+
+    private static DeveloperChangeOperation RawPatch(
+        string path,
+        string expectedHash,
+        IReadOnlyList<(string OldText, string NewText)> edits) =>
+        new()
+        {
+            Operation = DeveloperChangeOperationType.LocalizedPatch,
+            RelativePath = path,
+            Intent = "Apply deterministic localized edits.",
+            Content = string.Empty,
+            ExpectedContentSha256 = expectedHash,
+            Edits = edits.Select(edit => new DeveloperLocalizedEdit
+            {
+                OldText = edit.OldText,
+                NewText = edit.NewText
+            }).ToArray(),
+            ResultContentSha256 = new string('f', 64)
         };
 
     private static string Hash(

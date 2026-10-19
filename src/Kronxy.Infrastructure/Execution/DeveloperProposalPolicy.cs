@@ -101,7 +101,8 @@ public sealed class DeveloperProposalPolicy :
                     change.Operation) ||
                 change.Operation is not (
                     DeveloperChangeOperationType.CreateFile or
-                    DeveloperChangeOperationType.ReplaceFile))
+                    DeveloperChangeOperationType.ReplaceFile or
+                    DeveloperChangeOperationType.LocalizedPatch))
             {
                 return Failure(
                     DeveloperProposalFailureKind

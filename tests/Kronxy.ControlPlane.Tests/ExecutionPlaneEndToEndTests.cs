@@ -1033,6 +1033,9 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 typeof(DeveloperExecutionServiceTests),
                 "Second_target_failure_fails_stage_after_preserving_provenance"));
             Assert.True(HasTest(
+                typeof(SafeChangeWorkspaceValidatorTests),
+                "Localized_patch_applies_exact_edits_and_computes_result_hash"));
+            Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
                 "Genuinely_impossible_build_correction_envelope_fails_closed"));
         });

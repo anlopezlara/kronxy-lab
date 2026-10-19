@@ -10,7 +10,17 @@ namespace Kronxy.Application.Execution;
 public enum DeveloperChangeOperationType
 {
     CreateFile = 10,
-    ReplaceFile = 20
+    ReplaceFile = 20,
+    LocalizedPatch = 30
+}
+
+public sealed record DeveloperLocalizedEdit
+{
+    [JsonPropertyName("oldText")]
+    public required string OldText { get; init; }
+
+    [JsonPropertyName("newText")]
+    public required string NewText { get; init; }
 }
 
 public sealed record DeveloperChangeOperation
@@ -37,6 +47,12 @@ public sealed record DeveloperChangeOperation
         get;
         init;
     }
+
+    [JsonPropertyName("edits")]
+    public IReadOnlyList<DeveloperLocalizedEdit> Edits { get; init; } = [];
+
+    [JsonPropertyName("resultContentSha256")]
+    public string ResultContentSha256 { get; init; } = string.Empty;
 }
 
 public sealed record DeveloperProposal
@@ -89,7 +105,8 @@ public static class DeveloperContractSchema
                     "type": "string",
                     "enum": [
                       "CreateFile",
-                      "ReplaceFile"
+                      "ReplaceFile",
+                      "LocalizedPatch"
                     ]
                   },
                   "relativePath": {
@@ -104,6 +121,22 @@ public static class DeveloperContractSchema
                     "maxLength": 262144
                   },
                   "expectedContentSha256": {
+                    "type": "string"
+                  },
+                  "edits": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "oldText": { "type": "string", "maxLength": 16384 },
+                        "newText": { "type": "string", "maxLength": 16384 }
+                      },
+                      "required": ["oldText", "newText"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "resultContentSha256": {
                     "type": "string"
                   }
                 },

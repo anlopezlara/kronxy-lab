@@ -32,7 +32,7 @@ public sealed class DeveloperExecutionService :
         "Emit compact JSON with no markdown or commentary. File content must end immediately after its final required newline; never pad content with repeated blank lines, spaces, or duplicated source. " +
         "Each change content must contain only the file named by relativePath; never concatenate files or add unrelated top-level types. " +
         "Use only candidate file paths from the approved plan. Implement only requested types and members; do not add convenience helpers, extension methods, blocking async calls, examples, or speculative APIs. " +
-        "TARGET FILES deterministically state whether each candidate exists and include bounded authoritative content and SHA256 for existing files. Use ReplaceFile for exists=true and copy currentContentSha256 exactly into expectedContentSha256. Use CreateFile with an empty expectedContentSha256 only for exists=false. " +
+        "TARGET FILES deterministically state whether each candidate exists and include bounded authoritative content and SHA256 for existing files. Use LocalizedPatch with content empty, exact edits, and the currentContentSha256 for a localized change to an existing file larger than 8192 bytes. Use ReplaceFile for smaller existing files or when the whole file must change. Use CreateFile with an empty expectedContentSha256 only for exists=false. Always return edits as an array and resultContentSha256 as an empty placeholder; KRONXY computes results. " +
         "Preserve unrelated markup, code, injected services, usings, bindings, models, actions, and UI. Make the smallest coherent change based on the actual current content; never replace the existing architecture with a guessed pattern. " +
         "Do not execute commands, access files, call tools, or modify code. " +
         "KRONXY alone validates and applies your structured proposal.";
@@ -373,7 +373,10 @@ public sealed class DeveloperExecutionService :
                 systemInstructions.Length + prefix.Length +
                 outputRequirements.Length + schemaCharacters;
             int minimumRequiredOutputTokens =
-                EstimateMinimumOutputTokens(targetContext.Targets);
+                EstimateMinimumOutputTokens(
+                    targetContext.Targets,
+                    request.BuildCorrection is null &&
+                    request.HumanReviewCorrection is null);
             int availableInputTokens =
                 aiCapability.ContextWindowTokens -
                 aiCapability.SafetyMarginTokens -
@@ -809,7 +812,7 @@ public sealed class DeveloperExecutionService :
                 target.RelativePath +
                 "\nGenerate only the smallest complete source required by the request.\n";
             int minimumOutputTokens =
-                EstimateMinimumOutputTokens(invocationTargets);
+                EstimateMinimumOutputTokens(invocationTargets, true);
             int fixedCharacters = SystemInstructions.Length + prefix.Length +
                 outputRequirements.Length + schemaCharacters;
             int availableInputTokens = aiCapability.ContextWindowTokens -
@@ -1019,10 +1022,14 @@ public sealed class DeveloperExecutionService :
         path.EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase);
 
     private int EstimateMinimumOutputTokens(
-        IReadOnlyList<DeveloperTargetContext> targets)
+        IReadOnlyList<DeveloperTargetContext> targets,
+        bool allowLocalizedPatch)
     {
         int escapedContentCharacters = targets
-            .Where(target => target.Exists && target.CurrentContent is not null)
+            .Where(target => target.Exists &&
+                target.CurrentContent is not null &&
+                (!allowLocalizedPatch ||
+                 Encoding.UTF8.GetByteCount(target.CurrentContent) <= 8_192))
             .Sum(target => JsonSerializer.Serialize(
                 target.CurrentContent!,
                 PromptJsonOptions).Length);
@@ -1254,7 +1261,9 @@ public sealed class DeveloperExecutionService :
             }
 
             if (validateOperationType && target.Exists &&
-                change.Operation != DeveloperChangeOperationType.ReplaceFile)
+                change.Operation is not (
+                    DeveloperChangeOperationType.ReplaceFile or
+                    DeveloperChangeOperationType.LocalizedPatch))
             {
                 return "DEVELOPER_CREATE_EXISTING_FILE_REJECTED";
             }
