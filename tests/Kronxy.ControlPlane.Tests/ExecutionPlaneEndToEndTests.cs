@@ -958,7 +958,7 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 ".kronxy-context/packages");
 
             Assert.True(result.IsComplete);
-            Assert.Equal(570, result.Accepted.Count);
+            Assert.Equal(572, result.Accepted.Count);
             Assert.Contains(result.Accepted, file => file.LogicalPath == SourcePath);
             Assert.DoesNotContain(result.Accepted, file => IsPollution(file.LogicalPath));
             Assert.True(HasTest(
@@ -1036,6 +1036,9 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
             Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
                 "Localized_patch_uses_required_output_without_expanding_into_headroom"));
+            Assert.True(HasTest(
+                typeof(DeveloperExactReplayTests),
+                "Deterministic_fixture_uses_production_builder_and_emits_safe_fingerprint"));
             Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
                 "Required_minimum_above_configured_maximum_fails_closed_at_configuration"));

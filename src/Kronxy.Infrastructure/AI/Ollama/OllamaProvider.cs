@@ -11,6 +11,9 @@ public sealed class OllamaProvider : IAiProvider
 {
     private const string ProviderName = "Ollama";
 
+    internal static readonly JsonSerializerOptions RequestJsonOptions =
+        new(JsonSerializerDefaults.Web);
+
     private readonly HttpClient httpClient;
     private readonly AiGatewayOptions options;
 
@@ -47,54 +50,8 @@ public sealed class OllamaProvider : IAiProvider
                 "OLLAMA_MODEL_REQUIRED");
         }
 
-        var payload =
-            new OllamaChatRequest
-            {
-                Model =
-                    physicalModel,
-
-                Stream =
-                    false,
-
-                Think =
-                    false,
-
-                Messages =
-                [
-                    new OllamaMessage
-                    {
-                        Role = "system",
-                        Content =
-                            request.SystemInstructions
-                    },
-                    new OllamaMessage
-                    {
-                        Role = "user",
-                        Content =
-                            request.UserContent
-                    }
-                ],
-
-                Options =
-                    new OllamaRequestOptions
-                    {
-                        NumContext =
-                            request.Generation.ContextWindowTokens ??
-                            options.ContextWindowTokens,
-
-                        NumPredict =
-                            request.Generation
-                                .MaxOutputTokens,
-
-                        Temperature =
-                            request.Generation
-                                .Temperature
-                    },
-
-                Format =
-                    request.StructuredOutput?
-                        .Schema
-            };
+        OllamaChatRequest payload = CreateRequestPayload(
+            request, physicalModel, options);
 
         Stopwatch stopwatch =
             Stopwatch.StartNew();
@@ -108,9 +65,9 @@ public sealed class OllamaProvider : IAiProvider
                     HttpMethod.Post,
                     "api/chat")
                 {
-                    Content =
-                        JsonContent.Create(
-                            payload)
+                    Content = JsonContent.Create(
+                        payload,
+                        options: RequestJsonOptions)
                 };
 
             response =
@@ -589,7 +546,39 @@ public sealed class OllamaProvider : IAiProvider
             EvalDurationNanoseconds = body.EvalDuration
         };
 
-    private sealed record OllamaChatRequest
+    internal static OllamaChatRequest CreateRequestPayload(
+        AiRequest request,
+        string physicalModel,
+        AiGatewayOptions options) =>
+        new()
+        {
+            Model = physicalModel,
+            Stream = false,
+            Think = false,
+            Messages =
+            [
+                new OllamaMessage
+                {
+                    Role = "system",
+                    Content = request.SystemInstructions
+                },
+                new OllamaMessage
+                {
+                    Role = "user",
+                    Content = request.UserContent
+                }
+            ],
+            Options = new OllamaRequestOptions
+            {
+                NumContext = request.Generation.ContextWindowTokens ??
+                    options.ContextWindowTokens,
+                NumPredict = request.Generation.MaxOutputTokens,
+                Temperature = request.Generation.Temperature
+            },
+            Format = request.StructuredOutput?.Schema
+        };
+
+    internal sealed record OllamaChatRequest
     {
         public required string Model
         {
@@ -630,7 +619,7 @@ public sealed class OllamaProvider : IAiProvider
         }
     }
 
-    private sealed record OllamaRequestOptions
+    internal sealed record OllamaRequestOptions
     {
         [JsonPropertyName("num_ctx")]
         public int NumContext
@@ -653,7 +642,7 @@ public sealed class OllamaProvider : IAiProvider
         }
     }
 
-    private sealed record OllamaMessage
+    internal sealed record OllamaMessage
     {
         public required string Role
         {
