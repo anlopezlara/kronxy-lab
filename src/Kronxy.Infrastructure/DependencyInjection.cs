@@ -514,7 +514,9 @@ public static class DependencyInjection
                     GetOptionalPositiveInt(
                         configuration,
                         "AI:DeveloperMaxOutputTokens",
-                        8_192),
+                        GetRequiredPositiveInt(
+                            configuration,
+                            "AI:MaxOutputTokens")),
 
                 DeveloperMinimumOutputTokens =
                     GetOptionalPositiveInt(

@@ -822,6 +822,9 @@ public sealed class JobPostgresPersistenceTests
                         ["AI:MaxOutputTokens"] =
                             "256",
 
+                        ["AI:DeveloperMaxOutputTokens"] =
+                            "8192",
+
                         ["AI:MaxInputCharacters"] =
                             "65536",
 

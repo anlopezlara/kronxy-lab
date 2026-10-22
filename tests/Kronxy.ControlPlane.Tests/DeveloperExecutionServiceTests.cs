@@ -125,7 +125,7 @@ public sealed class DeveloperExecutionServiceTests
         Assert.Contains(hash, input);
         Assert.Null(fixture.Context.LastRequest);
         Assert.Equal(
-            8_192,
+            2_048,
             fixture.Gateway.LastRequest.Generation.MaxOutputTokens);
         Assert.Equal(
             DeveloperChangeOperationType.ReplaceFile,
@@ -147,7 +147,7 @@ public sealed class DeveloperExecutionServiceTests
     }
 
     [Fact]
-    public async Task Medium_existing_target_receives_dynamically_reduced_output_budget()
+    public async Task Localized_patch_uses_required_output_without_expanding_into_headroom()
     {
         const string path = "src/new.cs";
         string current = string.Concat(Enumerable.Repeat(
@@ -166,8 +166,29 @@ public sealed class DeveloperExecutionServiceTests
 
         Assert.True(result.IsSuccess);
         int outputTokens = fixture.Gateway.LastRequest!.Generation.MaxOutputTokens!.Value;
-        Assert.InRange(outputTokens, 2_048, 8_191);
+        Assert.Equal(2_048, outputTokens);
         Assert.Equal(16_384, fixture.Gateway.LastRequest.Generation.ContextWindowTokens);
+    }
+
+    [Fact]
+    public async Task Required_output_equal_to_configured_maximum_succeeds()
+    {
+        Fixture fixture = CreateFixture(developerMaxOutputTokens: 2_048);
+
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+
+        Assert.True(result.IsSuccess, result.ErrorCode);
+        Assert.Equal(2_048,
+            fixture.Gateway.LastRequest!.Generation.MaxOutputTokens);
+    }
+
+    [Fact]
+    public void Required_minimum_above_configured_maximum_fails_closed_at_configuration()
+    {
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => CreateFixture(developerMaxOutputTokens: 1_024));
+
+        Assert.Contains("DeveloperMinimumOutputTokens", exception.Message);
     }
 
     [Fact]
@@ -208,10 +229,9 @@ public sealed class DeveloperExecutionServiceTests
             current,
             targets.RootElement[0].GetProperty("CurrentContent").GetString());
         Assert.Equal(16_384, fixture.Gateway.LastRequest.Generation.ContextWindowTokens);
-        Assert.InRange(
-            fixture.Gateway.LastRequest.Generation.MaxOutputTokens!.Value,
+        Assert.Equal(
             2_048,
-            8_192);
+            fixture.Gateway.LastRequest.Generation.MaxOutputTokens);
         Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(current));
     }
 
@@ -269,8 +289,7 @@ public sealed class DeveloperExecutionServiceTests
         Assert.Equal(2_048, minimumOutputTokens);
         Assert.True(headroom > 0, $"Headroom={headroom}");
         Assert.Equal(16_384, sent.Generation.ContextWindowTokens);
-        Assert.Equal(16_384 - 512 - estimatedInputTokens,
-            sent.Generation.MaxOutputTokens);
+        Assert.Equal(2_048, sent.Generation.MaxOutputTokens);
         Assert.DoesNotContain("AUTHORIZED REVIEWER FEEDBACK", sent.UserContent);
         Assert.DoesNotContain("AUTHORIZED CORRECTION EVIDENCE", sent.UserContent);
         Assert.DoesNotContain("AUTHORIZED REPOSITORY CONTEXT", sent.UserContent);
@@ -992,13 +1011,13 @@ public sealed class DeveloperExecutionServiceTests
         };
         int escapedTargetCharacters = JsonSerializer.Serialize(source, promptJson).Length;
         int minimumOutputTokens = Math.Max(
-            2_048, (escapedTargetCharacters + 1_024 + 2) / 3);
+            2_048, (escapedTargetCharacters + 768 + 2) / 3);
         Console.WriteLine(
             $"KRX_008113 envelope input={estimatedInputTokens} minimumOutput={minimumOutputTokens} total={estimatedInputTokens + minimumOutputTokens + 512} headroom={16_384 - 512 - minimumOutputTokens - estimatedInputTokens}");
         Assert.InRange(estimatedInputTokens, 1, 8_916);
-        Assert.True(minimumOutputTokens >= 6_956);
-        Assert.True(fixture.Gateway.LastRequest.Generation!.MaxOutputTokens >=
-            minimumOutputTokens);
+        Assert.True(minimumOutputTokens >= 6_870);
+        Assert.Equal(minimumOutputTokens,
+            fixture.Gateway.LastRequest.Generation!.MaxOutputTokens);
         Assert.True(16_384 - 512 - minimumOutputTokens - estimatedInputTokens > 0);
         const string evidenceMarker = "AUTHORIZED CORRECTION EVIDENCE:\n";
         int evidenceStart = input.IndexOf(evidenceMarker, StringComparison.Ordinal) +
@@ -1017,10 +1036,10 @@ public sealed class DeveloperExecutionServiceTests
     }
 
     [Fact]
-    public async Task Genuinely_impossible_build_correction_envelope_fails_closed()
+    public async Task ReplaceFile_required_output_above_configured_maximum_fails_before_inference()
     {
         DeveloperExecutionRequest request = BuildCorrectionRequest();
-        string content = new('x', 50_000);
+        string content = new('x', 9_000);
         File.WriteAllText(
             Path.Combine(request.Repository.RepositoryPath, "src", "new.cs"),
             content);
@@ -1035,12 +1054,12 @@ public sealed class DeveloperExecutionServiceTests
                         new ValidatedDeveloperChange(
                             DeveloperChangeOperationType.ReplaceFile,
                             "src/new.cs", "Change source.", content,
-                            new string('a', 64), 50_000)
+                            new string('a', 64), 9_000)
                     ]
                 }
             }
         };
-        Fixture fixture = CreateFixture();
+        Fixture fixture = CreateFixture(developerMaxOutputTokens: 3_000);
         fixture.Reader.PlanContent = JsonSerializer.SerializeToUtf8Bytes(
             new PlannerPlan
             {
@@ -1778,7 +1797,8 @@ public sealed class DeveloperExecutionServiceTests
 
     private static Fixture CreateFixture(
         int developerContextCharacters = 48_000,
-        int developerContextWindowTokens = 16_384)
+        int developerContextWindowTokens = 16_384,
+        int developerMaxOutputTokens = 8_192)
     {
         var reader = new FakeReader();
         var context = new FakeContextBuilder();
@@ -1809,6 +1829,7 @@ public sealed class DeveloperExecutionServiceTests
             DeveloperInferenceTimeout = TimeSpan.FromSeconds(90),
             QueueWaitTimeout = TimeSpan.FromSeconds(1),
             MaxOutputTokens = 4_096,
+            DeveloperMaxOutputTokens = developerMaxOutputTokens,
             MaxInputCharacters = 65_536,
             DeveloperContextCharacters = developerContextCharacters,
             DeveloperFeedbackCharacters = 8_192,

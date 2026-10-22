@@ -593,6 +593,9 @@ public sealed class ExecutionPlaneEndToEndTests
                         ["AI:MaxOutputTokens"] =
                             "256",
 
+                        ["AI:DeveloperMaxOutputTokens"] =
+                            "8192",
+
                         ["AI:MaxInputCharacters"] =
                             "65536",
 
@@ -1005,6 +1008,7 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 ConnectionTimeout = TimeSpan.FromSeconds(1),
                 QueueWaitTimeout = TimeSpan.FromSeconds(1),
                 MaxOutputTokens = 4_096,
+                DeveloperMaxOutputTokens = 2_048,
                 MaxInputCharacters = 65_536,
                 MaxResponseBytes = 1_048_576
             };
@@ -1017,7 +1021,7 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
             Assert.Equal("configured-quality-model", physicalModel);
             Assert.NotEqual(options.Models["General"], physicalModel);
             Assert.Equal(ContextWindow, capability.ContextWindowTokens);
-            Assert.Equal(8_192, capability.MaxOutputTokens);
+            Assert.Equal(2_048, capability.MaxOutputTokens);
             Assert.Equal(TimeSpan.FromMinutes(5), capability.InferenceTimeout);
             Assert.Equal(
                 AiInferenceTimeoutPolicy.Resolve(
@@ -1031,13 +1035,19 @@ public sealed class FullPipelinePreflightTests(ITestOutputHelper output)
                 "Two_target_19181_byte_pilot_has_deterministic_headroom"));
             Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
+                "Localized_patch_uses_required_output_without_expanding_into_headroom"));
+            Assert.True(HasTest(
+                typeof(DeveloperExecutionServiceTests),
+                "Required_minimum_above_configured_maximum_fails_closed_at_configuration"));
+            Assert.True(HasTest(
+                typeof(DeveloperExecutionServiceTests),
                 "Second_target_failure_fails_stage_after_preserving_provenance"));
             Assert.True(HasTest(
                 typeof(SafeChangeWorkspaceValidatorTests),
                 "Localized_patch_applies_exact_edits_and_computes_result_hash"));
             Assert.True(HasTest(
                 typeof(DeveloperExecutionServiceTests),
-                "Genuinely_impossible_build_correction_envelope_fails_closed"));
+                "ReplaceFile_required_output_above_configured_maximum_fails_before_inference"));
         });
 
         Stage("PREFLIGHT_DEVELOPER_FAILED", () =>

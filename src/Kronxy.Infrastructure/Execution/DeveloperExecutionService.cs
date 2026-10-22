@@ -442,13 +442,12 @@ public sealed class DeveloperExecutionService :
                 aiCapability.ContextWindowTokens -
                 aiCapability.SafetyMarginTokens -
                 estimatedInputTokens;
-            int effectiveOutputTokens = Math.Min(
-                aiCapability.MaxOutputTokens,
-                maximumAvailableOutputTokens);
+            int effectiveOutputTokens = minimumRequiredOutputTokens;
 
             if ((long)systemInstructions.Length +
                     userContent.Length > aiOptions.MaxInputCharacters ||
-                effectiveOutputTokens < minimumRequiredOutputTokens)
+                minimumRequiredOutputTokens > aiCapability.MaxOutputTokens ||
+                minimumRequiredOutputTokens > maximumAvailableOutputTokens)
             {
                 LogEnvelopeFailure(
                     estimatedInputTokens,
@@ -842,13 +841,14 @@ public sealed class DeveloperExecutionService :
             int inputTokens = DivideRoundUp(
                 SystemInstructions.Length + userContent.Length + schemaCharacters,
                 ConservativeCharactersPerToken);
-            int effectiveOutputTokens = Math.Min(
-                aiCapability.MaxOutputTokens,
+            int maximumAvailableOutputTokens =
                 aiCapability.ContextWindowTokens -
-                    aiCapability.SafetyMarginTokens - inputTokens);
+                aiCapability.SafetyMarginTokens - inputTokens;
+            int effectiveOutputTokens = minimumOutputTokens;
             if ((long)SystemInstructions.Length + userContent.Length >
                     aiOptions.MaxInputCharacters ||
-                effectiveOutputTokens < minimumOutputTokens)
+                minimumOutputTokens > aiCapability.MaxOutputTokens ||
+                minimumOutputTokens > maximumAvailableOutputTokens)
             {
                 LogEnvelopeFailure(inputTokens, minimumOutputTokens, invocationTargets);
                 return EnvelopeFailure();

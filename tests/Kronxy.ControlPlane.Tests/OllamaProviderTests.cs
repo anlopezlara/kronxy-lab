@@ -110,7 +110,15 @@ public sealed class OllamaProviderTests
                 client);
 
         await provider.GenerateAsync(
-            CreateRequest(),
+            CreateRequest() with
+            {
+                Generation = new AiGenerationOptions
+                {
+                    MaxOutputTokens = 2_048,
+                    ContextWindowTokens = 16_384,
+                    Temperature = 0
+                }
+            },
             "model-fast");
 
         Assert.NotNull(captured);
@@ -172,7 +180,7 @@ public sealed class OllamaProviderTests
                 .GetInt32());
 
         Assert.Equal(
-            32,
+            2_048,
             options
                 .GetProperty("num_predict")
                 .GetInt32());

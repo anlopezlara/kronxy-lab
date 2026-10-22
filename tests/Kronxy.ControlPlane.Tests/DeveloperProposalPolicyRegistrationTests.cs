@@ -75,6 +75,9 @@ public sealed class DeveloperProposalPolicyRegistrationTests
         Assert.Equal(
             TimeSpan.FromMinutes(1),
             aiOptions.DeveloperInferenceTimeout);
+        Assert.Equal(2_048, aiOptions.MaxOutputTokens);
+        Assert.Equal(2_048, aiOptions.DeveloperMaxOutputTokens);
+        Assert.Equal(2_048, aiOptions.DeveloperMinimumOutputTokens);
         Assert.IsType<
             DeveloperProposalPolicy>(
                 policy);
@@ -226,7 +229,7 @@ public sealed class DeveloperProposalPolicyRegistrationTests
                     "00:00:05",
 
                 ["AI:MaxOutputTokens"] =
-                    "1024",
+                    "2048",
 
                 ["AI:MaxInputCharacters"] =
                     "65536",
