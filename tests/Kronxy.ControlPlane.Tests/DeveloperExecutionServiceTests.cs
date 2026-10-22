@@ -115,7 +115,8 @@ public sealed class DeveloperExecutionServiceTests
             {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Preserve and update file.","content":"public sealed class Existing { public int Value { get; } }\n","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
             """);
 
-        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+        DeveloperExecutionRequest request = Request();
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
 
         Assert.True(result.IsSuccess);
         string input = fixture.Gateway.LastRequest!.UserContent;
@@ -140,7 +141,8 @@ public sealed class DeveloperExecutionServiceTests
         Fixture fixture = CreateFixture();
         fixture.Reader.ContextContent = ContextPackage((path, current));
 
-        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+        DeveloperExecutionRequest request = Request();
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
 
         Assert.False(result.IsSuccess);
         Assert.Equal("DEVELOPER_CREATE_EXISTING_FILE_REJECTED", result.ErrorCode);
@@ -210,7 +212,8 @@ public sealed class DeveloperExecutionServiceTests
             {"summary":"Modify existing file.","changes":[{"operation":"ReplaceFile","relativePath":"{{path}}","intent":"Preserve and update file.","content":"updated","expectedContentSha256":"{{hash}}"}],"assumptions":[],"risks":[]}
             """);
 
-        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(Request());
+        DeveloperExecutionRequest request = Request();
+        DeveloperExecutionResult result = await fixture.Service.ExecuteAsync(request);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(1, fixture.Gateway.CallCount);
@@ -233,6 +236,32 @@ public sealed class DeveloperExecutionServiceTests
             2_048,
             fixture.Gateway.LastRequest.Generation.MaxOutputTokens);
         Assert.Equal(targetBytes, Encoding.UTF8.GetByteCount(current));
+
+        PlannerPlan plan = JsonSerializer.Deserialize<PlannerPlan>(
+            fixture.Reader.PlanContent)!;
+        var target = new DeveloperTargetContext(
+            path, true, current, hash,
+            "WritableCandidate", "PlanningPlan+ContextManifest");
+        DeveloperPromptParts replayPrompt =
+            DeveloperExecutionService.BuildSingleInitialPromptParts(
+                request, JsonSerializer.Serialize(plan), [target],
+                plan.CandidateFilesToModify);
+        AiRequest replay = DeveloperExecutionService.CreateAiRequest(
+            DeveloperExecutionService.InitialSystemInstructions(target),
+            replayPrompt.UserContent,
+            request.CorrelationId,
+            DeveloperExecutionService.InitialSchema(target),
+            2_048,
+            new DeveloperAiCapability(
+                AiLogicalModel.CodingQuality, 16_384, 8_192, 2_048, 512,
+                TimeSpan.FromMinutes(5)));
+        AiRequest runtime = fixture.Gateway.LastRequest;
+        Assert.Equal(runtime.SystemInstructions, replay.SystemInstructions);
+        Assert.Equal(runtime.UserContent, replay.UserContent);
+        Assert.Equal(runtime.Generation, replay.Generation);
+        Assert.Equal(
+            runtime.StructuredOutput!.Schema.GetRawText(),
+            replay.StructuredOutput!.Schema.GetRawText());
     }
 
     [Fact]

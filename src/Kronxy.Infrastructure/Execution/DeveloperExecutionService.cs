@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Kronxy.Application.AI;
 using Kronxy.Application.Artifacts;
@@ -21,12 +22,12 @@ public sealed class DeveloperExecutionService :
 {
     private const int ConservativeCharactersPerToken = 3;
 
-    private static readonly JsonSerializerOptions PromptJsonOptions = new()
+    internal static readonly JsonSerializerOptions PromptJsonOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    private const string SystemInstructions =
+    internal const string SystemInstructions =
         "You are the KRONXY developer model. Return only the smallest complete JSON proposal needed for the task. " +
         "Use at most four changes; omit unnecessary files; keep summary and intent under eight words; use empty assumptions and risks unless essential; never repeat code outside content. " +
         "Emit compact JSON with no markdown or commentary. File content must end immediately after its final required newline; never pad content with repeated blank lines, spaces, or duplicated source. " +
@@ -36,6 +37,23 @@ public sealed class DeveloperExecutionService :
         "Preserve unrelated markup, code, injected services, usings, bindings, models, actions, and UI. Make the smallest coherent change based on the actual current content; never replace the existing architecture with a guessed pattern. " +
         "Do not execute commands, access files, call tools, or modify code. " +
         "KRONXY alone validates and applies your structured proposal.";
+
+    internal const string LocalizedPatchSystemInstructions =
+        "Return one compact JSON Developer proposal for the authorized target. " +
+        "The changes array must contain exactly one LocalizedPatch change: content must be empty; edits must contain one or more entries; each edit must contain exact oldText that occurs once and its replacement newText; edits must not overlap. " +
+        "Copy the target's CurrentContentSha256 exactly into expectedContentSha256; leave resultContentSha256 empty because KRONXY computes and validates it. " +
+        "When copying identifiers, guard unavailable values and do not copy Guid.Empty; a RunId copy control must be disabled or refuse execution unless _job.RunId != Guid.Empty. " +
+        "Preserve unrelated code. Do not emit other paths, full-file content, markdown, prose, tools, or commands.";
+
+    private const string ReplaceFileSystemInstructions =
+        "Return one compact JSON Developer proposal for the authorized target. " +
+        "Use ReplaceFile only with the smallest complete updated file and the supplied currentContentSha256. " +
+        "Preserve unrelated code. Do not emit other paths, markdown, prose, tools, or commands.";
+
+    private const string CreateFileSystemInstructions =
+        "Return one compact JSON Developer proposal for the authorized target. " +
+        "Use CreateFile only with the smallest complete file and an empty expectedContentSha256. " +
+        "Do not emit other paths, markdown, prose, tools, or commands.";
 
     private const string BuildCorrectionInstructions =
         "The previous proposal failed Build. Return only the smallest complete JSON correction. " +
@@ -287,7 +305,17 @@ public sealed class DeveloperExecutionService :
                     cancellationToken).ConfigureAwait(false);
             }
 
-            string targetContextJson = request.BuildCorrection is null
+            bool isSingleInitial = request.BuildCorrection is null &&
+                request.HumanReviewCorrection is null &&
+                targetContext.Targets.Count == 1;
+            DeveloperPromptParts? singleInitialPrompt = isSingleInitial
+                ? BuildSingleInitialPromptParts(
+                    request, planJson, targetContext.Targets,
+                    authorizedDeveloperPaths)
+                : null;
+
+            string targetContextJson = singleInitialPrompt?.TargetJson ??
+                (request.BuildCorrection is null
                 ? JsonSerializer.Serialize(targetContext.Targets, PromptJsonOptions)
                 : JsonSerializer.Serialize(
                     targetContext.Targets.Select(target => new
@@ -295,7 +323,7 @@ public sealed class DeveloperExecutionService :
                         Path = target.RelativePath,
                         Content = target.CurrentContent
                     }),
-                    PromptJsonOptions);
+                    PromptJsonOptions));
 
             if ((long)feedbackJson.Length + correctionJson.Length >
                 aiOptions.DeveloperFeedbackCharacters)
@@ -315,7 +343,7 @@ public sealed class DeveloperExecutionService :
                     plan.AcceptanceTestMappings
                 });
 
-            string prefix =
+            string prefix = singleInitialPrompt?.Prefix ??
                 (request.BuildCorrection is null
                     ? "JOB REQUEST:\n" + request.JobRequest + "\n\n"
                     : string.Empty) +
@@ -334,7 +362,9 @@ public sealed class DeveloperExecutionService :
 
             string systemInstructions = request.BuildCorrection is not null
                 ? BuildCorrectionInstructions
-                : SystemInstructions +
+                : (isSingleInitial
+                    ? InitialSystemInstructions(targetContext.Targets[0])
+                    : SystemInstructions) +
                 (request.HumanReviewCorrection is not null
                     ? HumanReviewCorrectionInstructions
                     : string.Empty);
@@ -349,7 +379,7 @@ public sealed class DeveloperExecutionService :
                       "KRONXY binds each expectedContentSha256 from the governed workspace; use an empty placeholder.\n"
                     : string.Empty;
 
-            string outputRequirements =
+            string outputRequirements = singleInitialPrompt?.OutputRequirements ??
                 "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
                 "Return only compact JSON matching the schema. " +
                 correctionRequirements +
@@ -363,8 +393,9 @@ public sealed class DeveloperExecutionService :
                     authorizedDeveloperPaths) +
                 "\nGenerate only the smallest complete source required by the request.\n";
 
-            JsonElement developerSchema =
-                DeveloperContractSchema.CreateSchema();
+            JsonElement developerSchema = isSingleInitial
+                ? InitialSchema(targetContext.Targets[0])
+                : DeveloperContractSchema.CreateSchema();
 
             int schemaCharacters =
                 developerSchema.GetRawText().Length;
@@ -488,27 +519,9 @@ public sealed class DeveloperExecutionService :
 
             AiResponse response =
                 await aiGateway.GenerateAsync(
-                    new AiRequest
-                    {
-                        Model = aiCapability.LogicalModel,
-                        SystemInstructions = systemInstructions,
-                        UserContent = userContent,
-                        CorrelationId = request.CorrelationId,
-                        InferenceTimeout =
-                            aiCapability.InferenceTimeout,
-                        Generation = new AiGenerationOptions
-                        {
-                            MaxOutputTokens =
-                                effectiveOutputTokens,
-                            ContextWindowTokens =
-                                aiCapability.ContextWindowTokens,
-                            Temperature = 0
-                        },
-                        StructuredOutput = new AiStructuredOutput
-                        {
-                            Schema = developerSchema
-                        }
-                    },
+                    CreateAiRequest(
+                        systemInstructions, userContent, request.CorrelationId,
+                        developerSchema, effectiveOutputTokens, aiCapability),
                     cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccess)
@@ -775,45 +788,21 @@ public sealed class DeveloperExecutionService :
         var completed = new List<DeveloperProposal>();
         var responses = new List<object>();
         string planJson = JsonSerializer.Serialize(plan);
-        JsonElement schema = DeveloperContractSchema.CreateSchema();
-        int schemaCharacters = schema.GetRawText().Length;
 
         for (int index = 0; index < orderedTargets.Length; index++)
         {
             DeveloperTargetContext target = orderedTargets[index];
+            JsonElement schema = InitialSchema(target);
+            int schemaCharacters = schema.GetRawText().Length;
             IReadOnlyList<DeveloperTargetContext> invocationTargets = [target];
-            string targetJson = JsonSerializer.Serialize(
-                invocationTargets,
-                PromptJsonOptions);
-            string priorEffects = completed.Count == 0
-                ? string.Empty
-                : "\n\nGOVERNED PRIOR TARGET EFFECTS:\n" +
-                  JsonSerializer.Serialize(
-                      completed.SelectMany(item => item.Changes).Select(change => new
-                      {
-                          change.RelativePath,
-                          change.Operation,
-                          change.Intent,
-                          Content = change.Content.Length <= 4_096
-                              ? change.Content
-                              : change.Content[..4_096]
-                      }),
-                      PromptJsonOptions);
-            string prefix =
-                "JOB REQUEST:\n" + request.JobRequest + "\n\n" +
-                "APPROVED PLANNER PLAN:\n" + planJson +
-                "\n\nAUTHORIZED TARGET FILES:\n" + targetJson +
-                priorEffects;
-            string outputRequirements =
-                "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
-                "Return only compact JSON matching the schema. " +
-                "Emit exactly one change for this target and no other path:\n- " +
-                target.RelativePath +
-                "\nGenerate only the smallest complete source required by the request.\n";
             int minimumOutputTokens =
                 EstimateMinimumOutputTokens(invocationTargets, true);
-            int fixedCharacters = SystemInstructions.Length + prefix.Length +
-                outputRequirements.Length + schemaCharacters;
+            DeveloperInitialRequestParts requestParts =
+                BuildInitialTargetRequestParts(
+                    request, planJson, target, completed, schema,
+                    minimumOutputTokens, index + 1, aiCapability);
+            int fixedCharacters = requestParts.Request.SystemInstructions.Length +
+                requestParts.UserContent.Length + schemaCharacters;
             int availableInputTokens = aiCapability.ContextWindowTokens -
                 aiCapability.SafetyMarginTokens - minimumOutputTokens;
             int remainingCharacters = Math.Min(
@@ -837,15 +826,17 @@ public sealed class DeveloperExecutionService :
             if (!context.IsSuccess)
                 return Failure(MapContextFailure(context.FailureKind), context.ErrorCode);
 
-            string userContent = prefix + context.Content + outputRequirements;
+            string userContent = requestParts.UserContent;
             int inputTokens = DivideRoundUp(
-                SystemInstructions.Length + userContent.Length + schemaCharacters,
+                requestParts.Request.SystemInstructions.Length +
+                userContent.Length + schemaCharacters,
                 ConservativeCharactersPerToken);
             int maximumAvailableOutputTokens =
                 aiCapability.ContextWindowTokens -
                 aiCapability.SafetyMarginTokens - inputTokens;
             int effectiveOutputTokens = minimumOutputTokens;
-            if ((long)SystemInstructions.Length + userContent.Length >
+            if ((long)requestParts.Request.SystemInstructions.Length +
+                    userContent.Length >
                     aiOptions.MaxInputCharacters ||
                 minimumOutputTokens > aiCapability.MaxOutputTokens ||
                 minimumOutputTokens > maximumAvailableOutputTokens)
@@ -863,21 +854,7 @@ public sealed class DeveloperExecutionService :
                     minimumOutputTokens - aiCapability.SafetyMarginTokens);
 
             AiResponse response = await aiGateway.GenerateAsync(
-                new AiRequest
-                {
-                    Model = aiCapability.LogicalModel,
-                    SystemInstructions = SystemInstructions,
-                    UserContent = userContent,
-                    CorrelationId = $"{request.CorrelationId}:target:{index + 1}",
-                    InferenceTimeout = aiCapability.InferenceTimeout,
-                    Generation = new AiGenerationOptions
-                    {
-                        MaxOutputTokens = effectiveOutputTokens,
-                        ContextWindowTokens = aiCapability.ContextWindowTokens,
-                        Temperature = 0
-                    },
-                    StructuredOutput = new AiStructuredOutput { Schema = schema }
-                },
+                requestParts.Request,
                 cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccess)
@@ -1015,6 +992,169 @@ public sealed class DeveloperExecutionService :
             proposalWritten.Artifact,
             validated.Proposal);
     }
+
+    internal static DeveloperInitialRequestParts BuildInitialTargetRequestParts(
+        DeveloperExecutionRequest request,
+        string planJson,
+        DeveloperTargetContext target,
+        IReadOnlyList<DeveloperProposal> completed,
+        JsonElement schema,
+        int outputTokens,
+        int sequence,
+        DeveloperAiCapability? capability = null)
+    {
+        DeveloperAiCapability effectiveCapability = capability ??
+            new DeveloperAiCapability(
+                AiLogicalModel.CodingQuality, 16_384, 2_048, 2_048, 512,
+                TimeSpan.FromMinutes(5));
+        string targetJson = JsonSerializer.Serialize(
+            new[] { target }, PromptJsonOptions);
+        string priorEffects = completed.Count == 0
+            ? string.Empty
+            : "\n\nGOVERNED PRIOR TARGET EFFECTS:\n" +
+              JsonSerializer.Serialize(
+                  completed.SelectMany(item => item.Changes).Select(change => new
+                  {
+                      change.RelativePath,
+                      change.Operation,
+                      change.Intent,
+                      Content = change.Content.Length <= 4_096
+                          ? change.Content
+                          : change.Content[..4_096]
+                  }),
+                  PromptJsonOptions);
+        string prefix =
+            "JOB REQUEST:\n" + request.JobRequest + "\n\n" +
+            "APPROVED PLANNER PLAN:\n" + planJson +
+            "\n\nAUTHORIZED TARGET FILES:\n" + targetJson +
+            priorEffects;
+        string outputRequirements =
+            "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
+            "Return only compact JSON matching the schema. " +
+            "Emit exactly one change for this target and no other path:\n- " +
+            target.RelativePath +
+            "\nGenerate only the smallest complete source required by the request.\n";
+        string userContent = prefix + outputRequirements;
+        string systemInstructions = InitialSystemInstructions(target);
+        var aiRequest = new AiRequest
+        {
+            Model = effectiveCapability.LogicalModel,
+            SystemInstructions = systemInstructions,
+            UserContent = userContent,
+            CorrelationId = $"{request.CorrelationId}:target:{sequence}",
+            InferenceTimeout = effectiveCapability.InferenceTimeout,
+            Generation = new AiGenerationOptions
+            {
+                MaxOutputTokens = outputTokens,
+                ContextWindowTokens = effectiveCapability.ContextWindowTokens,
+                Temperature = 0
+            },
+            StructuredOutput = new AiStructuredOutput { Schema = schema }
+        };
+        return new DeveloperInitialRequestParts(
+            aiRequest,
+            userContent,
+            targetJson,
+            priorEffects,
+            prefix,
+            outputRequirements,
+            request.JobRequest.Length,
+            planJson.Length);
+    }
+
+    internal static DeveloperPromptParts BuildSingleInitialPromptParts(
+        DeveloperExecutionRequest request,
+        string planJson,
+        IReadOnlyList<DeveloperTargetContext> targets,
+        IReadOnlyList<string> authorizedPaths)
+    {
+        string targetJson = JsonSerializer.Serialize(targets, PromptJsonOptions);
+        string prefix =
+            "JOB REQUEST:\n" + request.JobRequest + "\n\n" +
+            "APPROVED PLANNER PLAN:\n" + planJson +
+            "\n\nAUTHORIZED TARGET FILES:\n" + targetJson;
+        string outputRequirements =
+            "\n\nFINAL OUTPUT REQUIREMENTS:\n" +
+            "Return only compact JSON matching the schema. " +
+            "Use only these candidate paths:\n- " +
+            string.Join("\n- ", authorizedPaths) +
+            "\nGenerate only the smallest complete source required by the request.\n";
+        return new DeveloperPromptParts(
+            prefix + outputRequirements,
+            targetJson,
+            string.Empty,
+            prefix,
+            outputRequirements,
+            request.JobRequest.Length,
+            planJson.Length);
+    }
+
+    internal static string InitialSystemInstructions(
+        DeveloperTargetContext target)
+    {
+        if (!target.Exists)
+            return CreateFileSystemInstructions;
+
+        return Encoding.UTF8.GetByteCount(target.CurrentContent ?? string.Empty) > 8_192
+            ? LocalizedPatchSystemInstructions
+            : ReplaceFileSystemInstructions;
+    }
+
+    internal static JsonElement InitialSchema(DeveloperTargetContext target)
+    {
+        JsonNode root = JsonNode.Parse(
+            DeveloperContractSchema.CreateSchema().GetRawText())!;
+        JsonObject changes = root["properties"]!["changes"]!.AsObject();
+        changes["maxItems"] = 1;
+        JsonObject change = changes["items"]!.AsObject();
+        JsonObject properties = change["properties"]!.AsObject();
+        JsonArray operationEnum = properties["operation"]!["enum"]!.AsArray();
+        operationEnum.Clear();
+
+        string operation;
+        if (!target.Exists)
+        {
+            operation = nameof(DeveloperChangeOperationType.CreateFile);
+        }
+        else if (Encoding.UTF8.GetByteCount(
+                     target.CurrentContent ?? string.Empty) > 8_192)
+        {
+            operation = nameof(DeveloperChangeOperationType.LocalizedPatch);
+            properties["edits"]!["minItems"] = 1;
+            change["required"]!.AsArray().Add("edits");
+        }
+        else
+        {
+            operation = nameof(DeveloperChangeOperationType.ReplaceFile);
+        }
+
+        operationEnum.Add(operation);
+        using JsonDocument document = JsonDocument.Parse(root.ToJsonString());
+        return document.RootElement.Clone();
+    }
+
+    internal static AiRequest CreateAiRequest(
+        string systemInstructions,
+        string userContent,
+        string correlationId,
+        JsonElement schema,
+        int outputTokens,
+        DeveloperAiCapability capability) =>
+        new()
+        {
+            Model = capability.LogicalModel,
+            SystemInstructions = systemInstructions,
+            UserContent = userContent,
+            CorrelationId = correlationId,
+            InferenceTimeout = capability.InferenceTimeout,
+            Generation = new AiGenerationOptions
+            {
+                MaxOutputTokens = outputTokens,
+                ContextWindowTokens = capability.ContextWindowTokens,
+                Temperature = 0
+            },
+            StructuredOutput = new AiStructuredOutput { Schema = schema }
+        };
 
     private static bool IsTestPath(string path) =>
         path.StartsWith("tests/", StringComparison.OrdinalIgnoreCase) ||
@@ -1307,14 +1447,6 @@ public sealed class DeveloperExecutionService :
             },
         cancellationToken);
 
-    private sealed record DeveloperTargetContext(
-        string RelativePath,
-        bool Exists,
-        string? CurrentContent,
-        string CurrentContentSha256,
-        string Role,
-        string AuthorizationSource);
-
     private sealed record TargetContextResult(
         bool IsSuccess,
         IReadOnlyList<DeveloperTargetContext> Targets,
@@ -1593,3 +1725,30 @@ public sealed class DeveloperExecutionService :
         return DeveloperExecutionResult.Failure(kind, errorCode);
     }
 }
+
+internal sealed record DeveloperTargetContext(
+    string RelativePath,
+    bool Exists,
+    string? CurrentContent,
+    string CurrentContentSha256,
+    string Role,
+    string AuthorizationSource);
+
+internal sealed record DeveloperInitialRequestParts(
+    AiRequest Request,
+    string UserContent,
+    string TargetJson,
+    string PriorEffects,
+    string Prefix,
+    string OutputRequirements,
+    int JobRequestCharacters,
+    int PlanningContextCharacters);
+
+internal sealed record DeveloperPromptParts(
+    string UserContent,
+    string TargetJson,
+    string PriorEffects,
+    string Prefix,
+    string OutputRequirements,
+    int JobRequestCharacters,
+    int PlanningContextCharacters);
